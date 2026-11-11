@@ -1,0 +1,44 @@
+# nestjs-template 参照服务：openapi-sync 导出基线、parity 对照
+#
+# 变量：NESTJS_IMAGE（必填）、NESTJS_ENV_FILE（必填，nestjs 的 env-example-relational）、NESTJS_PORT（默认 3001）
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: api
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U root -d api']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4.12-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  api:
+    image: ${NESTJS_IMAGE:?NESTJS_IMAGE is required}
+    env_file:
+      - ${NESTJS_ENV_FILE:?NESTJS_ENV_FILE is required}
+    environment:
+      NODE_ENV: development
+      ENV_MODE: prod
+      RUN_SEEDS: 'true'
+      FILE_DRIVER: local
+      SWAGGER_ENABLED: 'true'
+      DATABASE_HOST: postgres
+      REDIS_HOST: redis
+    ports:
+      - '${NESTJS_PORT:-3001}:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

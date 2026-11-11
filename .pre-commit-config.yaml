@@ -1,82 +1,63 @@
-# See https://pre-commit.com for more information
-# See https://pre-commit.com/hooks.html for more hooks
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+  - repo: builtin
     hooks:
       - id: check-added-large-files
       - id: check-toml
       - id: check-yaml
-        args:
-          - --unsafe
+        args: [--allow-multiple-documents]
       - id: end-of-file-fixer
-        exclude: |
-            (?x)^(
-                frontend/src/client/.*|
-                backend/app/email-templates/.*
-            )$
+        exclude: ^openapi/
       - id: trailing-whitespace
-        exclude: ^frontend/src/client/.*
-  - repo: https://github.com/crate-ci/typos
-    rev: 7f9d0819ca1c008ade73f4b41fa9d258d48f605b # frozen: v1.51.1
-    hooks:
-      - id: typos
-        args: [--force-exclude]
+        exclude: ^openapi/
+
   - repo: local
     hooks:
-      - id: local-biome-check
-        name: biome check
-        entry: npm run lint
+      - id: gitleaks
+        name: gitleaks
+        language: docker_image
+        entry: zricethezav/gitleaks:v8.30.1 git --pre-commit --staged --redact --no-banner
+        pass_filenames: false
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --force-exclude --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude --exit-non-zero-on-format
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: typos
+        name: typos
+        entry: uv run --frozen typos --force-exclude
         language: system
         types: [text]
-        files: ^frontend/
 
-      - id: local-ruff-check
-        name: ruff check
-        entry: uv run ruff check --force-exclude --fix --exit-non-zero-on-fix
-        require_serial: true
-        language: unsupported
-        types: [python]
-
-      - id: local-ruff-format
-        name: ruff format
-        entry: uv run ruff format --force-exclude --exit-non-zero-on-format
-        require_serial: true
-        language: unsupported
-        types_or: [python, markdown]
-
-      - id: local-mypy
-        name: mypy check
-        entry: uv run mypy backend/app
-        require_serial: true
-        language: unsupported
+      - id: uv-lock
+        name: uv lock --check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
 
-      - id: local-ty
-        name: ty check
-        entry: uv run ty check backend/app
-        require_serial: true
-        language: unsupported
-        pass_filenames: false
+      - id: commit-msg
+        name: conventional commits
+        entry: uv run --frozen python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
 
-      - id: generate-frontend-sdk
-        name: Generate Frontend SDK
-        entry: bash ./scripts/generate-client.sh
+      - id: make-check
+        name: make check
+        entry: make check
+        language: system
+        stages: [pre-push]
         pass_filenames: false
-        language: unsupported
-        files: ^backend/app/.*\.py$|^backend/pyproject\.toml$|^uv\.lock$|^frontend/openapi-ts\.config\.ts$|^scripts/generate-client\.sh$
-
-      - id: add-release-date
-        language: unsupported
-        name: add date to latest release header
-        entry: uv run python scripts/add_latest_release_date.py
-        files: ^release-notes\.md$
-        pass_filenames: false
-
-      - id: zizmor
-        name: zizmor
-        language: python
-        entry: uv run zizmor .
-        files: ^\.github\/workflows\/
-        require_serial: true
-        pass_filenames: false
+        always_run: true

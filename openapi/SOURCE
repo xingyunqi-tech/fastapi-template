@@ -1,0 +1,4 @@
+repository=xingyunqi-tech/nestjs-template
+branch=release/exam-prep
+commit=02fdb4def2df9b5866352d17ec949683d28cc887
+environment=NODE_ENV=development FILE_DRIVER=local

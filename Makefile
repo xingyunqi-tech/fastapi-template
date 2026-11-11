@@ -1,0 +1,74 @@
+.DEFAULT_GOAL := help
+SHELL := /bin/bash
+
+UV ?= uv
+RUN := $(UV) run --frozen
+PYTEST := $(RUN) pytest
+
+.PHONY: help
+help: ## 列出可用目标
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+.PHONY: install
+install: ## 安装依赖与 Git 钩子
+	$(UV) sync --frozen
+	$(RUN) prek install
+
+.PHONY: dev
+dev: ## 本地开发服务（热重载，端口 APP_PORT，默认 3000）
+	$(RUN) fastapi dev --port $$($(RUN) python -c 'from app.config import get_settings; print(get_settings().app.port)')
+
+.PHONY: serve
+serve: ## 以生产方式启动（Granian）
+	$(RUN) python -m app
+
+.PHONY: fmt
+fmt: ## 格式化并自动修复
+	$(RUN) ruff format
+	$(RUN) ruff check --fix
+
+.PHONY: lint
+lint: ## ruff check、ruff format --check、typos
+	$(RUN) ruff check
+	$(RUN) ruff format --check
+	$(RUN) typos
+
+.PHONY: typecheck
+typecheck: ## mypy（门禁）+ ty（试运行，不阻塞）
+	$(RUN) mypy
+	-$(RUN) ty check
+
+.PHONY: test-unit
+test-unit: ## 单元测试
+	$(PYTEST) -m unit -n auto
+
+.PHONY: check
+check: lint typecheck test-unit ## lint + 类型检查 + 单元测试
+
+.PHONY: test
+test: ## 单元 + 集成测试（含覆盖率）
+	$(PYTEST) -m "unit or integration" -n auto --cov --cov-report=term --cov-report=xml
+
+.PHONY: test-e2e
+test-e2e: ## e2e 测试
+	$(PYTEST) -m e2e
+
+.PHONY: test-contract
+test-contract: ## 契约测试
+	$(PYTEST) -m contract
+
+.PHONY: test-parity
+test-parity: ## 与 nestjs-template 的 parity 测试
+	$(PYTEST) -m parity
+
+.PHONY: openapi-sync
+openapi-sync: ## 从 nestjs-template 固定提交导出 openapi/ 基线
+	scripts/openapi-sync.sh
+
+.PHONY: ci
+ci: check test ## 本地运行 CI 门禁
+
+.PHONY: clean
+clean: ## 清理缓存与构建产物
+	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov coverage.xml .coverage .coverage.* dist build
+	find . -type d -name __pycache__ -not -path "./.venv/*" -exec rm -rf {} +

@@ -54,7 +54,7 @@ nestjs-template `src/modules` 里的考试刷题业务：exams、questions、pra
 
 | 类别 | 选型 | 版本（2026-11-10） | 说明 |
 |---|---|---|---|
-| 语言 | Python | **3.15**（3.15.2） | M0 验证 asyncpg / pydantic-core / granian / argon2-cffi 的 3.15 wheel，缺失则落 3.14.x；`requires-python = ">=3.14"` |
+| 语言 | Python | **3.15**（3.15.2） | M0 已验证 asyncpg / pydantic-core / granian / argon2-cffi / orjson 在 macOS 与 manylinux_2_40 均有 cp315 wheel（orjson 仅发 manylinux_2_39，`python:3.15-slim` 满足）；`requires-python = ">=3.15"` |
 | 包管理 | uv | 0.13.7 | `.python-version` 锁解释器，`uv.lock` 锁依赖 |
 | Web 框架 | FastAPI | 0.162.4 | 上游锁在 0.141.1 |
 | ASGI 底层 | Starlette | 1.10.0 | |

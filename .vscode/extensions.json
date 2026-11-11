@@ -1,14 +1,10 @@
 {
-    "recommendations": [
-        "FastAPILabs.fastapi-vscode",
-        "astral-sh.ty",
-        "biomejs.biome",
-        "bradlc.vscode-tailwindcss",
-        "charliermarsh.ruff",
-        "docker.docker",
-        "github.vscode-github-actions",
-        "ms-playwright.playwright",
-        "ms-python.python",
-        "tombi-toml.tombi"
-    ]
+  "recommendations": [
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "ms-python.mypy-type-checker",
+    "astral-sh.ty",
+    "tamasfe.even-better-toml",
+    "editorconfig.editorconfig"
+  ]
 }
