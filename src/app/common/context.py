@@ -1,16 +1,19 @@
-"""应用级单例（配置、数据库、缓存、密码哈希、邮件），挂在 app.state 上供依赖获取。"""
+"""应用级单例（配置、数据库、Redis、缓存、密码哈希、邮件、队列、锁），挂在 app.state 上。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import Depends, Request
+lazy from redis.asyncio import Redis
 
 from app.common.security import Passwords
 from app.config import Settings
 from app.core.users.serializers import FileUrls
 from app.infrastructure.cache import Cache
 from app.infrastructure.database.session import Database
+from app.infrastructure.redis import LockService
 from app.integrations.mail import Mailer
+lazy from app.infrastructure.queue import TaskQueue
 
 
 @dataclass(slots=True)
@@ -20,10 +23,16 @@ class AppContext:
     cache: Cache
     passwords: Passwords
     mailer: Mailer
+    redis: Redis | None = None
+    queue: TaskQueue | None = None
+    locks: LockService = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.locks = LockService(self.redis)
 
     @property
     def file_urls(self) -> FileUrls:
-        return FileUrls(self.settings.app.backend_domain, self.settings.app.api_prefix)
+        return FileUrls.from_settings(self.settings)
 
 
 def _context(request: Request) -> AppContext:

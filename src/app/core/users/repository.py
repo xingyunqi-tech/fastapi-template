@@ -166,6 +166,18 @@ class UserRepository:
             raise not_found("User not found")
         return user
 
+    async def find_deleted_by_id(self, user_id: int) -> UserModel | None:
+        return await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id, UserModel.deleted_at.is_not(None))
+        )
+
+    async def detach_photo(self, user_id: int) -> None:
+        await self.session.execute(
+            update(UserModel)
+            .where(UserModel.id == user_id)
+            .values(photo_id=None, updated_at=func.now())
+        )
+
     async def remove(self, user_id: int) -> None:
         await self.session.execute(
             update(UserModel)

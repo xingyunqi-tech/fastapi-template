@@ -97,3 +97,17 @@ def test_reports_all_invalid_values_at_once(monkeypatch: pytest.MonkeyPatch) -> 
 
     fields = {error.split(":")[0] for error in exc_info.value.errors}
     assert fields == {"APP_ENV", "APP_PORT", "TRUST_PROXY"}
+
+
+def test_production_requires_mail_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_production(monkeypatch)
+    monkeypatch.delenv("MAIL_HOST")
+    monkeypatch.delenv("MAIL_DEFAULT_NAME")
+
+    with pytest.raises(SettingsError) as exc_info:
+        Settings.load()
+
+    assert {error.split(":")[0] for error in exc_info.value.errors} >= {
+        "MAIL_HOST",
+        "MAIL_DEFAULT_NAME",
+    }

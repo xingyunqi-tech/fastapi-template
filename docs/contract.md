@@ -1,14 +1,13 @@
 # 与 nestjs-template 的契约差异
 
-本文件由 `tests/contract/test_openapi_contract.py` 生成（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败。
+本文件由 `tests/contract/test_openapi_contract.py` 生成（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败；「与 nestjs 的行为差异」一节为手写，生成时原样保留。
 
-## 基线中未实现的接口（197 个）
+## 基线中未实现的接口（192 个）
 
 请求这些接口返回 404 信封 `Cannot <METHOD> <path>`。
 
 | 方法 | 路径 | operationId | tag |
 |---|---|---|---|
-| POST | `/api/v1/files/upload` | uploadFile | Files |
 | POST | `/api/v1/auth/phone/send-code` | sendSmsCode | Auth |
 | POST | `/api/v1/auth/phone/login` | loginWithPhone | Auth |
 | POST | `/api/v1/auth/phone/sms-login` | loginWithSms | Auth |
@@ -25,9 +24,6 @@
 | DELETE | `/api/v1/notifications/{id}` | deleteNotification | Notifications |
 | POST | `/api/v1/notifications/read-all` | markAllNotificationsAsRead | Notifications |
 | POST | `/api/v1/notifications/{id}/read` | markNotificationAsRead | Notifications |
-| GET | `/api/v1/health` | healthCheck | Health |
-| GET | `/api/v1/health/live` | livenessProbe | Health |
-| GET | `/api/v1/health/ready` | readinessProbe | Health |
 | GET | `/api/v1/addresses` | getAddresses | Addresses |
 | POST | `/api/v1/addresses` | createAddress | Addresses |
 | GET | `/api/v1/addresses/default` | getDefaultAddress | Addresses |
@@ -188,7 +184,6 @@
 | PATCH | `/api/v1/admin/question-reports/{id}` | adminUpdateQuestionReport | Admin Question Reports |
 | GET | `/api/v1/me/consents` | getMyConsents | Consents |
 | POST | `/api/v1/me/consents` | agreeConsent | Consents |
-| POST | `/api/v1/admin/users/{id}/cleanup` | adminRetriggerAccountCleanup | Admin Account Cleanup |
 | GET | `/api/v1/ai/conversations` | getAiConversations | AI |
 | POST | `/api/v1/ai/conversations` | createAiConversation | AI |
 | GET | `/api/v1/ai/conversations/{id}/messages` | getAiMessages | AI |
@@ -208,4 +203,16 @@
 
 ## 白名单（实现与基线不同）
 
-- 无
+- `POST /api/v1/files/upload`（`FILE_DRIVER=s3-presigned`）：请求体为 `application/json` `FileUploadDto {fileName, fileSize}`，响应为 `{file, uploadSignedUrl}`；local / s3 驱动与基线一致
+
+## 与 nestjs 的行为差异
+
+- 认证邮件（注册、找回密码、改邮箱）在事务提交后异步发送，SMTP 失败不影响接口响应；nestjs 同步发送，失败时接口返回 500。入队超时（2 秒）或失败时在 API 进程内后台直接经 SMTP 发送。
+- 队列使用 Taskiq + Redis Stream（键 `taskiq:<queue>`），与 nestjs 的 BullMQ 队列不互通，两个后端的 worker 不能互相消费任务。
+- worker 崩溃后未确认的消息由其它 worker 在空闲 10 分钟后经 XAUTOCLAIM 回收，回收只在该 worker 读到新消息后进行（taskiq-redis `listen` 的行为）。
+- notification 队列的并发 5 / 限速 10 条每秒尚未实现，M4 接入 NotificationsService 时处理。
+- worker 的 `queue_jobs_total` 须与 API 共用同一 `PROMETHEUS_MULTIPROC_DIR` 才会出现在 API 的 `/metrics`。
+- 限流算法不同：nestjs 为固定窗口计数（`throttle:{sha}:default` INCR，超限写 `throttle:{sha}:default:block`），本服务为 GCRA，状态存于 `throttle:{sha}:default:gcra`（哈希输入相同）。两个后端共用 Redis 时各自计数、互不影响，同一客户端在两边的限额分别计算。
+- Redis 未启用或故障时限流回落进程内存，限额按 worker 进程独立计算；内存表满 10000 个键时先清除已过期的键，再淘汰最早过期的键。
+- 健康检查 `memory_heap` 比较的是进程 RSS，nestjs 比较的是 V8 `heapUsed`；阈值同为 300MB，RSS 包含解释器与原生库内存，通常大于同等负载下的 heapUsed，因此可能更早判定为 down。
+- S3 驱动上传对象的 `ContentType` 按文件扩展名设置（未知时 `application/octet-stream`）；nestjs multer-s3 使用 `AUTO_CONTENT_TYPE` 按文件内容嗅探。只影响存储对象的元数据，不影响 API 响应。

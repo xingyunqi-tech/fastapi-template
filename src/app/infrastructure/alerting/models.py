@@ -15,7 +15,7 @@ class AdminAlertModel(Base):
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     level: Mapped[str] = mapped_column(String(20), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    payload: Mapped[Any | None] = mapped_column(JSONB)
+    payload: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     dedup_key: Mapped[str] = mapped_column("dedupKey", String(200), nullable=False)
     acknowledged_at: Mapped[datetime | None] = timestamp("acknowledgedAt", nullable=True)
     created_at: Mapped[datetime] = created_at()

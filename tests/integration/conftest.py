@@ -138,6 +138,7 @@ def _build_app(database: Database, *, redis: Redis | None = None) -> FastAPI:
         cache=RedisCache(redis) if redis is not None else MemoryCache(),
         passwords=app.state.context.passwords,
         mailer=LoggingMailer(),
+        redis=redis,
     )
     return app
 

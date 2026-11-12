@@ -17,10 +17,24 @@ from app.factory import create_app
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = ROOT / "openapi" / "nestjs-baseline.json"
 CONTRACT_DOC = ROOT / "docs" / "contract.md"
+MANUAL_HEADING = "## 与 nestjs 的行为差异"
 BASELINE: dict[str, Any] = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 GLOBAL_HEADER = {"in": "header", "name": "Accept-Language"}
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 WHITELIST: set[tuple[str, str]] = set()
+DRIVER_VARIANTS: dict[tuple[str, str], tuple[str, str]] = {
+    ("/api/v1/files/upload", "post"): (
+        "s3-presigned",
+        "请求体为 `application/json` `FileUploadDto {fileName, fileSize}`，"
+        "响应为 `{file, uploadSignedUrl}`；local / s3 驱动与基线一致",
+    ),
+}
+S3_ENV = {
+    "ACCESS_KEY_ID": "key",
+    "SECRET_ACCESS_KEY": "secret",
+    "AWS_DEFAULT_S3_BUCKET": "bucket",
+    "AWS_S3_REGION": "us-east-1",
+}
 
 app = create_app(Settings.load())
 INTERNAL = build_openapi(app)
@@ -159,7 +173,12 @@ class TestImplementedOperation:
             and r.path_format == path
             and method.upper() in (r.methods or ())
         )
-        declared_bearer = route.auth in {Auth.JWT, Auth.OPTIONAL_JWT, Auth.REFRESH_JWT}
+        declared_bearer = route.auth in {
+            Auth.JWT,
+            Auth.OPTIONAL_JWT,
+            Auth.REFRESH_JWT,
+            Auth.MONITORING,
+        }
         baseline_bearer = any(
             "bearer" in s for s in BASELINE_OPS[(path, method)].get("security", [])
         )
@@ -219,11 +238,18 @@ def render_contract_doc() -> str:
         for (p, m), op in BASELINE_OPS.items()
         if (p, m) not in implemented
     ]
-    whitelist = "\n".join(f"- `{m.upper()} {p}`" for p, m in sorted(WHITELIST)) or "- 无"
+    variants = [
+        f"- `{m.upper()} {p}`（`FILE_DRIVER={driver}`）：{note}"
+        for (p, m), (driver, note) in sorted(DRIVER_VARIANTS.items())
+    ]
+    whitelist = (
+        "\n".join([*(f"- `{m.upper()} {p}`" for p, m in sorted(WHITELIST)), *variants]) or "- 无"
+    )
     return (
         "# 与 nestjs-template 的契约差异\n\n"
         "本文件由 `tests/contract/test_openapi_contract.py` 生成"
-        "（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败。\n\n"
+        "（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败；"
+        f"「{MANUAL_HEADING.removeprefix('## ')}」一节为手写，生成时原样保留。\n\n"
         f"## 基线中未实现的接口（{len(rows)} 个）\n\n"
         "请求这些接口返回 404 信封 `Cannot <METHOD> <path>`。\n\n"
         "| 方法 | 路径 | operationId | tag |\n|---|---|---|---|\n"
@@ -231,7 +257,16 @@ def render_contract_doc() -> str:
         + "\n\n## 白名单（实现与基线不同）\n\n"
         + whitelist
         + "\n"
+        + _manual_section()
     )
+
+
+def _manual_section() -> str:
+    if not CONTRACT_DOC.exists():
+        return ""
+    current = CONTRACT_DOC.read_text(encoding="utf-8")
+    _, heading, rest = current.partition("\n" + MANUAL_HEADING + "\n")
+    return heading + rest if heading else ""
 
 
 def test_contract_doc_is_up_to_date() -> None:
@@ -271,3 +306,39 @@ def test_validation_json_has_no_unsupported_features() -> None:
     assert pipe["enableImplicitConversion"] is False
     assert pipe["forbidNonWhitelisted"] is False
     assert unsupported == []
+
+
+def _driver_openapi(monkeypatch: pytest.MonkeyPatch, driver: str) -> dict[str, Any]:
+    monkeypatch.setenv("FILE_DRIVER", driver)
+    for name, value in S3_ENV.items():
+        monkeypatch.setenv(name, value)
+    return build_openapi(create_app(Settings.load()))
+
+
+def test_s3_driver_operations_match_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = _driver_openapi(monkeypatch, "s3")
+
+    assert _operations(document) == _operations(INTERNAL)
+
+
+def test_s3_presigned_driver_differs_only_in_whitelisted_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _driver_openapi(monkeypatch, "s3-presigned")
+    operations = {(p, m): op for p, m, op in _operations(document)}
+    local = {(p, m): op for p, m, op in _operations(INTERNAL)}
+    upload = operations[("/api/v1/files/upload", "post")]
+    response = _resolve(document, _success_schema(upload) or {})
+
+    assert operations.keys() == local.keys()
+    assert {k: v for k, v in operations.items() if k not in DRIVER_VARIANTS} == {
+        k: v for k, v in local.items() if k not in DRIVER_VARIANTS
+    }
+    assert set(upload["requestBody"]["content"]) == {"application/json"}
+    assert _ref_name(upload["requestBody"]["content"]["application/json"]["schema"]) == (
+        "FileUploadDto"
+    )
+    assert _shape(document, response) == {
+        "file": _shape(BASELINE, {"$ref": "#/components/schemas/FileType"}),
+        "uploadSignedUrl": "string",
+    }

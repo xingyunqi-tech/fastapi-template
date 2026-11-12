@@ -5,12 +5,13 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
 from app.common.responses import iso_timestamp
+from app.modules.files.urls import FileUrls
 lazy from app.modules.files.models import FileModel
 
 if TYPE_CHECKING:
     from app.core.users.models import RoleModel, StatusModel, UserModel
 
-PRIVATE_VISIBILITY: Final = "PRIVATE"
+__all__ = ["CreatedRelations", "FileUrls", "View", "serialize_file", "serialize_user"]
 
 
 class View(StrEnum):
@@ -22,17 +23,6 @@ class View(StrEnum):
 _GROUPED_FIELDS: Final = frozenset(
     {"email", "provider", "phone", "wechatOpenId", "wechatUnionId", "alipayOpenId"}
 )
-
-
-@dataclass(frozen=True, slots=True)
-class FileUrls:
-    backend_domain: str
-    api_prefix: str
-
-    def build(self, file: FileModel) -> str:
-        if file.visibility == PRIVATE_VISIBILITY:
-            return f"{self.backend_domain}/{self.api_prefix}/v1/files/private/{file.id}"
-        return self.backend_domain + file.path
 
 
 def serialize_file(file: FileModel, urls: FileUrls) -> dict[str, Any]:

@@ -169,7 +169,7 @@ core/users/
 | 已是信封的返回 | 原样透传 |
 | 跳过包装 | 路由级 `wrap=False`：`/metrics`、SSE、支付回调 |
 | 错误响应 | `{"code": <HTTP 状态>, "message": <已翻译文本>, "data": <对象或 null>}`，无独立业务码；`message` / `data` 的翻译规则见下方「错误翻译规则」 |
-| 默认消息 | 400/401/403/404/409/410/422/429/500 → i18n `common.<key>`（`badRequest`、`unauthorized`、`forbidden`、`notFound`、`conflict`、`gone`、`unprocessableEntity`、`tooManyRequests`、`internalServerError`） |
+| 默认消息 | 400/401/403/404/409/410/422/429/500 → i18n `common.<key>`（`badRequest`、`unauthorized`、`forbidden`、`notFound`、`conflict`、`gone`、`unprocessableEntity`、`tooManyRequests`、`internalServerError`）；表外状态码输出 Nest `HttpStatus` 枚举名原文、不翻译（如 413 → `PAYLOAD_TOO_LARGE`、503 → `SERVICE_UNAVAILABLE`） |
 | 业务错误 | `BusinessException(error_key, **details)` → `message` 为 `common.<errorKey>` 译文，`data: {...details, "errorKey": key}` 不翻译，状态码查表（键表从 nestjs `business-error-keys.ts` 复制） |
 | 校验错误 | 422，`message` 为 `common.unprocessableEntity` 译文（en `Validation failed` / zh `数据验证失败`）；`data: {字段: 消息}`，同字段所有失败约束都输出，按 class-validator 装饰器顺序（在 `@Transform` 之后执行）以 `", "` 拼接，约束与消息来源见 §4.3 的 `validation.json`；嵌套对象为嵌套 map；顶层字符串值同样按翻译规则尝试 `common.<value>`；未知字段剔除不报错 |
 | 非法 `:id` | 400，`message` 为 `common.badRequest` 译文，`data: {"id": <common.invalidId 译文>}`（en `Invalid id` / zh `ID 格式不正确`），对应 nestjs `ParseIdPipe`（`^\d+$`、1 ≤ id ≤ 2147483647）；FastAPI 对 id 路径参数的校验失败一律映射到这个 400，**不得出现 422** |
@@ -181,7 +181,7 @@ core/users/
 | CORS | 生产按 `FRONTEND_DOMAIN` 白名单，`credentials: true`，允许方法 `GET/POST/PUT/PATCH/DELETE/OPTIONS`、允许头 `Content-Type`、`Authorization`、`Accept-Language`；非生产反射来源与请求头；两种环境 `exposedHeaders` 均为`X-Request-Id`、`Retry-After`、`X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset` |
 | 安全头 | 与 nestjs helmet 配置输出相同的头集合（CSP、`X-Content-Type-Options`、`Referrer-Policy`、CORP cross-origin、HSTS 等，HSTS 在所有环境都发送） |
 | 请求体 | JSON 上限 256kb，超限 413 `{code: 413, message: "request entity too large", data: null}`（body-parser 原文，不翻译）；JSON 非法或顶层为原始值（`null`、字符串等）→ 400、`data: null`，`message` 为解析器错误文本，由各实现决定，parity 只比对 `code` 与 `data`；契约只约束 `application/json`，其它 content-type（nestjs 另接受 urlencoded 表单）不属于契约，本服务按空对象校验 |
-| 限流 | 规则同 nestjs（`THROTTLE_ENABLED`，默认 100 次 / 60s，鉴权路由按用户、否则按 IP，IPv6 按子网；客户端 IP 按 `TRUST_PROXY` 代理层数从 `X-Forwarded-For` 取）；响应头 `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时另带 `Retry-After`；算法见 §5 第 4 项 |
+| 限流 | 规则同 nestjs（`THROTTLE_ENABLED`，默认 100 次 / 60s，鉴权路由按用户、否则按 IP，IPv6 按子网；客户端 IP 按 `TRUST_PROXY` 代理层数从 `X-Forwarded-For` 取）；未被限流的响应（含之后的 401 / 422 等）带 `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`；429 只带 `Retry-After`、不带 `X-RateLimit-*`；`THROTTLE_ENABLED=false` 时不发任何限流头；路由级规则见 §4.6；算法见 §5 第 4 项 |
 | 字段命名 | camelCase（Pydantic `alias_generator=to_camel`） |
 
 **错误翻译规则**（照抄 nestjs `src/common/filters/all-exceptions.filter.ts`，翻译文件为 `src/i18n/{en,zh}/common.json`；「尝试翻译」指 `common.<key>` 存在则用译文，否则保留原值）：
@@ -342,7 +342,7 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 | 1 | 密码哈希 | bcrypt(md5)，cost 10 | **argon2id(md5)**（OWASP 首选）；登录时可验证旧 bcrypt 哈希并自动重哈希为 argon2id（pwdlib `verify_and_update`）。客户端仍传 MD5，前端无感 |
 | 2 | 会话 | 已同步到 nestjs | 会话表可空列 `userAgent`（≤512）、`ip`、`lastActiveAt`（每会话最多 5 分钟写一次）；「我的设备」列表、下线指定设备、下线其他设备三个接口，见 §4.6 |
 | 3 | 数据库迁移 | 每个应用容器启动时由 `scripts/startup.sh` 跑迁移（生产镜像不含 npm，直接 `node` 执行 TypeORM CLI） | 独立一次性 `migrate` 服务 / job，应用 `depends_on: service_completed_successfully`；多副本不会并发迁移 |
-| 4 | 限流算法 | 固定窗口 | Redis Lua **GCRA**（平滑、无窗口边界突刺）；响应头名称与 nestjs 的 @nestjs/throttler 一致：`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时带 `Retry-After`；两种算法的剩余次数与重置时间不同，parity 只比对这些头存在且为整数 |
+| 4 | 限流算法 | 固定窗口 | Redis Lua **GCRA**（平滑、无窗口边界突刺）；响应头名称与 nestjs 的 @nestjs/throttler 一致：`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时带 `Retry-After`；两种算法的剩余次数与重置时间不同，parity 只比对这些头存在且为整数；GCRA 状态存独立键（见 §9），共用 Redis 时两个后端各自计数；无 Redis 时按 worker 进程各自计数 |
 | 5 | Request ID | 已同步到 nestjs（校验 + 回写） | 同 nestjs；日志另带 OTel `trace_id` / `span_id`，日志与链路可互相跳转 |
 | 6 | OpenAPI | 运行时生成，无版本管理，spec 不含校验约束 | 不自行生成对外文档：`/docs-json` 输出入库的 nestjs 完整基线原文，校验元数据 `validation.json` 一并入库（`make openapi-sync`）；契约测试逐 operation 比对实现与基线，定时 drift job 发现 nestjs 漂移，见 §4.3、§11 |
 | 7 | 新表主键 | uuid v4 | **UUIDv7**（Python 3.14+ 标准库 `uuid.uuid7()`，按时间有序，索引友好）；已有 int 主键（user 等）保持不变 |
@@ -434,19 +434,20 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 
 | 能力 | 实现 |
 |---|---|
-| 日志 | structlog；生产 JSON、开发彩色单行；字段含 request_id、trace_id、user_id；脱敏 authorization、cookie、password/oldPassword/newPassword/code/phone/email、query 中的 hash/token；≥500 error、≥400 warn |
-| 指标 | `/metrics`，指标名同 nestjs（http_requests_total、http_request_duration_seconds、http_active_connections、database_query_duration_seconds、cache_hits_total、cache_misses_total、queue_jobs_total、admin_alerts_total、admin_alerts_deduplicated_total、throttler_storage_fallback_total），标签 `app=APP_NAME`；多 worker 用 prometheus multiprocess 模式 |
-| 链路 | OTel 自动埋点 FastAPI、SQLAlchemy、Redis、httpx，OTLP 导出 |
-| 健康检查 | 内存、磁盘、数据库 ping、连接池、Redis、微信 / 支付宝 API 可达 |
-| 缓存 | Redis 命名空间 `cache`，默认 TTL 60s；Redis 不可用回落内存 |
-| 分布式锁 | `SET NX PX` + Lua 释放 |
-| 队列 | Taskiq + Redis Stream；重试 3 次、指数退避；队列 mail、notification、account-cleanup；无 Redis 时进程内执行（仅限开发 / 测试，生产强制 `REDIS_ENABLED=true`，与 nestjs 一致） |
-| 定时任务 | Taskiq scheduler 独立进程，加锁执行：03:00 清理会话、04:00 清理已读通知 |
-| 审计 | 路由装饰器写 `audit_logs` |
-| 告警 | `AlertReporter.raise(...)` 写 `admin_alert` 并去重 |
-| 账号清理 | 删会话 → 软删 → 投递 `account-cleanup` 任务（5 次重试，10s 退避） |
-| 文件 | `FILE_DRIVER=local|s3|s3-presigned`，按用途限制大小，私有文件经接口鉴权 |
-| 进程 | api（Granian）、worker（Taskiq）、scheduler（Taskiq）、migrate（一次性）四个容器 |
+| 日志 | structlog；生产 JSON、开发彩色单行（`LOG_LEVEL`、`LOG_PRETTY_PRINT` 默认值同 nestjs）；请求日志照 nestjs 实际挂载的 pino-http autoLogging：消息 `METHOD url status`，字段 context=HTTP、`req{id,method,url,query,headers,remoteAddress}`、`res{statusCode}`、responseTime，`req.id` 为解析后的 Request ID；每条日志带 request_id、trace_id/span_id（有活动 span 时）、user_id（有 Bearer JWT 时）；脱敏 authorization、cookie、password/oldPassword/newPassword/code/phone/email、query 中的 hash/token；≥500 或异常 error、≥400 warn；worker / scheduler 进程同样初始化 |
+| 指标 | `/metrics`，指标名、help、类型、标签、桶同 nestjs（http_requests_total、http_request_duration_seconds、http_active_connections、database_query_duration_seconds、cache_hits_total、cache_misses_total、queue_jobs_total、admin_alerts_total、admin_alerts_deduplicated_total、throttler_storage_fallback_total），path 标签为 Express 路由模板（未匹配 `<unmatched>`，客户端断开记 499）；标签 `app` 取 `APP_NAME`，未设置时为 `nestjs-app`（同 nestjs）；`METRICS_ENABLED=false` 时保留端点但不输出默认进程指标、不挂 HTTP 中间件；默认进程指标为 Python 的 `process_*` / `python_*`；多 worker 用 prometheus multiprocess 模式：API 与 Taskiq worker 须共享 `PROMETHEUS_MULTIPROC_DIR`，`python -m app` 启动前清空其中旧文件，`WEB_CONCURRENCY>1` 未设置时启动告警 |
+| 链路 | OTel 自动埋点 FastAPI、SQLAlchemy、Redis、httpx，OTLP/HTTP 导出（`OTEL_ENABLED`，默认关闭）；Sentry（`SENTRY_DSN`，空则不启用） |
+| 健康检查 | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready` 响应为 terminus 形状 `{status, info, error, details}` 外套信封，details 先 up 后 down，带 `Cache-Control: no-cache, no-store, must-revalidate`；失败 503 `{code: 503, message: "SERVICE_UNAVAILABLE", data: null}`；检查项：内存（Python 无 V8 堆，用进程 RSS 对比同一 300MB 阈值）、磁盘、数据库 ping、连接池、Redis、微信 / 支付宝 API 可达（未配置时 up 并注明 skipped）；`/api/health` 为简单检查 |
+| 缓存 | Redis 命名空间 `cache`（键 `cache::<key>`、值 `{"value","expires"}`，与 Keyv 互通），默认 TTL 60s；Redis 未启用时用进程内存 |
+| 分布式锁 | 键 `lock:<key>`，`SET NX PX` + Lua 释放，单条命令 1s 超时；Redis 未启用或出错时退回进程内锁 |
+| 队列 | Taskiq + Redis Stream（`taskiq:mail` / `taskiq:notification` / `taskiq:account-cleanup` / `taskiq:scheduler`，不裁剪，与 BullMQ 不互通）；默认重试 3 次、指数退避 1s / 2s（BullMQ 公式 `delay * 2^(n-1)`，在任务内等待）；worker 崩溃后未确认消息由 XAUTOCLAIM（10 分钟空闲）回收；无 Redis 时进程内执行（仅限开发 / 测试，生产强制 `REDIS_ENABLED=true`，与 nestjs 一致）；API 启动时 Redis 不可达只记日志不阻塞，`app worker` 则直接退出 |
+| 邮件 | aiosmtplib + Jinja2，模板由 nestjs Handlebars 原样转换，渲染结果（标题、text、html）与 nestjs 逐字节一致；设置了 `MAIL_HOST` 时提交后投递到 mail 队列，入队时记录当前请求解析出的语言；入队 2s 超时或失败时本进程后台直接发送；未设置 `MAIL_HOST` 时只记日志（开发 / 测试），生产要求 `MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME`；邮件带 `Date`、`Message-ID` 头。与 nestjs 的差异：nestjs 在请求内同步发送，SMTP 失败返回 500；本服务异步发送，SMTP 失败不影响响应 |
+| 定时任务 | Taskiq scheduler 独立进程，以 `lock:scheduler:<name>` 加锁防止多实例并发执行：UTC 03:00 物理删除软删超过 7 天的会话；UTC 04:00 软删已读超过 30 天的通知（nestjs 未设时区，按容器本地时间，容器为 UTC）；每小时第 25 分钟（Asia/Shanghai）账号清理补偿：软删超过 30 分钟且无完成记录的用户，每批 200 个重新入队 |
+| 审计 | 路由声明 `audit=Auditable(...)` 写 `audit_logs`：字段、脱敏规则、entityId 取值同 nestjs；`userId` 只取鉴权路由的当前用户；请求成功后在独立事务写入，失败只记日志 |
+| 告警 | `AlertReporter.raise_(...)` 写 `admin_alert`，`INSERT … ON CONFLICT DO NOTHING` 按 dedupKey 去重，最多给 50 个管理员各写一条站内通知；限流存储降级时告警（`throttler-storage-fallback`，同 nestjs） |
+| 账号清理 | 删会话 → 软删 → 事务提交后入队 `account-cleanup`（5 次重试，10s 起指数退避）；Redis 去重键 `taskiq:account-cleanup:user-{id}`（24 小时，任务结束即删除）防止重复入队，执行时持有 `lock:account-cleanup:user-{id}` 防止并发清理；清理器按 order 执行（users 900 解除头像关联，files 1000 删除文件；M4 模块的清理器随模块加入），单个失败不中断其余，全部成功写 `account_cleanup` 完成记录，最终失败告警 `accountCleanupFailed:{userId}`；管理端 `POST admin/users/:id/cleanup`（`adminRetriggerAccountCleanup`）重新触发 |
+| 文件 | `FILE_DRIVER`（`local` / `s3` / `s3-presigned`），按用途限制大小与类型，私有文件经接口鉴权；local 驱动 `GET files/:path` 只返回 PUBLIC 文件；s3 / s3-presigned 的文件 URL 为 3600 秒预签名 GET；上传的错误形状与 multer / busboy 一致 |
+| 进程 | api（Granian）、worker（`app worker`，Taskiq）、scheduler（`app scheduler`，Taskiq）、migrate（一次性）四个容器 |
 
 ---
 
@@ -472,8 +473,16 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 | `METRICS_ENABLED` / `METRICS_PATH` / `METRICS_TOKEN` | `true` / `metrics` / 空 | 指标路径与监控令牌；生产未配令牌时拒绝访问 |
 | `SWAGGER_ENABLED` | 非生产 `true`、生产 `false` | 控制 `/docs`、`/docs-json` |
 | `APP_FALLBACK_LANGUAGE` | `en` | 语言回落 |
+| `METRICS_TOKEN` 长度 | 设置时至少 16 位 | 同 nestjs 校验 |
+| `LOG_LEVEL` / `LOG_PRETTY_PRINT` | 生产 `info` / `false`，其它环境 `debug` / `true` | 日志级别与输出格式；`LOG_PRETTY_PRINT` 只认字符串 `true` |
+| `FILE_DRIVER` | `local`（nestjs 要求必填） | `local` / `s3` / `s3-presigned` |
+| `FILE_IMAGE_MAX_SIZE` / `FILE_PRIVATE_IMAGE_MAX_SIZE` / `FILE_CONTENT_IMAGE_MAX_SIZE` / `FILE_AUDIO_MAX_SIZE` / `FILE_IMPORT_MAX_SIZE` / `FILE_EXPORT_MAX_SIZE` | 5MB / 10MB / 5MB / 20MB / 50MB / 20MB | 按上传用途限制大小 |
+| `ACCESS_KEY_ID` / `SECRET_ACCESS_KEY` / `AWS_DEFAULT_S3_BUCKET` / `AWS_S3_REGION` / `AWS_S3_ENDPOINT` / `AWS_S3_FORCE_PATH_STYLE` | 空 / 空 / 空 / 空 / 空 / `true` | S3 系驱动的凭据、桶、区域与地址；s3 / s3-presigned 缺凭据、桶或区域时启动失败 |
+| `WECHAT_APP_ID` / `WECHAT_APP_SECRET` / `ALIPAY_APP_ID` | 空 | 健康检查的微信 / 支付宝 API 可达检查，未配置时跳过（M4 登录集成同用这些变量） |
+| `MAIL_HOST` / `MAIL_PORT` / `MAIL_USER` / `MAIL_PASSWORD` / `MAIL_IGNORE_TLS` / `MAIL_SECURE` / `MAIL_REQUIRE_TLS` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` | `MAIL_PORT` 587，其余空 / `false` | SMTP，TLS 选项语义同 nodemailer；nestjs 始终必填 `MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME`，本服务仅生产必填，非生产未设置时只记日志 |
+| `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres 的 ssl 选项，CA / KEY / CERT 为 PEM 文本 |
 
-nestjs 未使用 `REDIS_KEY_PREFIX`（键前缀写死在代码里，如 `throttle:`、`lock:`、`session:rotated:`），本服务同样不引入，Redis 键名与 nestjs 逐字一致，便于共用实例。
+nestjs 未使用 `REDIS_KEY_PREFIX`（键前缀写死在代码里，如 `throttle:`、`lock:`、`session:rotated:`），本服务同样不引入，Redis 键名与 nestjs 逐字一致，便于共用实例。例外：限流算法不同（§5 第 4 项），GCRA 状态存在独立键 `throttle:<sha256>:default:gcra`（哈希输入与 nestjs 相同），共用实例时两个后端各自计数、互不干扰；队列用 Taskiq stream（`taskiq:*`），与 BullMQ 的 `bull:*` 不互通。
 
 Settings 按分组拆成多个 `BaseSettings`，敏感字段用 `SecretStr`，启动时一次性校验。
 
@@ -579,7 +588,7 @@ parity job 是「前端无改动切换」最直接的证据。说明：
 | **M0 清理与骨架** | 删除 frontend/、packages/、bun、Traefik、FastAPI Cloud、无关 workflow；`origin` 改名 `upstream`；定 Python 版本；src 布局；依赖升级；§10 工程配置（Ruff、mypy、pytest、prek、Makefile、Renovate、编辑器配置）；从 nestjs `02fdb4d`（`FILE_DRIVER=local`）导出 `openapi/nestjs-baseline.json` 与 `openapi/SOURCE` 入库 | `make check`、`make test` 全绿；`/docs-json` 返回 `openapi/nestjs-baseline.json` 原文；默认端口 3000 |
 | **M1 全局契约** | `make openapi-sync`（基线、`validation.json`、SOURCE）；响应包装、异常处理与翻译规则、唯一约束映射、校验错误（按 `validation.json`）、i18n、Request ID、CORS、安全头、分页、ApiRoute；Express 路由语义（方法不符 404、尾斜杠）；契约测试框架 | 每种错误形状有测试；`/docs-json` 与基线逐字节一致；成功响应除 upload（201）外均为 HTTP 200；非法 `:id` 为 400；方法不符为 404；与 nestjs 同请求响应体一致 |
 | **M2 数据层与认证核心** | async SQLAlchemy、Alembic 初始迁移、核心表、seed；邮箱注册 / 登录 / 确认 / 找回、refresh 轮换、logout、me、改密、注销、会话管理接口；RBAC；users 接口 | vite-vue3-temp、uniapp-template 对本服务 `/docs-json` 重新生成 Orval 客户端零 diff、`vue-tsc` 通过；vite-vue3-temp 不改代码指向本服务，可完成登录、刷新令牌、获取用户信息、退出（后台里的考试业务页面请求本期不做的接口，会收到 404 并报错，属预期，不在验收范围）；nestjs `test/user/auth.e2e-spec.ts` 指向本服务全部通过；`tests/parity` 认证与用户部分对两个后端均通过 |
-| **M3 基础设施** | 缓存 / 锁、限流、日志、指标、链路、健康检查、Sentry、Taskiq 队列与定时、审计、告警、账号清理、邮件、文件三驱动 | 集成测试覆盖限流、健康检查、上传；`/metrics` 指标名与 nestjs 一致 |
+| **M3 基础设施** | 缓存 / 锁、限流、日志、指标、链路、健康检查、Sentry、Taskiq 队列与定时、审计、告警、账号清理（含 `adminRetriggerAccountCleanup`）、邮件、文件三驱动 | 集成测试覆盖：限流（响应头、429、路由级规则、按用户 / IP、`TRUST_PROXY`、Redis 键名、多实例共享、Redis 故障回落与告警）；健康检查（三个端点、503、监控令牌）；`/metrics`（指标名集合按 nestjs 清单断言、标签、桶、令牌）；上传（三种驱动，s3 用 MinIO；错误形状、私有文件权限、local 下载）；锁竞争与回退；队列投递与重试（Redis Stream 与进程内）；邮件经 SMTP 实际送达且中英模板与 nestjs 渲染结果逐字节一致；审计、告警去重、账号清理全链路与补偿、定时任务清理条件；`tests/parity` 的 files 对照通过；nestjs `test/user/auth.e2e-spec.ts` 仍全部通过 |
 | **M4 扩展登录与通用模块** | 短信、手机号、微信、支付宝登录；8 个通用模块；代码生成器 | uniapp-template 指向本服务可手机号登录；契约测试本期已实现 operation 零差异（白名单仅 s3-presigned 上传） |
 | **M5 交付** | Dockerfile、compose、manage.sh、四个 workflow（check、deploy、cleanup-registry、nestjs-drift）、Renovate、安全扫描、README / CLAUDE.md / docs | CI 全绿（含 e2e、contract、parity、security）；`make ci` 本地通过；k6 压测登录、刷新、`auth/me`、列表四个接口，结果记录到 `docs/benchmark.md`，与 nestjs 同环境对比 |
 

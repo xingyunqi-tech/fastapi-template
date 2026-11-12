@@ -16,6 +16,7 @@ from app.core.users.repository import Sort, UserRepository
 from app.core.users.schemas import QueryUserDto
 from app.core.users.serializers import View, serialize_user
 from app.core.users.service import UsersService, user_input_from
+from app.infrastructure.account_cleanup import AccountCleanupProducer
 from app.infrastructure.database.session import DbSession
 from app.modules.files.service import FilesService
 
@@ -24,17 +25,13 @@ MAX_LIMIT = 50
 router = ApiRouter(prefix="/v1/users", tags=["Users"], rbac=True)
 
 
-async def _no_cleanup(user_id: int) -> None:
-    return None
-
-
 def build_users_service(context: AppContext, session: Any) -> UsersService:
     return UsersService(
         UserRepository(session),
         FilesService(session),
         SessionService(SessionRepository(session), context.cache),
         context.passwords,
-        _no_cleanup,
+        AccountCleanupProducer(context).after_commit(session),
     )
 
 

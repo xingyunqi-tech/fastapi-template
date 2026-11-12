@@ -3,28 +3,33 @@
 import functools
 import inspect
 import re
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.datastructures import Default
 from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 from starlette.routing import BaseRoute, Match, Route
 
 from app.common.exceptions import HttpError
 from app.common.responses import JsonResponse, envelope, is_api_response
+lazy from app.common.params import BODY_MODELS
+lazy from app.infrastructure.audit import Auditable, record_audit
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from starlette.types import Receive, Scope, Send
 
 API_META_KEY: Final = "x-api"
 INFER_RESPONSE_MODEL: Any = Default(None)
 _DECODE_ERROR_KEY: Final = "app.param_decode_error"
+_AUDIT_REQUEST: Final = "_audit_request"
 _PERCENT_RE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
@@ -38,6 +43,15 @@ class Auth(StrEnum):
 
 AUTH_DEPENDENCIES: dict[Auth, Callable[..., Any]] = {}
 PERMISSION_GUARDS: list[Callable[..., Callable[..., Any]]] = []
+THROTTLE_GUARDS: list[Callable[[Request], Awaitable[None]]] = []
+
+
+@dataclass(frozen=True, slots=True)
+class Throttle:
+    """路由级限流规则，对应 nestjs `@Throttle({ default: { limit, ttl } })`，ttl 为毫秒。"""
+
+    limit: int
+    ttl: int
 
 
 def register_auth(
@@ -48,10 +62,19 @@ def register_auth(
     PERMISSION_GUARDS[:] = [permission_guard]
 
 
+def register_throttle_guard(guard: Callable[[Request], Awaitable[None]]) -> None:
+    THROTTLE_GUARDS[:] = [guard]
+
+
+async def _throttle(request: Request) -> None:
+    for guard in THROTTLE_GUARDS:
+        await guard(request)
+
+
 def _guards(
     auth: Auth, rbac: bool, permissions: Sequence[str], any_permissions: Sequence[str]
 ) -> list[Any]:
-    dependencies: list[Any] = []
+    dependencies: list[Any] = [Depends(_throttle)]
     if auth is not Auth.PUBLIC:
         dependency = AUTH_DEPENDENCIES.get(auth)
         if dependency is None:
@@ -83,25 +106,49 @@ def _is_void(endpoint: Callable[..., Any]) -> bool:
     return annotation is None or annotation is type(None)
 
 
+def _audit_body(kwargs: dict[str, Any]) -> Any:
+    body_models = tuple(BODY_MODELS.values())
+    for value in kwargs.values():
+        if isinstance(value, BaseModel) and isinstance(value, body_models):
+            return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    return None
+
+
 def _wrap_endpoint(
-    endpoint: Callable[..., Any], status_code: int, wrap: bool
+    endpoint: Callable[..., Any], status_code: int, wrap: bool, audit: Auditable | None = None
 ) -> Callable[..., Any]:
     is_coroutine = inspect.iscoroutinefunction(endpoint)
     void = _is_void(endpoint)
 
     @functools.wraps(endpoint)
     async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        request = kwargs.pop(_AUDIT_REQUEST, None)
         if is_coroutine:
             result = await endpoint(*args, **kwargs)
         else:
             result = await run_in_threadpool(endpoint, *args, **kwargs)
+        plain: Any = None
         if isinstance(result, Response):
-            return result
-        payload = to_plain(result)
-        if wrap and not is_api_response(payload):
-            payload = envelope(payload, include_data=not void)
-        return JsonResponse(payload, status_code=status_code)
+            response = result
+        else:
+            plain = payload = to_plain(result)
+            if wrap and not is_api_response(payload):
+                payload = envelope(payload, include_data=not void)
+            response = JsonResponse(payload, status_code=status_code)
+        if audit is not None and request is not None and response.background is None:
+            response.background = BackgroundTask(
+                record_audit, request, audit, _audit_body(kwargs), plain
+            )
+        return response
 
+    if audit is not None:
+        signature = inspect.signature(endpoint)
+        extra = inspect.Parameter(
+            _AUDIT_REQUEST, inspect.Parameter.KEYWORD_ONLY, annotation=Request
+        )
+        wrapped.__signature__ = signature.replace(  # type: ignore[attr-defined]
+            parameters=[*signature.parameters.values(), extra]
+        )
     return wrapped
 
 
@@ -126,9 +173,11 @@ class ApiRoute(APIRoute):
         meta = extra.get(API_META_KEY) or {}
         self.auth: Auth | None = meta.get("auth")
         self.wrap: bool = meta.get("wrap", True)
+        self.throttle: Throttle | None = meta.get("throttle")
+        self.audit: Auditable | None = meta.get("audit")
         if kwargs.get("status_code") is None:
             kwargs["status_code"] = 200
-        wrapped = _wrap_endpoint(endpoint, kwargs["status_code"], self.wrap)
+        wrapped = _wrap_endpoint(endpoint, kwargs["status_code"], self.wrap, self.audit)
         super().__init__(path, wrapped, **kwargs)
         self.endpoint = endpoint
 
@@ -180,6 +229,8 @@ class ApiRouter(APIRouter):
         include_in_schema: bool = True,
         permissions: Sequence[str] = (),
         any_permissions: Sequence[str] = (),
+        throttle: Throttle | None = None,
+        audit: Auditable | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             self.add_api_route(
@@ -192,7 +243,9 @@ class ApiRouter(APIRouter):
                 response_model=response_model,
                 summary=summary,
                 include_in_schema=include_in_schema,
-                openapi_extra={API_META_KEY: {"auth": auth, "wrap": wrap}},
+                openapi_extra={
+                    API_META_KEY: {"auth": auth, "wrap": wrap, "throttle": throttle, "audit": audit}
+                },
             )
             return fn
 

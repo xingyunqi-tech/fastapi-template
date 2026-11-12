@@ -8,8 +8,14 @@ from app.config import (
     AppSettings,
     AuthSettings,
     DatabaseSettings,
+    FileSettings,
+    HealthSettings,
+    LogSettings,
     MailSettings,
+    MetricsSettings,
+    ObservabilitySettings,
     RedisSettings,
+    ThrottlerSettings,
     get_settings,
 )
 from app.config.base import env_names
@@ -19,7 +25,19 @@ DIRECTORY_MARKERS = {"unit", "integration", "e2e", "contract", "parity"}
 SETTINGS_ENV_VARS = set().union(
     *(
         env_names(group)
-        for group in (AppSettings, AuthSettings, DatabaseSettings, RedisSettings, MailSettings)
+        for group in (
+            AppSettings,
+            AuthSettings,
+            DatabaseSettings,
+            RedisSettings,
+            MailSettings,
+            ThrottlerSettings,
+            MetricsSettings,
+            LogSettings,
+            ObservabilitySettings,
+            HealthSettings,
+            FileSettings,
+        )
     )
 )
 TEST_ENV = {
@@ -31,6 +49,7 @@ TEST_ENV = {
     "AUTH_FORGOT_TOKEN_EXPIRES_IN": "30m",
     "AUTH_CONFIRM_EMAIL_SECRET": "test-confirm-secret-0123456789abcdef",
     "AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN": "1d",
+    "THROTTLE_ENABLED": "false",
 }
 
 
@@ -63,3 +82,6 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
 def use_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("REDIS_ENABLED", "true")
+    monkeypatch.setenv("MAIL_HOST", "smtp.example.com")
+    monkeypatch.setenv("MAIL_DEFAULT_EMAIL", "noreply@example.com")
+    monkeypatch.setenv("MAIL_DEFAULT_NAME", "Api")

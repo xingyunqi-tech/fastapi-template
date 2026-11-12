@@ -2,10 +2,15 @@ from granian import Granian
 from granian.constants import Interfaces
 
 from app.config import get_settings
+from app.infrastructure.logging import configure_logging
+from app.infrastructure.metrics import prepare_multiprocess
 
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(settings)
+    if settings.metrics.enabled:
+        prepare_multiprocess(settings.app.web_concurrency)
     Granian(
         "app.main:app",
         interface=Interfaces.ASGI,

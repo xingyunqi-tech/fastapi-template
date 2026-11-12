@@ -6,18 +6,35 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.15"
 dependencies = [
+    "aioboto3>=15.5.0",
+    "aiosmtplib>=5.1.3",
     "alembic>=1.20.0",
     "asyncpg>=0.32.0",
     "fastapi>=0.162.4",
     "granian>=2.8.7",
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2",
+    "opentelemetry-instrumentation-fastapi>=0.66b2",
+    "opentelemetry-instrumentation-httpx>=0.66b2",
+    "opentelemetry-instrumentation-redis>=0.66b2",
+    "opentelemetry-instrumentation-sqlalchemy>=0.66b2",
+    "opentelemetry-sdk>=1.45.2",
     "orjson>=3.13.0",
+    "prometheus-client>=0.26.0",
+    "psutil>=7.2.2",
     "pwdlib[argon2,bcrypt]>=0.3.1",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
     "pyjwt>=2.15.1",
+    "python-multipart>=0.0.33",
     "redis>=8.1.0",
+    "sentry-sdk[fastapi]>=2.74.0",
     "sqlalchemy[asyncio]>=2.1.8",
     "starlette>=1.10.0",
+    "structlog>=26.1.0",
+    "taskiq>=0.13.0",
+    "taskiq-redis>=1.2.4",
     "typer>=0.29.0",
 ]
 
@@ -26,6 +43,7 @@ app = "app.cli:main"
 
 [dependency-groups]
 dev = [
+    "aiosmtpd>=1.4.6",
     "coverage[toml]>=7.17.2",
     "fastapi-cli>=0.0.20",
     "httpx2>=2.16.0",
@@ -36,9 +54,10 @@ dev = [
     "pytest-cov>=7.0.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.4",
-    "testcontainers[postgres,redis]>=4.15.0",
+    "testcontainers[minio,postgres,redis]>=4.15.0",
     "time-machine>=2.16.0",
     "ty>=0.0.100",
+    "types-aioboto3>=15.5.0",
     "typos>=1.51.1",
     "uvicorn[standard]>=0.40.0",
 ]

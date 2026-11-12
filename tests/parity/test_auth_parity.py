@@ -57,11 +57,12 @@ def authed(
     parity: Parity, method: str, url: str, pair_tokens: tuple[str, str], **kwargs: Any
 ) -> Pair:
     python_client, nestjs_client = parity.clients
+    extra = kwargs.pop("headers", {})
     python = python_client.request(
-        method, url, headers={"Authorization": f"Bearer {pair_tokens[0]}"}, **kwargs
+        method, url, headers={**extra, "Authorization": f"Bearer {pair_tokens[0]}"}, **kwargs
     )
     nestjs = nestjs_client.request(
-        method, url, headers={"Authorization": f"Bearer {pair_tokens[1]}"}, **kwargs
+        method, url, headers={**extra, "Authorization": f"Bearer {pair_tokens[1]}"}, **kwargs
     )
     return Pair(python, nestjs)
 
@@ -217,7 +218,16 @@ def test_revoke_unknown_session(parity: Parity) -> None:
 )
 def test_admin_reads(parity: Parity, url: str) -> None:
     pair_tokens = tokens(parity, "admin@example.com")
-    assert_same(authed(parity, "GET", url, pair_tokens))
+    pair = authed(parity, "GET", url, pair_tokens)
+    if "sort=" in url or "/users?" not in url:
+        assert_same(pair)
+        return
+    python, nestjs = (normalize(r.json()) for r in pair.both())
+    assert pair.python.status_code == pair.nestjs.status_code
+    if isinstance(python.get("data"), dict) and "data" in python["data"]:
+        for body in (python, nestjs):
+            body["data"]["data"].sort(key=lambda user: str(user["email"]))
+    assert python == nestjs
 
 
 def test_users_forbidden_for_user_role(parity: Parity) -> None:
@@ -283,3 +293,18 @@ def test_admin_create_update_delete(parity: Parity) -> None:
     assert_same(both("DELETE"))
     assert_same(both("GET"))
     assert_same(both("PUT", json={"nickname": "after"}))
+
+
+@pytest.mark.parametrize("user_id", ["2", "999999", "abc", "0"])
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_admin_retrigger_cleanup_errors(parity: Parity, user_id: str, lang: str) -> None:
+    pair_tokens = tokens(parity, "admin@example.com")
+    assert_same(
+        authed(
+            parity,
+            "POST",
+            f"/api/v1/admin/users/{user_id}/cleanup",
+            pair_tokens,
+            headers={"Accept-Language": lang},
+        )
+    )

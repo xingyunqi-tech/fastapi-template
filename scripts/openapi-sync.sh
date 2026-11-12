@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在 nestjs-template 固定提交上导出 openapi/ 基线、validation.json 与校验用例期望结果。
+# 在 nestjs-template 固定提交上导出 openapi/ 基线、validation.json、校验用例期望结果、表结构快照与限流 handler 映射。
 #
 # 变量：
 #   NESTJS_DIR         nestjs-template 本地仓库（默认 ../nestjs-template）
@@ -98,6 +98,7 @@ mv "$TMP_BASELINE" "$OUT/nestjs-baseline.json"
 mv "$STAGE/nestjs-schema.sql" "$ROOT/db/nestjs-schema.sql"
 mv "$STAGE/validation.json" "$OUT/validation.json"
 mv "$STAGE/validation-cases.json" "$CASES_DIR/validation-cases.json"
+uv run --frozen python "$ROOT/scripts/gen_nest_handlers.py" "$WORKTREE/src"
 
 cat >"$OUT/SOURCE" <<SOURCE
 repository=xingyunqi-tech/nestjs-template
@@ -107,4 +108,4 @@ validation_script=${NESTJS_SCRIPT_REF}
 environment=NODE_ENV=development FILE_DRIVER=local
 SOURCE
 
-echo "==> 已更新 openapi/、db/nestjs-schema.sql、tests/contract/fixtures/validation-cases.json"
+echo "==> 已更新 openapi/、db/nestjs-schema.sql、tests/contract/fixtures/validation-cases.json、throttler/nest_handlers.json"

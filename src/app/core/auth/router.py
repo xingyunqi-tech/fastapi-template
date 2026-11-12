@@ -6,7 +6,7 @@ from app.common.client import client_info
 from app.common.context import AppContext, Context
 from app.common.params import Body, IdParam
 from app.common.responses import iso_timestamp
-from app.common.routing import ApiRouter, Auth
+from app.common.routing import ApiRouter, Auth, Throttle
 from app.contract.schemas import (
     AuthChangePasswordDto,
     AuthConfirmEmailDto,
@@ -49,6 +49,7 @@ def _service(context: AppContext, session: Any) -> AuthService:
     "/email/login",
     operation_id="loginWithEmail",
     auth=Auth.PUBLIC,
+    throttle=Throttle(limit=5, ttl=60_000),
     response_model=LoginResponseDto,
     summary="邮箱登录",
 )
@@ -107,7 +108,12 @@ async def confirm_new_email(
 
 
 @router.endpoint(
-    "POST", "/forgot/password", operation_id="forgotPassword", auth=Auth.PUBLIC, summary="忘记密码"
+    "POST",
+    "/forgot/password",
+    operation_id="forgotPassword",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=3, ttl=300_000),
+    summary="忘记密码",
 )
 async def forgot_password(
     body: Annotated[AuthForgotPasswordDto, Body(AuthForgotPasswordDto)],
@@ -118,7 +124,12 @@ async def forgot_password(
 
 
 @router.endpoint(
-    "POST", "/reset/password", operation_id="resetPassword", auth=Auth.PUBLIC, summary="重置密码"
+    "POST",
+    "/reset/password",
+    operation_id="resetPassword",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=5, ttl=300_000),
+    summary="重置密码",
 )
 async def reset_password(
     body: Annotated[AuthResetPasswordDto, Body(AuthResetPasswordDto)],
@@ -215,6 +226,7 @@ async def logout(user: CurrentUser, context: Context, session: DbSession) -> Non
     "/me",
     operation_id="updateCurrentUser",
     auth=Auth.JWT,
+    throttle=Throttle(limit=10, ttl=60_000),
     response_model=User,
     summary="更新当前用户信息",
 )
@@ -243,7 +255,12 @@ async def delete_me(
 
 
 @router.endpoint(
-    "PUT", "/password", operation_id="changePassword", auth=Auth.JWT, summary="修改密码"
+    "PUT",
+    "/password",
+    operation_id="changePassword",
+    auth=Auth.JWT,
+    throttle=Throttle(limit=3, ttl=60_000),
+    summary="修改密码",
 )
 async def change_password(
     user: CurrentUser,

@@ -591,3 +591,19 @@ class TestSecurityHeaders:
         csp = client.get("/docs").headers["content-security-policy"]
 
         assert "https://cdn.jsdelivr.net" in csp
+
+
+def test_simple_health_reports_current_memory(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psutil  # type: ignore[import-untyped]
+
+    from app.modules.home import router as home
+
+    class Info:
+        rss = 300 * home.MB
+        uss = 120 * home.MB
+
+    monkeypatch.setattr(psutil.Process, "memory_full_info", lambda _: Info())
+    memory = client.get("/api/health").json()["data"]["memory"]
+    assert memory == {"heapUsed": 120, "heapTotal": 120, "rss": 300}
