@@ -6,6 +6,11 @@ lazy from fastapi import FastAPI
 lazy from starlette.requests import Request
 
 SCALAR_VERSION = "1.76.0"
+DOCS_CSP = (
+    "default-src 'self';script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;"
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;img-src 'self' data: https:;"
+    "font-src 'self' https: data:;connect-src 'self';object-src 'none';frame-ancestors 'self'"
+)
 
 _SCALAR_HTML = """<!doctype html>
 <html>
@@ -31,7 +36,7 @@ def mount_docs(app: FastAPI, baseline_path: Path) -> None:
         return Response(baseline, media_type="application/json; charset=utf-8")
 
     async def docs_ui(_: Request) -> Response:
-        return HTMLResponse(html)
+        return HTMLResponse(html, headers={"Content-Security-Policy": DOCS_CSP})
 
     app.router.routes.extend(
         [

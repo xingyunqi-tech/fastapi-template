@@ -174,13 +174,13 @@ core/users/
 | 校验错误 | 422，`message` 为 `common.unprocessableEntity` 译文（en `Validation failed` / zh `数据验证失败`）；`data: {字段: 消息}`，同字段所有失败约束都输出，按 class-validator 装饰器顺序（在 `@Transform` 之后执行）以 `", "` 拼接，约束与消息来源见 §4.3 的 `validation.json`；嵌套对象为嵌套 map；顶层字符串值同样按翻译规则尝试 `common.<value>`；未知字段剔除不报错 |
 | 非法 `:id` | 400，`message` 为 `common.badRequest` 译文，`data: {"id": <common.invalidId 译文>}`（en `Invalid id` / zh `ID 格式不正确`），对应 nestjs `ParseIdPipe`（`^\d+$`、1 ≤ id ≤ 2147483647）；FastAPI 对 id 路径参数的校验失败一律映射到这个 400，**不得出现 422** |
 | 唯一约束冲突 | 按约束名查表，见下方「唯一约束映射」 |
-| 路由语义 | 与 Express 一致：未匹配路由（含路径存在但方法不符）→ **404**，`message` 为 Nest 原文 `Cannot <METHOD> <originalUrl>`（含查询串，无翻译键，原文输出），`data: null`；Starlette 对方法不符默认 405，需覆盖为同样的 404 信封，且不带 `Allow` 头；尾斜杠不重定向（`redirect_slashes=False`），`/users` 与 `/users/` 都命中同一路由；路径匹配不区分大小写（Express 5 默认关闭 `case sensitive routing`，`/API/V1/Users` 与 `/api/v1/users` 命中同一路由） |
+| 路由语义 | 与 Express 一致：`API_PREFIX` 下及排除路由（`/`、`/metrics`）的未匹配路由（含路径存在但方法不符）→ **404**，`message` 为 Nest 原文 `Cannot <METHOD> <originalUrl>`（含查询串，无翻译键，原文输出），`data: null`；Starlette 对方法不符默认 405，需覆盖为同样的 404 信封，且不带 `Allow` 头；尾斜杠不重定向（`redirect_slashes=False`），`/users` 与 `/users/` 都命中同一路由；路径匹配不区分大小写（Express 5 默认关闭 `case sensitive routing`，`/API/V1/Users` 与 `/api/v1/users` 命中同一路由）；其它路径（如 `/nope`、`POST /docs-json`）nestjs 返回 Express 默认 HTML 404，不属于契约，本服务统一返回同样的 JSON 信封，parity 不比对 |
 | 鉴权声明 | 在实现侧逐路由声明，默认拒绝：未声明的路由启动时报错；五类：公开、JWT（`CurrentUser`）、可选 JWT（`OptionalUser`，如 papers controller 的 `OptionalJwtAuthGuard`）、refresh JWT（仅 `auth/refresh`，见 §6.3）、监控令牌（`healthCheck`、`/metrics`，`METRICS_TOKEN`，不走 JWT）；是否经过权限守卫（RBAC）是独立维度，见 §6.7；OpenAPI 中的 `security` 只用于契约测试交叉核对 |
 | 语言 | 见 §4.2 |
 | Request ID | 入站 `X-Request-Id` 匹配 `^[\w.:-]{1,128}$` 则沿用，否则生成 UUID；写日志、审计，并回写响应头 |
 | CORS | 生产按 `FRONTEND_DOMAIN` 白名单，`credentials: true`，允许方法 `GET/POST/PUT/PATCH/DELETE/OPTIONS`、允许头 `Content-Type`、`Authorization`、`Accept-Language`；非生产反射来源与请求头；两种环境 `exposedHeaders` 均为`X-Request-Id`、`Retry-After`、`X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset` |
-| 安全头 | CSP、`X-Content-Type-Options`、`Referrer-Policy`、CORP cross-origin、生产 HSTS |
-| 请求体上限 | JSON 256kb |
+| 安全头 | 与 nestjs helmet 配置输出相同的头集合（CSP、`X-Content-Type-Options`、`Referrer-Policy`、CORP cross-origin、HSTS 等，HSTS 在所有环境都发送） |
+| 请求体 | JSON 上限 256kb，超限 413 `{code: 413, message: "request entity too large", data: null}`（body-parser 原文，不翻译）；JSON 非法或顶层为原始值（`null`、字符串等）→ 400、`data: null`，`message` 为解析器错误文本，由各实现决定，parity 只比对 `code` 与 `data`；契约只约束 `application/json`，其它 content-type（nestjs 另接受 urlencoded 表单）不属于契约，本服务按空对象校验 |
 | 限流 | 规则同 nestjs（`THROTTLE_ENABLED`，默认 100 次 / 60s，鉴权路由按用户、否则按 IP，IPv6 按子网；客户端 IP 按 `TRUST_PROXY` 代理层数从 `X-Forwarded-For` 取）；响应头 `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时另带 `Retry-After`；算法见 §5 第 4 项 |
 | 字段命名 | camelCase（Pydantic `alias_generator=to_camel`） |
 

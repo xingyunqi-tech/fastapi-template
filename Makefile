@@ -46,19 +46,19 @@ test-unit: ## 单元测试
 check: lint typecheck test-unit ## lint + 类型检查 + 单元测试
 
 .PHONY: test
-test: ## 单元 + 集成测试（含覆盖率）
-	$(PYTEST) -m "unit or integration" -n auto --cov --cov-report=term --cov-report=xml
+test: ## 单元 + 集成 + 契约测试（含覆盖率）
+	$(PYTEST) -m "unit or integration or contract" -n auto --cov --cov-report=term --cov-report=xml
 
 .PHONY: test-e2e
 test-e2e: ## e2e 测试
 	$(PYTEST) -m e2e
 
 .PHONY: test-contract
-test-contract: ## 契约测试
-	$(PYTEST) -m contract
+test-contract: ## 契约测试（UPDATE_CONTRACT_DOC=1 时重新生成 docs/contract.md）
+	$(PYTEST) -m contract -n auto
 
 .PHONY: test-parity
-test-parity: ## 与 nestjs-template 的 parity 测试
+test-parity: ## parity 测试（PARITY_PYTHON_URL / PARITY_NESTJS_URL，默认 3000 / 3001）
 	$(PYTEST) -m parity
 
 .PHONY: openapi-sync

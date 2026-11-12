@@ -1,4 +1,5 @@
 repository=xingyunqi-tech/nestjs-template
 branch=release/exam-prep
 commit=02fdb4def2df9b5866352d17ec949683d28cc887
+validation_script=8b5f2961519e5d50ab66dc821e484e181d499c14
 environment=NODE_ENV=development FILE_DRIVER=local
