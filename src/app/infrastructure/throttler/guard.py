@@ -22,7 +22,7 @@ lazy from app.common.context import AppContext
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-NEST_HANDLERS_PATH: Final = Path(__file__).with_name("nest_handlers.json")
+NEST_HANDLERS_PATH: Final = Path(__file__).resolve().parents[4] / "openapi" / "nest_handlers.json"
 HEADERS_STATE_KEY: Final = "_rate_limit_headers"
 _WHITESPACE: Final = re.compile(r"\s+")
 UPLOAD_OPERATION: Final = "uploadFile"

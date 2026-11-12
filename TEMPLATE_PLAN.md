@@ -243,6 +243,10 @@ core/users/
   - `openapi/nestjs-baseline.json`：`/docs-json` 原文
   - `openapi/validation.json`：遍历 class-validator `getMetadataStorage()` 与 class-transformer 元数据，输出 `DTO → 字段 → [有序约束（类型、参数、自定义 message、each、groups）] + [转换（lowerCase、trim、md5Password…）] + 嵌套 / 数组类型`。nestjs 未启用 swagger CLI 插件，基线 schema 不含任何约束，校验行为只能从这份文件获得；Python、Go、Java 三个后端共用同一份
   - `openapi/SOURCE`：仓库、分支、提交号、导出环境
+  - `openapi/nest_handlers.json`：operationId → nestjs `Controller-handler` 映射，限流键（与 nestjs 相同的哈希输入）用；由 `scripts/gen_nest_handlers.py` 从 nestjs controller 源码与基线生成，`uploadFile` 随 `FILE_DRIVER` 变化不入表；运行时从仓库根的 `openapi/` 读取，镜像须包含该目录
+  - `db/nestjs-schema.sql`：nestjs 迁移后的表结构快照（`scripts/schema_snapshot.py`），迁移测试比对用
+  - `tests/contract/fixtures/validation-cases.json`：由 `validation.json` 生成的校验用例及 nestjs ValidationPipe 计算的期望结果
+- **sync 工具可在三个后端仓库原样运行**：`scripts/openapi-sync.sh`、`scripts/{gen_validation_cases,schema_snapshot,gen_nest_handlers}.py`、`scripts/nestjs/{validation-cases.ts,nestjs.compose.yaml}` 只依赖 Docker、git 与 uv，Python 脚本用 PEP 723 内联依赖（`# /// script`），`openapi-sync.sh` 以 `uv run --script` 调用，不依赖本仓库的 uv 项目环境；路径一律相对仓库根，只读写 `openapi/`、`db/`、`tests/contract/fixtures/`；在只含这几个目录与 `scripts/` 的空目录中即可运行（`NESTJS_DIR` 指向 nestjs-template 仓库）
 - **校验对齐**：Pydantic 字段约束、`BeforeValidator`（对应 `@Transform`）与 422 消息格式化由 `validation.json` 生成或逐项核对：同字段全部失败约束都输出、按装饰器顺序 `", "` 拼接，消息用自定义 `message` 原文，否则用 class-validator 默认文案（`<field> must be an email` 等）；`tests/contract` 校验每个本期 DTO 的约束集合与 `validation.json` 一致，parity 比对 422 响应体
 - **FastAPI 自身生成的 OpenAPI 只在契约测试内部使用**，不对外、不入库。`tests/contract` 逐项比对本期每个已实现 operation 与基线：path、method、operationId、tag、`security`、参数、请求体 content-type、schema 名与字段（请求与响应）、在已实现子集内的 paths 相对顺序；比对前归一化 OpenAPI 3.0 / 3.1 差异（`nullable: true` ↔ `anyOf [..., {type: null}]`）。白名单只有一项：s3-presigned 驱动的 `POST files/upload`（`application/json` 请求体 `{fileName, fileSize}`，见 §4.6），在 `docs/contract.md` 说明
 - 鉴权以实现侧声明为准（§4.1「鉴权声明」），基线中的 `security` 只做交叉核对
@@ -577,7 +581,7 @@ parity job 是「前端无改动切换」最直接的证据。说明：
 
 ### 11.5 nestjs-drift.yml
 
-定时（每天）+ 手动触发。checkout nestjs-template `release/exam-prep` 分支 HEAD，运行 `openapi-sync` 导出三份产物与表结构，与本仓库入库的 `openapi/`、`db/nestjs-schema.sql` 比对；有差异时 job 失败并在摘要中输出 diff 与 nestjs 新提交号，由人工执行 `make openapi-sync` 并补实现。不改动本仓库、不提交。
+定时（每天）+ 手动触发。checkout nestjs-template `release/exam-prep` 分支 HEAD，运行 `scripts/openapi-sync.sh`（`uv run --script` 调用 PEP 723 脚本，不需要安装本仓库依赖）导出 `openapi/`（基线、`validation.json`、`SOURCE`、`nest_handlers.json`）、`db/nestjs-schema.sql` 与 `tests/contract/fixtures/validation-cases.json`，与本仓库入库版本比对；有差异时 job 失败并在摘要中输出 diff 与 nestjs 新提交号，由人工执行 `make openapi-sync` 并补实现。不改动本仓库、不提交。
 
 ---
 

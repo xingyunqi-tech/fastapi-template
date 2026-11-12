@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["asyncpg>=0.30"]
+# ///
 """输出数据库表结构的规范化快照（列、约束、索引、注释），用于与 nestjs 迁移结果比对。
 
 用法：schema_snapshot.py DSN [TABLE ...]   （DSN 为 postgresql://...，不传 TABLE 时为全部表）

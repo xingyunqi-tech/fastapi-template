@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """由 nestjs controller 源码与基线生成限流键用的 operationId → `Controller-handler` 映射。
 
 用法：gen_nest_handlers.py <nestjs src 目录>            写入 nest_handlers.json
@@ -10,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "src" / "app" / "infrastructure" / "throttler" / "nest_handlers.json"
+OUTPUT = ROOT / "openapi" / "nest_handlers.json"
 BASELINE = ROOT / "openapi" / "nestjs-baseline.json"
 
 DRIVER_DEPENDENT = {"uploadFile"}

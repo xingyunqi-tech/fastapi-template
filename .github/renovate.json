@@ -5,7 +5,7 @@
   "schedule": ["before 9am on monday"],
   "prConcurrentLimit": 5,
   "labels": ["dependencies"],
-  "ignorePaths": ["docker/nestjs.compose.yaml"],
+  "ignorePaths": ["scripts/nestjs/nestjs.compose.yaml"],
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 9am on monday"]

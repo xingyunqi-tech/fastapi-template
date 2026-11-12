@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """由 openapi/validation.json 生成校验用例，或把 nestjs 计算的期望结果合并进用例。
 
 用法：

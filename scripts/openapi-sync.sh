@@ -33,7 +33,7 @@ SCHEMA_TABLES="user role status session permission role_permission file audit_lo
 export NESTJS_ENV_FILE="$WORKTREE/env-example-relational"
 STAGE="$(mktemp -d)"
 TMP_BASELINE="$STAGE/nestjs-baseline.json"
-COMPOSE=(docker compose -p nestjs-openapi-sync -f "$ROOT/docker/nestjs.compose.yaml")
+COMPOSE=(docker compose -p nestjs-openapi-sync -f "$ROOT/scripts/nestjs/nestjs.compose.yaml")
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -64,9 +64,9 @@ python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$
 
 echo "==> 生成校验用例期望结果"
 mkdir -p "$CASES_DIR"
-uv run --frozen python "$ROOT/scripts/gen_validation_cases.py" "$STAGE/validation.json" >"$WORKTREE/cases.json"
+uv run --script "$ROOT/scripts/gen_validation_cases.py" "$STAGE/validation.json" >"$WORKTREE/cases.json"
 run_ts "$ROOT/scripts/nestjs/validation-cases.ts" -v "$WORKTREE/cases.json:/tmp/cases.json:ro" >"$WORKTREE/expected.json"
-uv run --frozen python "$ROOT/scripts/gen_validation_cases.py" "$STAGE/validation.json" \
+uv run --script "$ROOT/scripts/gen_validation_cases.py" "$STAGE/validation.json" \
   --merge "$WORKTREE/cases.json" "$WORKTREE/expected.json" >"$STAGE/validation-cases.json"
 
 echo "==> 启动 nestjs（FILE_DRIVER=local）"
@@ -91,14 +91,14 @@ fi
 python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$TMP_BASELINE"
 echo "==> 导出表结构快照"
 db_port="$("${COMPOSE[@]}" port postgres 5432 | cut -d: -f2)"
-uv run --frozen python "$ROOT/scripts/schema_snapshot.py" "postgresql://root:secret@127.0.0.1:${db_port}/api" \
+uv run --script "$ROOT/scripts/schema_snapshot.py" "postgresql://root:secret@127.0.0.1:${db_port}/api" \
   $SCHEMA_TABLES >"$STAGE/nestjs-schema.sql"
 
 mv "$TMP_BASELINE" "$OUT/nestjs-baseline.json"
 mv "$STAGE/nestjs-schema.sql" "$ROOT/db/nestjs-schema.sql"
 mv "$STAGE/validation.json" "$OUT/validation.json"
 mv "$STAGE/validation-cases.json" "$CASES_DIR/validation-cases.json"
-uv run --frozen python "$ROOT/scripts/gen_nest_handlers.py" "$WORKTREE/src"
+uv run --script "$ROOT/scripts/gen_nest_handlers.py" "$WORKTREE/src"
 
 cat >"$OUT/SOURCE" <<SOURCE
 repository=xingyunqi-tech/nestjs-template
@@ -108,4 +108,4 @@ validation_script=${NESTJS_SCRIPT_REF}
 environment=NODE_ENV=development FILE_DRIVER=local
 SOURCE
 
-echo "==> 已更新 openapi/、db/nestjs-schema.sql、tests/contract/fixtures/validation-cases.json、throttler/nest_handlers.json"
+echo "==> 已更新 openapi/、db/nestjs-schema.sql、tests/contract/fixtures/validation-cases.json、openapi/nest_handlers.json"
