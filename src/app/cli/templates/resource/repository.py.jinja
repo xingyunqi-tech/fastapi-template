@@ -1,0 +1,75 @@
+from typing import Any, Final
+
+from sqlalchemy import ColumnElement, func, select, update
+lazy from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infrastructure.database.session import affected_rows
+from app.modules.{{ package }}.models import {{ class_name }}Model
+
+PG_BIGINT_MAX: Final = 2**63 - 1
+
+
+def _active() -> ColumnElement[bool]:
+    return {{ class_name }}Model.deleted_at.is_(None)
+
+
+class {{ class_name }}Repository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, values: dict[str, Any]) -> {{ class_name }}Model:
+        entity = {{ class_name }}Model(**values)
+        self.session.add(entity)
+        await self.session.flush()
+        await self.session.refresh(entity)
+        return entity
+
+    async def find_page(
+        self, *, page: int, limit: int
+    ) -> tuple[list[{{ class_name }}Model], int]:
+        """OFFSET 超出 PostgreSQL bigint 范围的页返回空列表。"""
+        offset = (page - 1) * limit
+        rows = (
+            list(
+                await self.session.scalars(
+                    select({{ class_name }}Model)
+                    .where(_active())
+                    .order_by({{ class_name }}Model.id.desc())
+                    .offset(offset)
+                    .limit(limit)
+                )
+            )
+            if offset <= PG_BIGINT_MAX
+            else []
+        )
+        total = await self.session.scalar(
+            select(func.count()).select_from({{ class_name }}Model).where(_active())
+        )
+        return rows, int(total or 0)
+
+    async def find_by_id(self, entity_id: int) -> {{ class_name }}Model | None:
+        return await self.session.scalar(
+            select({{ class_name }}Model).where({{ class_name }}Model.id == entity_id, _active())
+        )
+
+    async def update(
+        self, entity_id: int, values: dict[str, Any]
+    ) -> {{ class_name }}Model | None:
+        if values:
+            await self.session.execute(
+                update({{ class_name }}Model)
+                .where({{ class_name }}Model.id == entity_id, _active())
+                .values(**values, updated_at=func.now())
+                .execution_options(synchronize_session=False)
+            )
+        self.session.expire_all()
+        return await self.find_by_id(entity_id)
+
+    async def remove(self, entity_id: int) -> bool:
+        """软删除，返回是否删除了记录。"""
+        result = await self.session.execute(
+            update({{ class_name }}Model)
+            .where({{ class_name }}Model.id == entity_id, _active())
+            .values(deleted_at=func.now(), updated_at=func.now())
+        )
+        return affected_rows(result) > 0

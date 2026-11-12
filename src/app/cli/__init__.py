@@ -10,6 +10,7 @@ lazy from taskiq.cli.scheduler.run import run_scheduler
 lazy from taskiq.cli.worker.args import WorkerArgs
 lazy from taskiq.cli.worker.run import run_worker
 
+from app.cli.generate import generate_cli
 from app.cli.seed import seed as run_seed
 from app.config import SchemaOwner, Settings, get_settings
 from app.core.permissions.service import ROLE_PERMISSIONS_CACHE_KEY
@@ -19,6 +20,7 @@ from app.infrastructure.logging import configure_logging
 cli = typer.Typer(no_args_is_help=True, add_completion=False)
 permissions_cli = typer.Typer(no_args_is_help=True)
 cli.add_typer(permissions_cli, name="permissions", help="权限")
+cli.add_typer(generate_cli, name="generate", help="代码生成")
 
 
 @cli.command()

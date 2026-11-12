@@ -44,10 +44,22 @@ from app.infrastructure.queue import TaskQueue
 from app.infrastructure.queue.mail import QueueMailer
 from app.infrastructure.throttler import RateLimitHeadersMiddleware, ThrottlerStorage
 from app.integrations.mail import LoggingMailer, Mailer
+from app.modules.addresses import account_cleaner as _addresses_account_cleaner  # noqa: F401
+from app.modules.addresses import router as addresses
+from app.modules.app_profile import router as app_profile
+from app.modules.config import router as app_config
+from app.modules.consents import router as consents
+from app.modules.favorites import account_cleaner as _favorites_account_cleaner  # noqa: F401
+from app.modules.favorites import router as favorites
+from app.modules.feedbacks import account_cleaner as _feedbacks_account_cleaner  # noqa: F401
+from app.modules.feedbacks import router as feedbacks
 from app.modules.files import account_cleaner as _files_account_cleaner  # noqa: F401
 from app.modules.files import router as files
 from app.modules.files.storage import close_s3_clients
 from app.modules.home import router as home
+from app.modules.notifications import account_cleaner as _notifications_account_cleaner  # noqa: F401
+from app.modules.notifications import router as notifications
+from app.modules.regions import router as regions
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
@@ -153,10 +165,19 @@ def create_app(
     for files_router in files.routers_for(settings.file.driver):
         include_routes(app, files_router, api_prefix)
     include_routes(app, auth.router, api_prefix)
+    include_routes(app, notifications.router, api_prefix)
     include_routes(app, home.root_router)
     include_routes(app, home.api_router, api_prefix)
     include_routes(app, health.router, api_prefix)
+    include_routes(app, addresses.router, api_prefix)
+    include_routes(app, regions.router, api_prefix)
+    include_routes(app, favorites.router, api_prefix)
+    include_routes(app, app_config.router, api_prefix)
+    include_routes(app, feedbacks.router, api_prefix)
+    include_routes(app, consents.router, api_prefix)
     include_routes(app, account_cleanup.router, api_prefix)
+    include_routes(app, app_profile.router, api_prefix)
+    include_routes(app, app_profile.admin_router, api_prefix)
     include_routes(app, metrics.build_router(settings.metrics.path))
     for router, prefix in extra_routers:
         include_routes(app, router, prefix)

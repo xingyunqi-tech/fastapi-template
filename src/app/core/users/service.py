@@ -196,6 +196,23 @@ class UsersService:
     async def find_by_email(self, email: str | None) -> UserModel | None:
         return await self.repository.find_by_email(email)
 
+    async def find_by_phone(self, phone: str | None) -> UserModel | None:
+        return await self.repository.find_by_phone(phone)
+
+    async def find_by_wechat_open_id(self, open_id: str | None) -> UserModel | None:
+        return await self.repository.find_by_wechat_open_id(open_id)
+
+    async def find_by_alipay_open_id(self, open_id: str | None) -> UserModel | None:
+        return await self.repository.find_by_alipay_open_id(open_id)
+
+    async def bind_phone_if_empty(self, user_id: int, phone: str) -> bool:
+        return await self.repository.bind_phone_if_empty(user_id, phone)
+
+    async def bind_wechat_if_empty(
+        self, user_id: int, open_id: str | None, union_id: str | None = None
+    ) -> bool:
+        return await self.repository.bind_wechat_if_empty(user_id, open_id, union_id)
+
     async def find_many(
         self, *, role_ids: list[int] | None, sort: list[Sort] | None, page: int, limit: int
     ) -> list[UserModel]:

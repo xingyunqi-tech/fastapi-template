@@ -1,0 +1,47 @@
+"""{{ class_name }} 的请求、查询、响应模型与序列化。"""
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.common.pagination import pagination_response
+from app.common.responses import iso_timestamp
+lazy from app.modules.{{ package }}.models import {{ class_name }}Model
+
+
+class _Schema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class {{ class_name }}(_Schema):
+    id: int
+    name: str
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+    deleted_at: str | None = Field(default=None, alias="deletedAt")
+
+
+class Create{{ class_name }}Dto(_Schema):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class Update{{ class_name }}Dto(_Schema):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class FindAll{{ class_plural }}Dto(_Schema):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=10, ge=1)
+
+
+Pagination{{ class_name }}ResponseDto = pagination_response({{ class_name }})
+
+
+def serialize_{{ snake }}(entity: {{ class_name }}Model) -> dict[str, Any]:
+    return {
+        "id": entity.id,
+        "name": entity.name,
+        "createdAt": iso_timestamp(entity.created_at),
+        "updatedAt": iso_timestamp(entity.updated_at),
+        "deletedAt": iso_timestamp(entity.deleted_at) if entity.deleted_at else None,
+    }

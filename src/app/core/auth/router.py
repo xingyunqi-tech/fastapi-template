@@ -8,40 +8,63 @@ from app.common.params import Body, IdParam
 from app.common.responses import iso_timestamp
 from app.common.routing import ApiRouter, Auth, Throttle
 from app.contract.schemas import (
+    AuthAlipayLoginDto,
     AuthChangePasswordDto,
     AuthConfirmEmailDto,
     AuthDeleteAccountDto,
     AuthEmailLoginDto,
     AuthForgotPasswordDto,
+    AuthPhoneLoginDto,
+    AuthPhoneRegisterDto,
+    AuthPhoneResetPasswordDto,
+    AuthPhoneSmsLoginDto,
     AuthRegisterLoginDto,
     AuthResetPasswordDto,
+    AuthSendCodeDto,
     AuthUpdateDto,
+    AuthWechatLoginDto,
+    AuthWechatPhoneLoginDto,
     LoginResponseDto,
     RefreshResponseDto,
     SessionResponseDto,
     User,
 )
 from app.core.auth.deps import CurrentRefreshUser, CurrentUser
-from app.core.auth.service import AuthService
+from app.core.auth.service import AuthService, LoginResult
 from app.core.session.repository import SessionRepository
 from app.core.session.service import SessionService
 from app.core.users.router import build_users_service
 from app.core.users.serializers import View, serialize_user
 from app.core.users.service import user_input_from
 from app.infrastructure.database.session import DbSession
+from app.integrations.alipay import AlipayService
+from app.integrations.sms import AliyunSmsProvider, SmsCodeType, SmsService
+from app.integrations.wechat import WechatService
 
 router = ApiRouter(prefix="/v1/auth", tags=["Auth"])
 
 
 def _service(context: AppContext, session: Any) -> AuthService:
+    transport = context.http_transport
+    settings = context.settings
     return AuthService(
         session,
-        context.settings.auth,
+        settings.auth,
         build_users_service(context, session),
         SessionService(SessionRepository(session), context.cache),
         context.passwords,
         context.mailer,
+        SmsService(
+            settings.sms, context.cache, context.locks, AliyunSmsProvider(settings.sms, transport)
+        ),
+        WechatService(settings.wechat, context.cache, transport),
+        AlipayService(settings.alipay, transport),
     )
+
+
+def _login_response(result: LoginResult, context: AppContext) -> dict[str, Any]:
+    user = serialize_user(result.user, context.file_urls, view=View.ME, created=result.created)
+    return {**result.tokens, "user": user}
 
 
 @router.endpoint(
@@ -255,6 +278,105 @@ async def delete_me(
 
 
 @router.endpoint(
+    "POST",
+    "/phone/send-code",
+    operation_id="sendSmsCode",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=3, ttl=60_000),
+    summary="发送短信验证码",
+)
+async def send_sms_code(
+    body: Annotated[AuthSendCodeDto, Body(AuthSendCodeDto)],
+    context: Context,
+    session: DbSession,
+) -> None:
+    code_type = SmsCodeType(body.type_) if body.type_ else SmsCodeType.LOGIN
+    await _service(context, session).send_code(body.phone, code_type)
+
+
+@router.endpoint(
+    "POST",
+    "/phone/login",
+    operation_id="loginWithPhone",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=5, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="手机号密码登录",
+)
+async def phone_login(
+    body: Annotated[AuthPhoneLoginDto, Body(AuthPhoneLoginDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).validate_phone_login(
+        body.phone, body.password, client
+    )
+    return _login_response(result, context)
+
+
+@router.endpoint(
+    "POST",
+    "/phone/sms-login",
+    operation_id="loginWithSms",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=5, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="短信验证码登录",
+)
+async def phone_sms_login(
+    body: Annotated[AuthPhoneSmsLoginDto, Body(AuthPhoneSmsLoginDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).validate_phone_sms_login(
+        body.phone, body.code, client
+    )
+    return _login_response(result, context)
+
+
+@router.endpoint(
+    "POST",
+    "/phone/register",
+    operation_id="registerWithPhone",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=3, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="手机号注册",
+)
+async def phone_register(
+    body: Annotated[AuthPhoneRegisterDto, Body(AuthPhoneRegisterDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).register_by_phone(
+        body.phone, body.code, body.password, body.nickname, client
+    )
+    return _login_response(result, context)
+
+
+@router.endpoint(
+    "POST",
+    "/phone/reset-password",
+    operation_id="resetPasswordByPhone",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=5, ttl=300_000),
+    summary="通过手机验证码重置密码",
+)
+async def reset_password_by_phone(
+    body: Annotated[AuthPhoneResetPasswordDto, Body(AuthPhoneResetPasswordDto)],
+    context: Context,
+    session: DbSession,
+) -> None:
+    await _service(context, session).reset_password_by_phone(body.phone, body.code, body.password)
+
+
+@router.endpoint(
     "PUT",
     "/password",
     operation_id="changePassword",
@@ -269,3 +391,67 @@ async def change_password(
     session: DbSession,
 ) -> None:
     await _service(context, session).change_password(user, body.old_password, body.new_password)
+
+
+@router.endpoint(
+    "POST",
+    "/wechat/login",
+    operation_id="loginWithWechat",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=10, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="微信登录",
+)
+async def wechat_login(
+    body: Annotated[AuthWechatLoginDto, Body(AuthWechatLoginDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).wechat_login(
+        body.code, body.type_, body.nickname, client
+    )
+    return _login_response(result, context)
+
+
+@router.endpoint(
+    "POST",
+    "/wechat/phone-login",
+    operation_id="loginWithWechatPhone",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=10, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="微信手机号快捷登录（小程序）",
+)
+async def wechat_phone_login(
+    body: Annotated[AuthWechatPhoneLoginDto, Body(AuthWechatPhoneLoginDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).wechat_phone_login(
+        body.login_code, body.phone_code, client
+    )
+    return _login_response(result, context)
+
+
+@router.endpoint(
+    "POST",
+    "/alipay/login",
+    operation_id="loginWithAlipay",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=10, ttl=60_000),
+    response_model=LoginResponseDto,
+    summary="支付宝登录（小程序）",
+)
+async def alipay_login(
+    body: Annotated[AuthAlipayLoginDto, Body(AuthAlipayLoginDto)],
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> dict[str, Any]:
+    client = client_info(request, context.settings.app.trust_proxy)
+    result = await _service(context, session).alipay_login(body.auth_code, client)
+    return _login_response(result, context)

@@ -1,0 +1,75 @@
+import hashlib
+from typing import TYPE_CHECKING
+
+import pytest
+lazy import httpx2 as httpx
+lazy from fastapi import FastAPI
+lazy from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.common.routing import finalize_routes, include_routes
+from app.modules.{{ package }}.models import {{ class_name }}Model
+from app.modules.{{ package }}.router import router
+from tests.integration.conftest import client_for
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+URL = "/api/v1/{{ url }}"
+PASSWORD = hashlib.md5(b"Secret00", usedforsecurity=False).hexdigest()
+
+
+@pytest.fixture
+async def http(app: FastAPI, connection: AsyncConnection) -> AsyncIterator[httpx.AsyncClient]:
+    """未迁移时在本用例的事务内建表；未在 factory 注册时把路由挂到测试应用上。"""
+    table = {{ class_name }}Model.metadata.tables["{{ table }}"]
+    await connection.run_sync(lambda sync: table.create(sync, checkfirst=True))
+    if not any(getattr(route, "path", None) == URL for route in app.routes):
+        include_routes(app, router, "/api")
+        finalize_routes(app)
+    async with client_for(app) as client:
+        response = await client.post(
+            "/api/v1/auth/email/login",
+            json={"email": "john.doe@example.com", "password": PASSWORD},
+        )
+        client.headers["Authorization"] = f"Bearer {response.json()['data']['token']}"
+        yield client
+
+
+async def test_requires_authentication(http: httpx.AsyncClient) -> None:
+    response = await http.get(URL, headers={"Authorization": ""})
+    assert response.json() == {"code": 401, "message": "Unauthorized", "data": None}
+
+
+async def test_crud(http: httpx.AsyncClient) -> None:
+    created = (await http.post(URL, json={"name": "first"})).json()["data"]
+    assert created["name"] == "first"
+    assert created["deletedAt"] is None
+    item = f"{URL}/{created['id']}"
+
+    listed = (await http.get(URL)).json()["data"]
+    assert [entity["id"] for entity in listed["list"]] == [created["id"]]
+    assert (listed["total"], listed["page"], listed["limit"]) == (1, 1, 10)
+    assert (await http.get(item)).json()["data"] == created
+
+    updated = (await http.put(item, json={"name": "second"})).json()["data"]
+    assert updated["name"] == "second"
+
+    assert (await http.delete(item)).json() == {"code": 200, "message": "success"}
+    missing = await http.get(item)
+    assert missing.json() == {
+        "code": 404,
+        "message": "{{ class_name }} not found",
+        "data": None,
+    }
+
+
+async def test_validation(http: httpx.AsyncClient) -> None:
+    response = await http.post(URL, json={"name": ""})
+    assert response.status_code == 422
+    assert list(response.json()["data"]) == ["name"]
+    invalid_id = await http.get(f"{URL}/abc")
+    assert invalid_id.json() == {
+        "code": 400,
+        "message": "Bad request",
+        "data": {"id": "Invalid id"},
+    }

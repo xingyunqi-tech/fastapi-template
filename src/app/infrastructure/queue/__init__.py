@@ -45,6 +45,10 @@ class RetryPolicy:
         return float(round(2 ** (attempts_made - 1) * self.delay_ms)) / 1000
 
 
+class UnrecoverableError(Exception):
+    """BullMQ `UnrecoverableError`：任务体抛出后不重试，直接按最终失败处理。"""
+
+
 DEFAULT_RETRY: Final = RetryPolicy(attempts=3, delay_ms=1000)
 
 sleep = asyncio.sleep
@@ -62,7 +66,7 @@ async def run_job[T](
         try:
             result = await job()
         except Exception as error:
-            if attempt >= policy.attempts:
+            if attempt >= policy.attempts or isinstance(error, UnrecoverableError):
                 record_queue_job(queue, "failed")
                 logger.error("Job of queue %s failed after %d attempts: %s", queue, attempt, error)
                 if on_final_failure is not None:

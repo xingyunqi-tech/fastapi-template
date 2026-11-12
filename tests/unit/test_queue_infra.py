@@ -22,7 +22,7 @@ from app.infrastructure.account_cleanup import (
 )
 from app.infrastructure.alerting import AlertLevel
 from app.infrastructure.audit import Auditable, AuditAction, _param_id, _response_id, sanitize
-from app.infrastructure.queue import RetryPolicy, TaskQueue, run_job
+from app.infrastructure.queue import RetryPolicy, TaskQueue, UnrecoverableError, run_job
 from app.infrastructure.redis import LockService
 from app.infrastructure.scheduler import run_exclusive
 from app.integrations.mail import (
@@ -124,6 +124,23 @@ class TestRetry:
             )
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
         assert [str(error) for error in reported] == ["down"]
+
+    async def test_unrecoverable_error_fails_without_retry(self, no_sleep: list[float]) -> None:
+        reported: list[BaseException] = []
+        calls = 0
+
+        async def failing() -> None:
+            nonlocal calls
+            calls += 1
+            raise UnrecoverableError("invalid openid")
+
+        async def report(error: BaseException) -> None:
+            reported.append(error)
+
+        with pytest.raises(UnrecoverableError, match="invalid openid"):
+            await run_job("notification", RetryPolicy(3, 1000), failing, on_final_failure=report)
+        assert (calls, no_sleep) == (1, [])
+        assert [str(error) for error in reported] == ["invalid openid"]
 
     def test_queue_is_in_process_without_redis(self) -> None:
         queue = TaskQueue.from_settings(Settings.load())

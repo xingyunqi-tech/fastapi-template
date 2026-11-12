@@ -1,0 +1,40 @@
+from app.common.exceptions import HttpError, not_found
+lazy from app.modules.{{ package }}.models import {{ class_name }}Model
+lazy from app.modules.{{ package }}.repository import {{ class_name }}Repository
+lazy from app.modules.{{ package }}.schemas import Create{{ class_name }}Dto, Update{{ class_name }}Dto
+
+
+def _not_found() -> HttpError:
+    return not_found("{{ class_name }} not found")
+
+
+class {{ class_plural }}Service:
+    def __init__(self, repository: {{ class_name }}Repository) -> None:
+        self.repository = repository
+
+    async def create(self, data: Create{{ class_name }}Dto) -> {{ class_name }}Model:
+        return await self.repository.create(data.model_dump(exclude_unset=True))
+
+    async def find_page(
+        self, *, page: int, limit: int
+    ) -> tuple[list[{{ class_name }}Model], int]:
+        return await self.repository.find_page(page=page, limit=limit)
+
+    async def find_one(self, entity_id: int) -> {{ class_name }}Model:
+        entity = await self.repository.find_by_id(entity_id)
+        if entity is None:
+            raise _not_found()
+        return entity
+
+    async def update(self, entity_id: int, data: Update{{ class_name }}Dto) -> {{ class_name }}Model:
+        await self.find_one(entity_id)
+        updated = await self.repository.update(
+            entity_id, data.model_dump(exclude_unset=True, exclude_none=True)
+        )
+        if updated is None:
+            raise _not_found()
+        return updated
+
+    async def remove(self, entity_id: int) -> None:
+        if not await self.repository.remove(entity_id):
+            raise _not_found()

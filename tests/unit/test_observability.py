@@ -332,6 +332,23 @@ class TestLogging:
         [access] = [line for line in lines if line.get("logger") == "app.http.access"]
         assert access["req"]["id"] == response.headers["x-request-id"] != "bad id!"
 
+    def test_http_client_request_lines_are_not_logged(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("LOG_LEVEL", "info")
+        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
+        configure_logging(Settings.load())
+        capsys.readouterr()
+
+        logging.getLogger("httpx").info(
+            "HTTP Request: GET https://api.weixin.qq.com/sns/jscode2session?secret=TOPSECRET"
+        )
+        logging.getLogger("httpx").warning("httpx warning")
+
+        out = capsys.readouterr().out
+        assert "TOPSECRET" not in out
+        assert "httpx warning" in out
+
     def test_stdlib_logging_goes_through_structlog(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

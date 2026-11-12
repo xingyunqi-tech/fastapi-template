@@ -16,20 +16,52 @@ BASELINE = ROOT / "openapi" / "nestjs-baseline.json"
 OUTPUT = ROOT / "src" / "app" / "contract" / "schemas.py"
 
 ROOTS = [
+    "Address",
+    "AgreeConsentDto",
+    "AppProfile",
+    "AuthAlipayLoginDto",
     "AuthChangePasswordDto",
     "AuthConfirmEmailDto",
     "AuthDeleteAccountDto",
     "AuthEmailLoginDto",
     "AuthForgotPasswordDto",
+    "AuthPhoneLoginDto",
+    "AuthPhoneRegisterDto",
+    "AuthPhoneResetPasswordDto",
+    "AuthPhoneSmsLoginDto",
     "AuthRegisterLoginDto",
     "AuthResetPasswordDto",
+    "AuthSendCodeDto",
     "AuthUpdateDto",
+    "AuthWechatLoginDto",
+    "AuthWechatPhoneLoginDto",
+    "CheckFavoriteDto",
+    "CheckFavoriteResponseDto",
+    "Config",
+    "ConsentStatusDto",
+    "CreateAddressDto",
+    "CreateFavoriteDto",
+    "CreateFeedbackDto",
     "CreateUserDto",
+    "Favorite",
+    "Feedback",
     "InfinityPaginationUserResponseDto",
     "LoginResponseDto",
+    "Notification",
+    "NotificationSetting",
+    "PaginationAddressResponseDto",
+    "PaginationFavoriteItemDtoResponseDto",
+    "PaginationFeedbackResponseDto",
+    "PaginationNotificationResponseDto",
     "RefreshResponseDto",
+    "Region",
+    "RegionTreeDto",
     "SessionResponseDto",
+    "UpdateAddressDto",
+    "UpdateAppProfileDto",
+    "UpdateNotificationSettingsDto",
     "UpdateUserDto",
+    "UpsertConfigDto",
     "User",
 ]
 
@@ -108,7 +140,19 @@ def collect(schemas: dict[str, Any], roots: list[str]) -> list[str]:
     return ordered
 
 
+def render_enum(name: str, values: list[str]) -> str:
+    members = "".join(f'    {_member(value)} = "{value}"\n' for value in values)
+    return f"class {name}(StrEnum):\n{members}".rstrip("\n")
+
+
+def _member(value: str) -> str:
+    member = re.sub(r"\W", "_", value).upper()
+    return f"_{member}" if member[:1].isdigit() else member
+
+
 def render_model(name: str, schema: dict[str, Any]) -> str:
+    if schema.get("type") == "string" and isinstance(schema.get("enum"), list):
+        return render_enum(name, [str(value) for value in schema["enum"]])
     required = set(schema.get("required", []))
     lines = [f"class {name}(ContractModel):"]
     properties: dict[str, Any] = schema.get("properties", {})
@@ -130,7 +174,12 @@ def render() -> str:
     schemas = json.loads(BASELINE.read_text(encoding="utf-8"))["components"]["schemas"]
     names = collect(schemas, ROOTS)
     body = "\n\n\n".join(render_model(name, schemas[name]) for name in names)
-    typing_import = "from typing import Any\n\n" if re.search(r"\bAny\b", body) else ""
+    imports = []
+    if "(StrEnum):" in body:
+        imports.append("from enum import StrEnum\n")
+    if re.search(r"\bAny\b", body):
+        imports.append("from typing import Any\n")
+    typing_import = "".join(imports) + "\n" if imports else ""
     return f"{HEADER.format(typing_import=typing_import)}\n\n{body}\n"
 
 

@@ -2,46 +2,12 @@
 
 本文件由 `tests/contract/test_openapi_contract.py` 生成（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败；「与 nestjs 的行为差异」一节为手写，生成时原样保留。
 
-## 基线中未实现的接口（192 个）
+## 基线中未实现的接口（148 个）
 
 请求这些接口返回 404 信封 `Cannot <METHOD> <path>`。
 
 | 方法 | 路径 | operationId | tag |
 |---|---|---|---|
-| POST | `/api/v1/auth/phone/send-code` | sendSmsCode | Auth |
-| POST | `/api/v1/auth/phone/login` | loginWithPhone | Auth |
-| POST | `/api/v1/auth/phone/sms-login` | loginWithSms | Auth |
-| POST | `/api/v1/auth/phone/register` | registerWithPhone | Auth |
-| POST | `/api/v1/auth/phone/reset-password` | resetPasswordByPhone | Auth |
-| POST | `/api/v1/auth/wechat/login` | loginWithWechat | Auth |
-| POST | `/api/v1/auth/wechat/phone-login` | loginWithWechatPhone | Auth |
-| POST | `/api/v1/auth/alipay/login` | loginWithAlipay | Auth |
-| GET | `/api/v1/notifications` | getNotifications | Notifications |
-| GET | `/api/v1/notifications/unread-count` | getUnreadCount | Notifications |
-| GET | `/api/v1/notifications/settings` | getNotificationSettings | Notifications |
-| PUT | `/api/v1/notifications/settings` | updateNotificationSettings | Notifications |
-| GET | `/api/v1/notifications/{id}` | getNotification | Notifications |
-| DELETE | `/api/v1/notifications/{id}` | deleteNotification | Notifications |
-| POST | `/api/v1/notifications/read-all` | markAllNotificationsAsRead | Notifications |
-| POST | `/api/v1/notifications/{id}/read` | markNotificationAsRead | Notifications |
-| GET | `/api/v1/addresses` | getAddresses | Addresses |
-| POST | `/api/v1/addresses` | createAddress | Addresses |
-| GET | `/api/v1/addresses/default` | getDefaultAddress | Addresses |
-| GET | `/api/v1/addresses/{id}` | getAddress | Addresses |
-| PUT | `/api/v1/addresses/{id}` | updateAddress | Addresses |
-| DELETE | `/api/v1/addresses/{id}` | deleteAddress | Addresses |
-| PUT | `/api/v1/addresses/{id}/default` | setDefaultAddress | Addresses |
-| GET | `/api/v1/regions/provinces` | getProvinces | Regions |
-| GET | `/api/v1/regions/cities/{provinceCode}` | getCities | Regions |
-| GET | `/api/v1/regions/districts/{cityCode}` | getDistricts | Regions |
-| GET | `/api/v1/regions/code/{code}` | getRegionByCode | Regions |
-| GET | `/api/v1/regions/tree` | getRegionTree | Regions |
-| GET | `/api/v1/regions` | queryRegions | Regions |
-| GET | `/api/v1/favorites` | getFavorites | Favorites |
-| POST | `/api/v1/favorites` | createFavorite | Favorites |
-| POST | `/api/v1/favorites/check` | checkFavorite | Favorites |
-| POST | `/api/v1/favorites/toggle` | toggleFavorite | Favorites |
-| DELETE | `/api/v1/favorites/{id}` | deleteFavorite | Favorites |
 | GET | `/api/v1/practice/sessions` | getPracticeSessions | Practice |
 | POST | `/api/v1/practice/sessions` | createPracticeSession | Practice |
 | GET | `/api/v1/practice/sessions/ongoing` | getOngoingPracticeSessions | Practice |
@@ -120,12 +86,6 @@
 | POST | `/api/v1/admin/paper-rules/{id}/preview` | adminPreviewPaperRule | Admin Paper Rules |
 | GET | `/api/v1/admin/subjects/{id}/daily-sets` | adminGetDailyQuestionSets | Admin Daily Question Sets |
 | POST | `/api/v1/admin/subjects/{id}/daily-sets/{date}/regenerate` | adminRegenerateDailyQuestionSet | Admin Daily Question Sets |
-| GET | `/api/v1/config/{key}` | getConfig | Config |
-| PUT | `/api/v1/config/{key}` | upsertConfig | Config |
-| GET | `/api/v1/config/admin/{key}` | getConfigAsAdmin | Config |
-| GET | `/api/v1/feedbacks` | getFeedbacks | Feedbacks |
-| POST | `/api/v1/feedbacks` | createFeedback | Feedbacks |
-| GET | `/api/v1/feedbacks/{id}` | getFeedback | Feedbacks |
 | GET | `/api/v1/orders` | getOrders | Orders |
 | POST | `/api/v1/orders` | createOrder | Orders |
 | GET | `/api/v1/orders/{id}` | getOrder | Orders |
@@ -182,8 +142,6 @@
 | GET | `/api/v1/admin/question-reports` | adminGetQuestionReports | Admin Question Reports |
 | GET | `/api/v1/admin/question-reports/{id}` | adminGetQuestionReport | Admin Question Reports |
 | PATCH | `/api/v1/admin/question-reports/{id}` | adminUpdateQuestionReport | Admin Question Reports |
-| GET | `/api/v1/me/consents` | getMyConsents | Consents |
-| POST | `/api/v1/me/consents` | agreeConsent | Consents |
 | GET | `/api/v1/ai/conversations` | getAiConversations | AI |
 | POST | `/api/v1/ai/conversations` | createAiConversation | AI |
 | GET | `/api/v1/ai/conversations/{id}/messages` | getAiMessages | AI |
@@ -196,8 +154,6 @@
 | POST | `/api/v1/ai/messages/{id}/report` | reportAiMessage | AI |
 | GET | `/api/v1/ai/quota` | getAiQuota | AI |
 | GET | `/api/v1/admin/ai/usage` | adminGetAiUsage | Admin AI |
-| GET | `/api/v1/app-profile` | getAppProfile | App Profile |
-| PUT | `/api/v1/admin/app-profile` | adminUpdateAppProfile | Admin App Profile |
 | POST | `/api/v1/game/auth/login` | gameLogin | Game Auth |
 | POST | `/api/v1/game/auth/refresh` | gameRefreshToken | Game Auth |
 
@@ -210,9 +166,10 @@
 - 认证邮件（注册、找回密码、改邮箱）在事务提交后异步发送，SMTP 失败不影响接口响应；nestjs 同步发送，失败时接口返回 500。入队超时（2 秒）或失败时在 API 进程内后台直接经 SMTP 发送。
 - 队列使用 Taskiq + Redis Stream（键 `taskiq:<queue>`），与 nestjs 的 BullMQ 队列不互通，两个后端的 worker 不能互相消费任务。
 - worker 崩溃后未确认的消息由其它 worker 在空闲 10 分钟后经 XAUTOCLAIM 回收，回收只在该 worker 读到新消息后进行（taskiq-redis `listen` 的行为）。
-- notification 队列的并发 5 / 限速 10 条每秒尚未实现，M4 接入 NotificationsService 时处理。
+- notification 队列的并发 5 / 限速 10 条每秒在每个 worker 进程内以信号量 + 滑动窗口计数实现，按进程分别计算；nestjs BullMQ 的限速为跨 worker 的全局计数，本服务启用多个 worker 进程时总速率上限为 10 条每秒 × 进程数。重试的退避等待不占用并发与限速名额。
 - worker 的 `queue_jobs_total` 须与 API 共用同一 `PROMETHEUS_MULTIPROC_DIR` 才会出现在 API 的 `/metrics`。
 - 限流算法不同：nestjs 为固定窗口计数（`throttle:{sha}:default` INCR，超限写 `throttle:{sha}:default:block`），本服务为 GCRA，状态存于 `throttle:{sha}:default:gcra`（哈希输入相同）。两个后端共用 Redis 时各自计数、互不影响，同一客户端在两边的限额分别计算。
 - Redis 未启用或故障时限流回落进程内存，限额按 worker 进程独立计算；内存表满 10000 个键时先清除已过期的键，再淘汰最早过期的键。
 - 健康检查 `memory_heap` 比较的是进程 RSS，nestjs 比较的是 V8 `heapUsed`；阈值同为 300MB，RSS 包含解释器与原生库内存，通常大于同等负载下的 heapUsed，因此可能更早判定为 down。
 - S3 驱动上传对象的 `ContentType` 按文件扩展名设置（未知时 `application/octet-stream`）；nestjs multer-s3 使用 `AUTO_CONTENT_TYPE` 按文件内容嗅探。只影响存储对象的元数据，不影响 API 响应。
+- 本期没有 questions / papers 模块：收藏（新增、切换、检查）目标为题目时返回 `questionNotAccessible`，为试卷时返回 `paperNotFound`；收藏列表中这两类收藏的 `targetOffline` 恒为 `true`。与 nestjs 共用数据库时，nestjs 已创建的题目 / 试卷收藏在本服务中显示为已下架。

@@ -70,6 +70,11 @@ migrate: ## 执行数据库迁移（DB_SCHEMA_OWNER=external 时跳过）
 seed: ## 写入种子数据（角色、权限、行政区划、配置、初始账号）
 	$(RUN) app seed
 
+.PHONY: generate-resource
+generate-resource: ## 生成 CRUD 模块骨架（make generate-resource name=Product）
+	@test -n "$(name)" || { echo "用法：make generate-resource name=<Name>"; exit 1; }
+	$(RUN) app generate resource "$(name)"
+
 .PHONY: infra
 infra: ## 启动本地 Postgres / Redis / Mailpit（docker compose）
 	docker compose -f docker/infra.compose.yaml up -d --wait

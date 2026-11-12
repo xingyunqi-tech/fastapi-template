@@ -131,11 +131,13 @@ def _fetch_error(error: httpx.HTTPError) -> str:
 
 
 async def wechat_api(key: str, context: AppContext) -> IndicatorResult:
-    settings = context.settings.health
-    if not settings.wechat_app_id or not settings.wechat_app_secret:
+    settings = context.settings.wechat
+    if not settings.app_id or not settings.app_secret.get_secret_value():
         return up(key, {"message": "WeChat not configured, skipped"})
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT_S, transport=context.http_transport
+        ) as client:
             response = await client.get(WECHAT_API_URL)
     except httpx.HTTPError as error:
         return down(key, {"message": _fetch_error(error)})
@@ -145,10 +147,12 @@ async def wechat_api(key: str, context: AppContext) -> IndicatorResult:
 
 
 async def alipay_api(key: str, context: AppContext) -> IndicatorResult:
-    if not context.settings.health.alipay_app_id:
+    if not context.settings.alipay.app_id:
         return up(key, {"message": "Alipay not configured, skipped"})
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT_S, transport=context.http_transport
+        ) as client:
             response = await client.head(ALIPAY_GATEWAY_URL)
     except httpx.HTTPError as error:
         return down(key, {"message": _fetch_error(error)})

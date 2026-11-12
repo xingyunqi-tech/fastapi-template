@@ -82,6 +82,39 @@ class UserRepository:
     async def find_by_phone(self, phone: str | None) -> UserModel | None:
         return await self._one(UserModel.phone == phone) if phone else None
 
+    async def find_by_wechat_open_id(self, open_id: str | None) -> UserModel | None:
+        return await self._one(UserModel.wechat_open_id == open_id) if open_id else None
+
+    async def find_by_alipay_open_id(self, open_id: str | None) -> UserModel | None:
+        return await self._one(UserModel.alipay_open_id == open_id) if open_id else None
+
+    async def bind_phone_if_empty(self, user_id: int, phone: str) -> bool:
+        result = await self.session.execute(
+            update(UserModel)
+            .where(UserModel.id == user_id, UserModel.phone.is_(None), _active())
+            .values(phone=phone, updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        self.session.expire_all()
+        return affected_rows(result) > 0
+
+    async def bind_wechat_if_empty(
+        self, user_id: int, open_id: str | None, union_id: str | None = None
+    ) -> bool:
+        values: dict[str, Any] = {}
+        if open_id is not None:
+            values["wechat_open_id"] = open_id
+        if union_id:
+            values["wechat_union_id"] = union_id
+        result = await self.session.execute(
+            update(UserModel)
+            .where(UserModel.id == user_id, UserModel.wechat_open_id.is_(None), _active())
+            .values(**values, updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        self.session.expire_all()
+        return affected_rows(result) > 0
+
     async def find_by_ids(self, ids: Sequence[int]) -> list[UserModel]:
         statement = _with_relations(select(UserModel).where(_active(), UserModel.id.in_(ids)))
         return list((await self.session.scalars(statement)).unique())

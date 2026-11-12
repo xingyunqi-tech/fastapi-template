@@ -1,0 +1,25 @@
+from datetime import datetime
+
+from sqlalchemy import Index, Integer, PrimaryKeyConstraint, String, text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.infrastructure.database.base import Base, created_at, timestamp, updated_at
+
+
+class {{ class_name }}Model(Base):
+    __tablename__ = "{{ table }}"
+
+    id: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = created_at()
+    updated_at: Mapped[datetime] = updated_at()
+    deleted_at: Mapped[datetime | None] = timestamp("deletedAt", nullable=True)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="PK_{{ table }}_id"),
+        Index(
+            "IDX_{{ table }}_deletedAt",
+            "deletedAt",
+            postgresql_where=text('"deletedAt" IS NULL'),
+        ),
+    )

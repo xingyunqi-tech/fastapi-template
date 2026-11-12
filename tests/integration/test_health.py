@@ -53,13 +53,9 @@ async def broken_database() -> AsyncIterator[Database]:
     await database.dispose()
 
 
-def mock_http(monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], Any]) -> None:
-    real = httpx.AsyncClient
-
-    def client(**kwargs: Any) -> httpx.AsyncClient:
-        return real(transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", client)
+def mock_http(app: FastAPI, handler: Callable[[httpx.Request], Any]) -> FastAPI:
+    app.state.context.http_transport = httpx.MockTransport(handler)
+    return app
 
 
 def bearer(token: str) -> dict[str, str]:
@@ -167,17 +163,16 @@ class TestFullCheck:
         assert response.status_code == 503
         assert response.json() == UNAVAILABLE
 
-    async def test_payment_apis_probed_when_configured(
-        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_payment_apis_probed_when_configured(self, make_app: AppFactory) -> None:
         seen: list[tuple[str, str]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append((request.method, str(request.url)))
             return httpx.Response(405 if request.method == "HEAD" else 200)
 
-        mock_http(monkeypatch, handler)
-        app = make_app(WECHAT_APP_ID="wx", WECHAT_APP_SECRET="secret", ALIPAY_APP_ID="ali")
+        app = mock_http(
+            make_app(WECHAT_APP_ID="wx", WECHAT_APP_SECRET="secret", ALIPAY_APP_ID="ali"), handler
+        )
         async with client_for(app) as client:
             response = await client.get("/api/v1/health")
 
@@ -190,11 +185,9 @@ class TestFullCheck:
             ("HEAD", indicators.ALIPAY_GATEWAY_URL),
         ]
 
-    async def test_payment_api_failure_returns_503(
-        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mock_http(monkeypatch, lambda request: httpx.Response(500))
-        async with client_for(make_app(ALIPAY_APP_ID="ali")) as client:
+    async def test_payment_api_failure_returns_503(self, make_app: AppFactory) -> None:
+        app = mock_http(make_app(ALIPAY_APP_ID="ali"), lambda request: httpx.Response(500))
+        async with client_for(app) as client:
             response = await client.get("/api/v1/health")
 
         assert response.status_code == 503

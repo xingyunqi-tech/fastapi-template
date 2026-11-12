@@ -3,27 +3,29 @@ from functools import cache
 
 from pydantic import ValidationError
 
+from app.config.alipay import AlipaySettings
 from app.config.app import AppSettings, Environment
 from app.config.auth import AuthSettings, PasswordHasher
 from app.config.base import SettingsGroup
 from app.config.database import DatabaseSettings, SchemaOwner
 from app.config.file import FileDriver, FileSettings
-from app.config.health import HealthSettings
 from app.config.log import LogLevel, LogSettings
 from app.config.mail import MailSettings
 from app.config.metrics import MetricsSettings
 from app.config.observability import ObservabilitySettings
 from app.config.redis import RedisSettings
+from app.config.sms import SmsSettings
 from app.config.throttler import ThrottlerSettings
+from app.config.wechat import WechatSettings
 
 __all__ = [
+    "AlipaySettings",
     "AppSettings",
     "AuthSettings",
     "DatabaseSettings",
     "Environment",
     "FileDriver",
     "FileSettings",
-    "HealthSettings",
     "LogLevel",
     "LogSettings",
     "MailSettings",
@@ -34,7 +36,9 @@ __all__ = [
     "SchemaOwner",
     "Settings",
     "SettingsError",
+    "SmsSettings",
     "ThrottlerSettings",
+    "WechatSettings",
     "get_settings",
 ]
 
@@ -73,7 +77,9 @@ class Settings:
     metrics: MetricsSettings
     log: LogSettings
     observability: ObservabilitySettings
-    health: HealthSettings
+    sms: SmsSettings
+    wechat: WechatSettings
+    alipay: AlipaySettings
 
     @classmethod
     def load(cls) -> Settings:
@@ -88,7 +94,9 @@ class Settings:
         metrics = loader.load(MetricsSettings)
         log = loader.load(LogSettings)
         observability = loader.load(ObservabilitySettings)
-        health = loader.load(HealthSettings)
+        sms = loader.load(SmsSettings)
+        wechat = loader.load(WechatSettings)
+        alipay = loader.load(AlipaySettings)
         if app is not None and app.is_production:
             if auth is not None:
                 loader.errors.extend(auth.validate_for_production())
@@ -108,7 +116,9 @@ class Settings:
             or metrics is None
             or log is None
             or observability is None
-            or health is None
+            or sms is None
+            or wechat is None
+            or alipay is None
         ):
             raise SettingsError(loader.errors)
         return cls(
@@ -122,7 +132,9 @@ class Settings:
             metrics=metrics,
             log=log,
             observability=observability,
-            health=health,
+            sms=sms,
+            wechat=wechat,
+            alipay=alipay,
         )
 
 

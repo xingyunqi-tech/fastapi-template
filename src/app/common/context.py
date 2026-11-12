@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import Depends, Request
+lazy import httpx
 lazy from redis.asyncio import Redis
 
 from app.common.security import Passwords
@@ -25,6 +26,8 @@ class AppContext:
     mailer: Mailer
     redis: Redis | None = None
     queue: TaskQueue | None = None
+    http_transport: httpx.AsyncBaseTransport | None = None
+    """调用短信、微信、支付宝等外部接口的 httpx transport，为 None 时走网络。"""
     locks: LockService = field(init=False)
 
     def __post_init__(self) -> None:

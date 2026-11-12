@@ -5,17 +5,19 @@ lazy from collections.abc import Iterator
 import pytest
 
 from app.config import (
+    AlipaySettings,
     AppSettings,
     AuthSettings,
     DatabaseSettings,
     FileSettings,
-    HealthSettings,
     LogSettings,
     MailSettings,
     MetricsSettings,
     ObservabilitySettings,
     RedisSettings,
+    SmsSettings,
     ThrottlerSettings,
+    WechatSettings,
     get_settings,
 )
 from app.config.base import env_names
@@ -35,8 +37,10 @@ SETTINGS_ENV_VARS = set().union(
             MetricsSettings,
             LogSettings,
             ObservabilitySettings,
-            HealthSettings,
             FileSettings,
+            SmsSettings,
+            WechatSettings,
+            AlipaySettings,
         )
     )
 )

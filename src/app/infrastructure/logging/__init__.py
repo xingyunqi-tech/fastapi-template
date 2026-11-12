@@ -27,6 +27,8 @@ STDLIB_LEVELS: Final = {
     LogLevel.TRACE: 5,
     LogLevel.SILENT: SILENT_LEVEL,
 }
+QUIET_LOGGERS: Final = ("httpx", "httpcore", "urllib3")
+
 _HANDLER_MARK: Final = "_app_structlog_handler"
 _user_id: ContextVar[str | None] = ContextVar("log_user_id", default=None)
 
@@ -145,6 +147,8 @@ def configure_logging(settings: Settings) -> None:
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(level)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

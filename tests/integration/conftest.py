@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import asyncpg
+import httpx as httpx_lib
 import httpx2 as httpx
 import pytest
 from alembic import command
@@ -139,8 +140,13 @@ def _build_app(database: Database, *, redis: Redis | None = None) -> FastAPI:
         passwords=app.state.context.passwords,
         mailer=LoggingMailer(),
         redis=redis,
+        http_transport=httpx_lib.MockTransport(_reject_external_request),
     )
     return app
+
+
+def _reject_external_request(request: httpx_lib.Request) -> httpx_lib.Response:
+    raise AssertionError(f"测试不允许访问外部网络：{request.method} {request.url}")
 
 
 @pytest.fixture
