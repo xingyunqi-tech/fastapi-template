@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.factory import create_app
+from tests.conftest import use_production
 
 REPO_BASELINE = Path(__file__).resolve().parents[2] / "openapi" / "nestjs-baseline.json"
 
@@ -48,7 +49,7 @@ def test_fastapi_generated_openapi_is_not_exposed(client: TestClient) -> None:
 
 
 def test_docs_disabled_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_ENV", "production")
+    use_production(monkeypatch)
     client = TestClient(create_app(Settings.load()))
 
     assert client.get("/docs-json").status_code == 404

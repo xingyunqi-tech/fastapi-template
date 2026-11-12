@@ -1,8 +1,10 @@
 """请求体、查询参数、路径参数的解析与校验（nestjs body-parser、ValidationPipe、ParseIdPipe）。"""
 
+import json
 import re
+from collections.abc import Awaitable, Callable
 from functools import cache
-from typing import TYPE_CHECKING, Annotated, Any, Final
+from typing import Annotated, Any, Final, get_args, get_origin
 from urllib.parse import unquote
 
 from fastapi import Depends, Path, Request
@@ -14,9 +16,6 @@ from app.common.routing import decode_uri_component
 from app.common.validation import metadata
 from app.common.validation.engine import Validator, run_pipe
 from app.common.validation.js import JsValue, stringify
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
 QUERY_MAX_KEYS: Final = 1000
 _ID_RE: Final = re.compile(r"\d+", re.ASCII)
@@ -69,8 +68,38 @@ def _query_object(request: Request) -> dict[str, Any]:
     return parse_query_string(request.scope.get("query_string", b"").decode("latin-1"))
 
 
+def _nested_model(annotation: Any) -> tuple[type[BaseModel] | None, bool]:
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate, False
+        origin = get_origin(candidate)
+        if origin is list:
+            inner = get_args(candidate)[0] if get_args(candidate) else None
+            nested, _ = _nested_model(inner)
+            if nested is not None:
+                return nested, True
+    return None, False
+
+
+def construct[M: BaseModel](model: type[M], data: Any) -> M:
+    """以已校验的数据构造模型，不做二次类型校验；未提供的字段不进入 model_fields_set。"""
+    values: dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        key = field.alias or name
+        if not isinstance(data, dict) or key not in data:
+            continue
+        raw = data[key]
+        nested, many = _nested_model(field.annotation)
+        if nested is not None and many and isinstance(raw, list):
+            raw = [construct(nested, item) if isinstance(item, dict) else item for item in raw]
+        elif nested is not None and isinstance(raw, dict):
+            raw = construct(nested, raw)
+        values[name] = raw
+    return model.model_construct(_fields_set=set(values), **values)
+
+
 def _to_model[M: BaseModel](model: type[M], value: JsValue) -> M:
-    return model.model_validate_json(stringify(value), by_alias=True, by_name=False)
+    return construct(model, json.loads(stringify(value)))
 
 
 def validated_body[M: BaseModel](model: type[M]) -> Callable[[Request], Awaitable[M]]:

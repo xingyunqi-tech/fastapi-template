@@ -20,6 +20,7 @@ from app.common.params import Body, IdParam, parse_query_string
 from app.common.routing import ApiRouter, Auth
 from app.config import Settings
 from app.factory import create_app
+from tests.conftest import use_production
 
 
 class AuthEmailLoginDto(BaseModel):
@@ -559,7 +560,7 @@ class TestCors:
         assert response.headers["x-request-id"]
 
     def test_production_whitelist(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("APP_ENV", "production")
+        use_production(monkeypatch)
         monkeypatch.setenv("FRONTEND_DOMAIN", "https://a.com, https://b.com")
         client = TestClient(create_app(Settings.load()))
 

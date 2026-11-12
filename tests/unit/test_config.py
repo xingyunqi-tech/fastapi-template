@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Environment, Settings, SettingsError
+from tests.conftest import use_production
 
 REPO_BASELINE = Path(__file__).resolve().parents[2] / "openapi" / "nestjs-baseline.json"
 
@@ -45,7 +46,10 @@ def test_port_falls_back_to_port_variable(monkeypatch: pytest.MonkeyPatch) -> No
 def test_swagger_enabled(
     monkeypatch: pytest.MonkeyPatch, env: str, flag: str | None, expected: bool
 ) -> None:
-    monkeypatch.setenv("APP_ENV", env)
+    if env == "production":
+        use_production(monkeypatch)
+    else:
+        monkeypatch.setenv("APP_ENV", env)
     if flag is not None:
         monkeypatch.setenv("SWAGGER_ENABLED", flag)
 

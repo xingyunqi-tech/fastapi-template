@@ -9,6 +9,8 @@ services:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: secret
       POSTGRES_DB: api
+    ports:
+      - '127.0.0.1::5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U root -d api']
       interval: 2s
@@ -23,18 +25,28 @@ services:
       timeout: 5s
       retries: 30
 
+  maildev:
+    image: axllent/mailpit:v1.27
+
   api:
     image: ${NESTJS_IMAGE:?NESTJS_IMAGE is required}
+    command:
+      - bash
+      - -c
+      - >-
+        node ./node_modules/typeorm/cli.js --dataSource=dist/infrastructure/database/data-source.js migration:run
+        && ENV_MODE=dev node ./dist/infrastructure/database/seeds/relational/run-seed.js
+        && exec node --enable-source-maps dist/main
     env_file:
       - ${NESTJS_ENV_FILE:?NESTJS_ENV_FILE is required}
     environment:
       NODE_ENV: development
-      ENV_MODE: prod
-      RUN_SEEDS: 'true'
       FILE_DRIVER: local
       SWAGGER_ENABLED: 'true'
       DATABASE_HOST: postgres
       REDIS_HOST: redis
+      MAIL_HOST: maildev
+      MAIL_PORT: '1025'
     ports:
       - '${NESTJS_PORT:-3001}:3000'
     depends_on:
@@ -42,3 +54,5 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      maildev:
+        condition: service_started

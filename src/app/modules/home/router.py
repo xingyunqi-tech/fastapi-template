@@ -4,9 +4,9 @@ import sys
 import time
 from datetime import UTC, datetime
 
+from fastapi import Request
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-lazy from fastapi import Request
 
 from app.common.routing import ApiRouter, Auth
 

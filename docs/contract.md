@@ -2,38 +2,18 @@
 
 本文件由 `tests/contract/test_openapi_contract.py` 生成（`UPDATE_CONTRACT_DOC=1 make test-contract`），与实际不符时测试失败。
 
-## 基线中未实现的接口（217 个）
+## 基线中未实现的接口（197 个）
 
 请求这些接口返回 404 信封 `Cannot <METHOD> <path>`。
 
 | 方法 | 路径 | operationId | tag |
 |---|---|---|---|
-| GET | `/api/v1/users` | getUsers | Users |
-| POST | `/api/v1/users` | createUser | Users |
-| GET | `/api/v1/users/{id}` | getUser | Users |
-| PUT | `/api/v1/users/{id}` | updateUser | Users |
-| DELETE | `/api/v1/users/{id}` | deleteUser | Users |
 | POST | `/api/v1/files/upload` | uploadFile | Files |
-| POST | `/api/v1/auth/email/login` | loginWithEmail | Auth |
-| POST | `/api/v1/auth/email/register` | registerWithEmail | Auth |
-| POST | `/api/v1/auth/email/confirm` | confirmEmail | Auth |
-| POST | `/api/v1/auth/email/confirm/new` | confirmNewEmail | Auth |
-| POST | `/api/v1/auth/forgot/password` | forgotPassword | Auth |
-| POST | `/api/v1/auth/reset/password` | resetPassword | Auth |
-| GET | `/api/v1/auth/me` | getCurrentUser | Auth |
-| PUT | `/api/v1/auth/me` | updateCurrentUser | Auth |
-| DELETE | `/api/v1/auth/me` | deleteCurrentUser | Auth |
-| POST | `/api/v1/auth/refresh` | refreshToken | Auth |
-| GET | `/api/v1/auth/sessions` | getMySessions | Auth |
-| DELETE | `/api/v1/auth/sessions/{id}` | revokeMySession | Auth |
-| POST | `/api/v1/auth/sessions/revoke-others` | revokeOtherSessions | Auth |
-| POST | `/api/v1/auth/logout` | logout | Auth |
 | POST | `/api/v1/auth/phone/send-code` | sendSmsCode | Auth |
 | POST | `/api/v1/auth/phone/login` | loginWithPhone | Auth |
 | POST | `/api/v1/auth/phone/sms-login` | loginWithSms | Auth |
 | POST | `/api/v1/auth/phone/register` | registerWithPhone | Auth |
 | POST | `/api/v1/auth/phone/reset-password` | resetPasswordByPhone | Auth |
-| PUT | `/api/v1/auth/password` | changePassword | Auth |
 | POST | `/api/v1/auth/wechat/login` | loginWithWechat | Auth |
 | POST | `/api/v1/auth/wechat/phone-login` | loginWithWechatPhone | Auth |
 | POST | `/api/v1/auth/alipay/login` | loginWithAlipay | Auth |

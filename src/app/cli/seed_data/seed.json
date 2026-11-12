@@ -1,0 +1,550 @@
+{
+  "roles": [
+    {
+      "id": 1,
+      "name": "Admin"
+    },
+    {
+      "id": 2,
+      "name": "User"
+    },
+    {
+      "id": 3,
+      "name": "Editor"
+    },
+    {
+      "id": 4,
+      "name": "Reviewer"
+    }
+  ],
+  "statuses": [
+    {
+      "id": 1,
+      "name": "Active"
+    },
+    {
+      "id": 2,
+      "name": "Inactive"
+    }
+  ],
+  "permissions": [
+    {
+      "id": "address:create",
+      "name": "Create Address",
+      "description": "Create new addresses",
+      "resource": "address",
+      "action": "create"
+    },
+    {
+      "id": "address:delete",
+      "name": "Delete Address",
+      "description": "Delete addresses",
+      "resource": "address",
+      "action": "delete"
+    },
+    {
+      "id": "address:read",
+      "name": "Read Address",
+      "description": "View address details",
+      "resource": "address",
+      "action": "read"
+    },
+    {
+      "id": "address:update",
+      "name": "Update Address",
+      "description": "Update address information",
+      "resource": "address",
+      "action": "update"
+    },
+    {
+      "id": "ai:admin",
+      "name": "AI Admin",
+      "description": "View AI usage and cost",
+      "resource": "ai",
+      "action": "admin"
+    },
+    {
+      "id": "ai:chat",
+      "name": "AI Chat",
+      "description": "Chat with the AI tutor",
+      "resource": "ai",
+      "action": "chat"
+    },
+    {
+      "id": "ai:generate",
+      "name": "AI Generate",
+      "description": "Generate questions with AI",
+      "resource": "ai",
+      "action": "generate"
+    },
+    {
+      "id": "ai:grading",
+      "name": "AI Grading",
+      "description": "Submit answers for AI grading",
+      "resource": "ai",
+      "action": "grading"
+    },
+    {
+      "id": "audit:list",
+      "name": "List Audit",
+      "description": "View audit logs",
+      "resource": "audit",
+      "action": "list"
+    },
+    {
+      "id": "audit:read",
+      "name": "Read Audit",
+      "description": "View audit log details",
+      "resource": "audit",
+      "action": "read"
+    },
+    {
+      "id": "content:manage",
+      "name": "Manage Content",
+      "description": "Manage exams, subjects, knowledge points, questions, papers and imports",
+      "resource": "content",
+      "action": "manage"
+    },
+    {
+      "id": "content:review",
+      "name": "Review Content",
+      "description": "Review, publish and take down questions; handle errata and reports",
+      "resource": "content",
+      "action": "review"
+    },
+    {
+      "id": "favorite:create",
+      "name": "Create Favorite",
+      "description": "Add to favorites",
+      "resource": "favorite",
+      "action": "create"
+    },
+    {
+      "id": "favorite:delete",
+      "name": "Delete Favorite",
+      "description": "Remove from favorites",
+      "resource": "favorite",
+      "action": "delete"
+    },
+    {
+      "id": "favorite:read",
+      "name": "Read Favorite",
+      "description": "View favorites",
+      "resource": "favorite",
+      "action": "read"
+    },
+    {
+      "id": "feedback:create",
+      "name": "Create Feedback",
+      "description": "Submit feedback",
+      "resource": "feedback",
+      "action": "create"
+    },
+    {
+      "id": "feedback:list",
+      "name": "List Feedback",
+      "description": "View feedback list",
+      "resource": "feedback",
+      "action": "list"
+    },
+    {
+      "id": "feedback:read",
+      "name": "Read Feedback",
+      "description": "View feedback details",
+      "resource": "feedback",
+      "action": "read"
+    },
+    {
+      "id": "file:delete",
+      "name": "Delete File",
+      "description": "Delete files",
+      "resource": "file",
+      "action": "delete"
+    },
+    {
+      "id": "file:read",
+      "name": "Read File",
+      "description": "Download files",
+      "resource": "file",
+      "action": "read"
+    },
+    {
+      "id": "file:upload",
+      "name": "Upload File",
+      "description": "Upload files",
+      "resource": "file",
+      "action": "upload"
+    },
+    {
+      "id": "payment:refund",
+      "name": "Refund Payment",
+      "description": "Refund paid orders",
+      "resource": "payment",
+      "action": "refund"
+    },
+    {
+      "id": "practice:write",
+      "name": "Write Practice",
+      "description": "Create practice sessions and submit answers",
+      "resource": "practice",
+      "action": "write"
+    },
+    {
+      "id": "session:delete",
+      "name": "Delete Session",
+      "description": "Terminate sessions",
+      "resource": "session",
+      "action": "delete"
+    },
+    {
+      "id": "session:read",
+      "name": "Read Session",
+      "description": "View session details",
+      "resource": "session",
+      "action": "read"
+    },
+    {
+      "id": "system:config",
+      "name": "System Config",
+      "description": "Manage system configuration",
+      "resource": "system",
+      "action": "config"
+    },
+    {
+      "id": "system:metrics",
+      "name": "System Metrics",
+      "description": "View system metrics",
+      "resource": "system",
+      "action": "metrics"
+    },
+    {
+      "id": "user:create",
+      "name": "Create User",
+      "description": "Create new users",
+      "resource": "user",
+      "action": "create"
+    },
+    {
+      "id": "user:delete",
+      "name": "Delete User",
+      "description": "Delete users",
+      "resource": "user",
+      "action": "delete"
+    },
+    {
+      "id": "user:list",
+      "name": "List Users",
+      "description": "View user list",
+      "resource": "user",
+      "action": "list"
+    },
+    {
+      "id": "user:read",
+      "name": "Read User",
+      "description": "View user details",
+      "resource": "user",
+      "action": "read"
+    },
+    {
+      "id": "user:update",
+      "name": "Update User",
+      "description": "Update user information",
+      "resource": "user",
+      "action": "update"
+    }
+  ],
+  "rolePermissions": [
+    {
+      "roleId": 1,
+      "permissionId": "address:create"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "address:delete"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "address:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "address:update"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "ai:admin"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "ai:chat"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "ai:generate"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "ai:grading"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "audit:list"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "audit:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "content:manage"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "content:review"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "favorite:create"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "favorite:delete"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "favorite:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "feedback:create"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "feedback:list"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "feedback:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "file:delete"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "file:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "file:upload"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "payment:refund"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "practice:write"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "session:delete"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "session:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "system:config"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "system:metrics"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "user:create"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "user:delete"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "user:list"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "user:read"
+    },
+    {
+      "roleId": 1,
+      "permissionId": "user:update"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "address:create"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "address:delete"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "address:read"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "address:update"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "ai:chat"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "ai:grading"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "favorite:create"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "favorite:delete"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "favorite:read"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "feedback:create"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "feedback:read"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "file:read"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "file:upload"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "practice:write"
+    },
+    {
+      "roleId": 2,
+      "permissionId": "session:read"
+    },
+    {
+      "roleId": 3,
+      "permissionId": "ai:generate"
+    },
+    {
+      "roleId": 3,
+      "permissionId": "content:manage"
+    },
+    {
+      "roleId": 3,
+      "permissionId": "file:read"
+    },
+    {
+      "roleId": 3,
+      "permissionId": "file:upload"
+    },
+    {
+      "roleId": 4,
+      "permissionId": "content:manage"
+    },
+    {
+      "roleId": 4,
+      "permissionId": "content:review"
+    },
+    {
+      "roleId": 4,
+      "permissionId": "file:read"
+    },
+    {
+      "roleId": 4,
+      "permissionId": "file:upload"
+    }
+  ],
+  "config": [
+    {
+      "key": "ai.enabled",
+      "value": {
+        "value": true
+      },
+      "isPublic": true
+    },
+    {
+      "key": "ai.paperGradingLimit",
+      "value": {
+        "value": 5
+      },
+      "isPublic": false
+    },
+    {
+      "key": "ai.quota.chat",
+      "value": {
+        "value": 20
+      },
+      "isPublic": true
+    },
+    {
+      "key": "ai.quota.grading",
+      "value": {
+        "value": 3
+      },
+      "isPublic": true
+    },
+    {
+      "key": "ai.ratePerMinute",
+      "value": {
+        "value": 10
+      },
+      "isPublic": false
+    },
+    {
+      "key": "paper.generateDailyLimit",
+      "value": {
+        "value": 5
+      },
+      "isPublic": true
+    },
+    {
+      "key": "practice.dailySetSize",
+      "value": {
+        "value": 10
+      },
+      "isPublic": false
+    },
+    {
+      "key": "practice.offlineSyncWindowMin",
+      "value": {
+        "value": 5
+      },
+      "isPublic": false
+    },
+    {
+      "key": "practice.trialSize",
+      "value": {
+        "value": 3
+      },
+      "isPublic": true
+    },
+    {
+      "key": "wrongBook.masterThreshold",
+      "value": {
+        "value": 3
+      },
+      "isPublic": true
+    }
+  ]
+}

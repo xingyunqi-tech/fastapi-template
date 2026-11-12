@@ -242,16 +242,21 @@ class UniqueViolation:
 
 
 def find_unique_violation(exc: BaseException) -> UniqueViolation | None:
-    """被抛出的异常本身（或其 SQLAlchemy `orig`）为 PostgreSQL 23505 时返回约束名。"""
+    """沿 `orig` / `__cause__` 链查找 PostgreSQL 23505，返回链上首个可得的约束名。"""
     current: BaseException | None = exc
-    while current is not None:
+    found = False
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
         code = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
         if code == PG_UNIQUE_VIOLATION:
+            found = True
             constraint = getattr(current, "constraint_name", None)
             diag = getattr(current, "diag", None)
             if constraint is None and diag is not None:
                 constraint = getattr(diag, "constraint_name", None)
-            return UniqueViolation(constraint)
+            if constraint is not None:
+                return UniqueViolation(constraint)
         orig = getattr(current, "orig", None)
-        current = orig if isinstance(orig, BaseException) and orig is not current else None
-    return None
+        current = orig if isinstance(orig, BaseException) else current.__cause__
+    return UniqueViolation(None) if found else None

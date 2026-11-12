@@ -4,17 +4,40 @@ lazy from collections.abc import Iterator
 
 import pytest
 
-from app.config import AppSettings, get_settings
+from app.config import (
+    AppSettings,
+    AuthSettings,
+    DatabaseSettings,
+    MailSettings,
+    RedisSettings,
+    get_settings,
+)
 from app.config.base import env_names
 
 TESTS_ROOT = Path(__file__).parent
 DIRECTORY_MARKERS = {"unit", "integration", "e2e", "contract", "parity"}
-SETTINGS_ENV_VARS = env_names(AppSettings)
+SETTINGS_ENV_VARS = set().union(
+    *(
+        env_names(group)
+        for group in (AppSettings, AuthSettings, DatabaseSettings, RedisSettings, MailSettings)
+    )
+)
+TEST_ENV = {
+    "AUTH_JWT_SECRET": "test-access-secret-0123456789abcdef",
+    "AUTH_JWT_TOKEN_EXPIRES_IN": "15m",
+    "AUTH_REFRESH_SECRET": "test-refresh-secret-0123456789abcdef",
+    "AUTH_REFRESH_TOKEN_EXPIRES_IN": "3650d",
+    "AUTH_FORGOT_SECRET": "test-forgot-secret-0123456789abcdef",
+    "AUTH_FORGOT_TOKEN_EXPIRES_IN": "30m",
+    "AUTH_CONFIRM_EMAIL_SECRET": "test-confirm-secret-0123456789abcdef",
+    "AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN": "1d",
+}
 
 
 def pytest_configure(config: pytest.Config) -> None:
     for name in SETTINGS_ENV_VARS:
         os.environ.pop(name, None)
+    os.environ.update(TEST_ENV)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -29,7 +52,14 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
     """隔离进程环境变量与工作目录下的 .env。"""
     for name in SETTINGS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    for name, value in TEST_ENV.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+def use_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REDIS_ENABLED", "true")

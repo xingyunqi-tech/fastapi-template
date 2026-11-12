@@ -6,6 +6,7 @@ import re
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
+from fastapi import Depends, FastAPI
 from fastapi.datastructures import Default
 from fastapi.routing import APIRoute, APIRouter
 from pydantic import BaseModel
@@ -19,7 +20,6 @@ from app.common.responses import JsonResponse, envelope, is_api_response
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from fastapi import FastAPI
     from starlette.types import Receive, Scope, Send
 
 API_META_KEY: Final = "x-api"
@@ -34,6 +34,38 @@ class Auth(StrEnum):
     OPTIONAL_JWT = "optional-jwt"
     REFRESH_JWT = "refresh-jwt"
     MONITORING = "monitoring"
+
+
+AUTH_DEPENDENCIES: dict[Auth, Callable[..., Any]] = {}
+PERMISSION_GUARDS: list[Callable[..., Callable[..., Any]]] = []
+
+
+def register_auth(
+    dependencies: dict[Auth, Callable[..., Any]],
+    permission_guard: Callable[..., Callable[..., Any]],
+) -> None:
+    AUTH_DEPENDENCIES.update(dependencies)
+    PERMISSION_GUARDS[:] = [permission_guard]
+
+
+def _guards(
+    auth: Auth, rbac: bool, permissions: Sequence[str], any_permissions: Sequence[str]
+) -> list[Any]:
+    dependencies: list[Any] = []
+    if auth is not Auth.PUBLIC:
+        dependency = AUTH_DEPENDENCIES.get(auth)
+        if dependency is None:
+            raise RuntimeError(f"鉴权方式 {auth} 未注册实现")
+        dependencies.append(Depends(dependency))
+    if rbac or permissions or any_permissions:
+        if not PERMISSION_GUARDS:
+            raise RuntimeError("权限守卫未注册实现")
+        factory = PERMISSION_GUARDS[0]
+        if any_permissions:
+            dependencies.append(Depends(factory(list(any_permissions), any_of=True)))
+        else:
+            dependencies.append(Depends(factory(list(permissions))))
+    return dependencies
 
 
 def to_plain(result: Any) -> Any:
@@ -127,9 +159,12 @@ class ApiRoute(APIRoute):
 
 
 class ApiRouter(APIRouter):
-    def __init__(self, **kwargs: Any) -> None:
+    """`rbac=True` 时所有路由经过权限守卫（对应 controller 级 PermissionsGuard）。"""
+
+    def __init__(self, *, rbac: bool = False, **kwargs: Any) -> None:
         kwargs.setdefault("route_class", ApiRoute)
         super().__init__(**kwargs)
+        self.rbac = rbac
 
     def endpoint(
         self,
@@ -143,12 +178,15 @@ class ApiRouter(APIRouter):
         response_model: Any = INFER_RESPONSE_MODEL,
         summary: str | None = None,
         include_in_schema: bool = True,
+        permissions: Sequence[str] = (),
+        any_permissions: Sequence[str] = (),
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             self.add_api_route(
                 path,
                 fn,
                 methods=[method],
+                dependencies=_guards(auth, self.rbac, permissions, any_permissions),
                 operation_id=operation_id,
                 status_code=status_code,
                 response_model=response_model,

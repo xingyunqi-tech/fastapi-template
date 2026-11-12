@@ -6,13 +6,23 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.15"
 dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.32.0",
     "fastapi>=0.162.4",
     "granian>=2.8.7",
     "orjson>=3.13.0",
+    "pwdlib[argon2,bcrypt]>=0.3.1",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
+    "pyjwt>=2.15.1",
+    "redis>=8.1.0",
+    "sqlalchemy[asyncio]>=2.1.8",
     "starlette>=1.10.0",
+    "typer>=0.29.0",
 ]
+
+[project.scripts]
+app = "app.cli:main"
 
 [dependency-groups]
 dev = [
@@ -26,6 +36,8 @@ dev = [
     "pytest-cov>=7.0.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.4",
+    "testcontainers[postgres,redis]>=4.15.0",
+    "time-machine>=2.16.0",
     "ty>=0.0.100",
     "typos>=1.51.1",
     "uvicorn[standard]>=0.40.0",
@@ -58,9 +70,23 @@ ignore = ["N818"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "PLC0415"]
+"migrations/**" = ["TC"]
+"src/app/**/router.py" = ["TC"]
+"src/app/**/deps.py" = ["TC"]
+"src/app/common/params.py" = ["TC"]
+"src/app/common/context.py" = ["TC"]
+"src/app/infrastructure/database/session.py" = ["TC"]
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = [
+    "app.infrastructure.database.base.Base",
+    "pydantic.BaseModel",
+    "app.contract.schemas.ContractModel",
+    "pydantic_settings.BaseSettings",
+]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["app", "tests"]
 
 [tool.mypy]
 strict = true
@@ -69,6 +95,10 @@ mypy_path = "src"
 files = ["src", "tests"]
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*", "testcontainers.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -86,7 +116,8 @@ minversion = "9.0"
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 xfail_strict = true
 filterwarnings = ["error"]
 markers = [
@@ -110,4 +141,7 @@ skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
 
 [tool.typos.files]
-extend-exclude = ["uv.lock", "openapi/*.json", "db/*.sql"]
+extend-exclude = ["uv.lock", "openapi/*.json", "db/*.sql", "src/app/cli/seed_data/*.json"]
+
+[tool.typos.default]
+extend-ignore-re = ["(PK|FK|UQ|REL|IDX)_[0-9a-f]{20,}"]

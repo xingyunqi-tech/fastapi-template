@@ -42,7 +42,8 @@ IMPLEMENTED = [(p, m, op) for p, m, op in _operations(INTERNAL) if (p, m) not in
 def _resolve(document: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
     ref = schema.get("$ref")
     if ref:
-        return dict(document["components"]["schemas"][ref.rsplit("/", 1)[-1]])
+        resolved: dict[str, Any] = document["components"]["schemas"][ref.rsplit("/", 1)[-1]]
+        return dict(resolved)
     return schema
 
 
@@ -58,8 +59,17 @@ def _type(schema: dict[str, Any]) -> str | None:
     return kind
 
 
+def _unwrap(schema: dict[str, Any]) -> dict[str, Any]:
+    for key in ("anyOf", "oneOf", "allOf"):
+        options = [s for s in schema.get(key, []) if s.get("type") != "null"]
+        if len(options) == 1:
+            option: dict[str, Any] = options[0]
+            return option
+    return schema
+
+
 def _shape(document: dict[str, Any], schema: dict[str, Any], depth: int = 0) -> Any:
-    schema = _resolve(document, schema)
+    schema = _resolve(document, _unwrap(schema))
     if depth > 4:
         return _type(schema)
     if schema.get("type") == "array" or "items" in schema:
