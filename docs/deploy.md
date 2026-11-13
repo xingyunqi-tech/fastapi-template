@@ -125,7 +125,7 @@ check.yml 的 job：
 | `ALIYUN_HOST` / `ALIYUN_PORT` / `ALIYUN_USER` / `ALIYUN_SSH_KEY` / `ALIYUN_PATH` | Secret | 阿里云 ECS（PORT 默认 22） |
 | `TENCENT_HOST` / `TENCENT_PORT` / `TENCENT_USER` / `TENCENT_SSH_KEY` / `TENCENT_PATH` | Secret | 腾讯云 CVM |
 | `TENCENT_TCR_PASSWORD` | Secret | TCR 登录 |
-| `TENCENT_TCR_REGISTRY` / `TENCENT_TCR_NAMESPACE` / `TENCENT_TCR_USERNAME` | Variable | TCR 地址、命名空间（仓库 `<命名空间>/fastapi-temp`）、用户名 |
+| `TENCENT_TCR_REGISTRY` / `TENCENT_TCR_NAMESPACE` / `TENCENT_TCR_USERNAME` | Variable | TCR 地址、命名空间（仓库 `<命名空间>/fastapi-template`）、用户名 |
 | `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` | Secret | cleanup-registry 清理 TCR |
 | `TENCENT_TCR_REGION` | Variable | TCR 区域，默认 ap-guangzhou |
 

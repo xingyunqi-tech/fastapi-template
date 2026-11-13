@@ -11,7 +11,7 @@
 name: fastapi-temp
 
 x-app: &app
-  image: ${IMAGE_FULL_NAME:-ghcr.io/sunweijiemj/fastapi-temp:latest}
+  image: ${IMAGE_FULL_NAME:-ghcr.io/xingyunqi-tech/fastapi-template:latest}
   env_file:
     - ../.env
   networks:
@@ -30,7 +30,7 @@ x-app-env: &app-env
 services:
   # api 与 worker 共用的 PID 命名空间，保证共享 PROMETHEUS_MULTIPROC_DIR 中按 PID 命名的文件不冲突
   pidns:
-    image: ${IMAGE_FULL_NAME:-ghcr.io/sunweijiemj/fastapi-temp:latest}
+    image: ${IMAGE_FULL_NAME:-ghcr.io/xingyunqi-tech/fastapi-template:latest}
     container_name: fastapi-pidns
     command: ['python', '-c', 'import signal, sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); signal.pause()']
     network_mode: none

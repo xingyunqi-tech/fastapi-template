@@ -1,7 +1,7 @@
 # 构建多架构镜像推送到 GHCR 与腾讯云 TCR 个人版，SSH 部署到阿里云 ECS / 腾讯云 CVM（均从 TCR 拉取）
 #
 # Secrets（<PREFIX> 为 ALIYUN 或 TENCENT）：<PREFIX>_HOST、<PREFIX>_PORT（默认 22）、<PREFIX>_USER、<PREFIX>_SSH_KEY、<PREFIX>_PATH、TENCENT_TCR_PASSWORD
-# Variables：TENCENT_TCR_REGISTRY、TENCENT_TCR_NAMESPACE、TENCENT_TCR_USERNAME（TCR 仓库为 <命名空间>/fastapi-temp）
+# Variables：TENCENT_TCR_REGISTRY、TENCENT_TCR_NAMESPACE、TENCENT_TCR_USERNAME（TCR 仓库为 <命名空间>/fastapi-template）
 # Environments：aliyun-production / tencent-production
 
 name: Deploy
@@ -30,8 +30,8 @@ permissions:
 
 env:
   GHCR_REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/fastapi-temp
-  IMAGE_BASENAME: fastapi-temp
+  IMAGE_NAME: ${{ github.repository_owner }}/fastapi-template
+  IMAGE_BASENAME: fastapi-template
 
 jobs:
   build-and-push:
