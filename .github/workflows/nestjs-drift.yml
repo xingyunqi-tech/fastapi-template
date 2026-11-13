@@ -1,0 +1,79 @@
+# 对 nestjs-template release/exam-prep HEAD 重新导出 openapi/ 等基线，与入库版本不一致时失败（不改动、不提交）
+
+name: Nestjs Drift
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nestjs-drift
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NESTJS_REPOSITORY: xingyunqi-tech/nestjs-template
+  NESTJS_BRANCH: release/exam-prep
+
+jobs:
+  drift:
+    name: Drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.NESTJS_REPOSITORY }}
+          ref: ${{ env.NESTJS_BRANCH }}
+          path: .nestjs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Export from nestjs HEAD
+        id: sync
+        env:
+          NESTJS_PORT: 3001
+          NESTJS_SYNC_PROJECT: nestjs-drift
+        run: |
+          NESTJS_DIR="$PWD/.nestjs"
+          NESTJS_REF="$(git -C "$NESTJS_DIR" rev-parse HEAD)"
+          echo "commit=${NESTJS_REF}" >> "$GITHUB_OUTPUT"
+          NESTJS_DIR="$NESTJS_DIR" NESTJS_REF="$NESTJS_REF" scripts/openapi-sync.sh
+
+      - name: Compare with committed baseline
+        env:
+          NESTJS_COMMIT: ${{ steps.sync.outputs.commit }}
+        run: |
+          paths=(openapi db/nestjs-schema.sql tests/contract/fixtures/validation-cases.json ':!openapi/SOURCE')
+          pinned="$(git show HEAD:openapi/SOURCE | sed -n 's/^commit=//p')"
+          if git diff --quiet -- "${paths[@]}"; then
+            echo "nestjs ${NESTJS_BRANCH}@${NESTJS_COMMIT} 与入库基线（${pinned}）一致" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "# nestjs 漂移"
+            echo ""
+            echo "- 入库基线：\`${pinned}\`"
+            echo "- nestjs ${NESTJS_BRANCH} HEAD：\`${NESTJS_COMMIT}\`"
+            echo ""
+            echo "执行 \`NESTJS_REF=${NESTJS_COMMIT} make openapi-sync\` 并补齐实现。"
+            echo ""
+            echo '```'
+            git diff --stat -- "${paths[@]}"
+            echo '```'
+            echo ""
+            echo '```diff'
+            git diff -- "${paths[@]}" | head -c 900000 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat -- "${paths[@]}"
+          exit 1

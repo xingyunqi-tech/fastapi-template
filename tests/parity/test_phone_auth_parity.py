@@ -13,9 +13,9 @@ import redis
 from tests.parity.conftest import Pair, Parity
 from tests.parity.test_auth_parity import PASSWORD, assert_same, authed, md5, normalize
 
-PYTHON_REDIS_URL = os.environ.get("PARITY_PYTHON_REDIS_URL", "redis://localhost:56380/0")
+PYTHON_REDIS_URL = os.environ.get("PARITY_PYTHON_REDIS_URL", "redis://localhost:6379/0")
 NESTJS_REDIS_URL = os.environ.get("PARITY_NESTJS_REDIS_URL")
-NESTJS_REDIS_CONTAINER = os.environ.get("PARITY_NESTJS_REDIS_CONTAINER", "nestjs-dev-redis-1")
+NESTJS_REDIS_CONTAINER = os.environ.get("PARITY_NESTJS_REDIS_CONTAINER", "parity-nestjs-redis-1")
 
 SEND = "/api/v1/auth/phone/send-code"
 _PHONES = itertools.count(int(time.time() * 1000) % 10**8)

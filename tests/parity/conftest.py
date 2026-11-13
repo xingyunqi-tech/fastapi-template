@@ -1,8 +1,10 @@
+import itertools
 import os
+import secrets
 import subprocess
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 lazy from collections.abc import Iterator
 
@@ -12,15 +14,49 @@ import pytest
 PYTHON_URL = os.environ.get("PARITY_PYTHON_URL", "http://localhost:3000")
 NESTJS_URL = os.environ.get("PARITY_NESTJS_URL", "http://localhost:3001")
 PG_CONTAINERS = (
-    os.environ.get("PARITY_PYTHON_PG_CONTAINER", "alembic-gen"),
-    os.environ.get("PARITY_NESTJS_PG_CONTAINER", "nestjs-dev-postgres-1"),
+    os.environ.get("PARITY_PYTHON_PG_CONTAINER", "fastapi-temp-infra-postgres-1"),
+    os.environ.get("PARITY_NESTJS_PG_CONTAINER", "parity-nestjs-postgres-1"),
 )
+RATE_LIMIT_HEADERS = (
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "retry-after",
+)
+_CLIENT_IPS = itertools.count(secrets.randbelow(1 << 24))
+
+
+def _forwarded_for(request: httpx.Request) -> None:
+    """每个请求使用不同的 10.0.0.0/8 地址，两侧均以 TRUST_PROXY=1 取作客户端 IP。"""
+    n = next(_CLIENT_IPS) % (1 << 24)
+    request.headers.setdefault("X-Forwarded-For", f"10.{n >> 16}.{(n >> 8) & 0xFF}.{n & 0xFF}")
+
+
+def assert_same_rate_limit_headers(python: httpx.Response, nestjs: httpx.Response) -> None:
+    """限流头集合一致且均为整数；X-RateLimit-Limit 取值一致。"""
+    present = [
+        {name for name in RATE_LIMIT_HEADERS if name in response.headers}
+        for response in (python, nestjs)
+    ]
+    assert present[0] == present[1], (python.request.url, present)
+    for response in (python, nestjs):
+        for name in present[0]:
+            assert response.headers[name].isdigit(), (name, response.headers[name])
+    if "x-ratelimit-limit" in present[0]:
+        assert python.headers["x-ratelimit-limit"] == nestjs.headers["x-ratelimit-limit"]
 
 
 @dataclass(frozen=True, slots=True)
 class Pair:
     python: httpx.Response
     nestjs: httpx.Response
+    expect_throttled: bool = field(default=False, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not self.expect_throttled:
+            for response in self.both():
+                assert response.status_code != 429, (response.request.url, response.text)
+        assert_same_rate_limit_headers(self.python, self.nestjs)
 
     def both(self) -> tuple[httpx.Response, httpx.Response]:
         return self.python, self.nestjs
@@ -100,9 +136,14 @@ def delete_configs(*keys: str, sides: tuple[bool, bool] = (True, True)) -> None:
 
 @pytest.fixture(scope="session")
 def parity() -> Iterator[Parity]:
+    options: dict[str, Any] = {
+        "timeout": 10,
+        "trust_env": False,
+        "event_hooks": {"request": [_forwarded_for]},
+    }
     with (
-        httpx.Client(base_url=PYTHON_URL, timeout=10, trust_env=False) as python,
-        httpx.Client(base_url=NESTJS_URL, timeout=10, trust_env=False) as nestjs,
+        httpx.Client(base_url=PYTHON_URL, **options) as python,
+        httpx.Client(base_url=NESTJS_URL, **options) as nestjs,
     ):
         for client in (python, nestjs):
             client.get("/").raise_for_status()

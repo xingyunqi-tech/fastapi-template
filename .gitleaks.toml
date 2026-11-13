@@ -2,9 +2,10 @@
 useDefault = true
 
 [allowlist]
-description = "测试固定值：123456 的 MD5、校验用例中的固定 UUID、测试用 JWT 密钥"
+description = "测试固定值：123456 的 MD5、校验用例中的固定 UUID、测试与 CI 用密钥"
 regexes = [
   '''(?i)e10adc3949ba59abbe56e057f20f883e''',
   '''(?i)3f0c8a52-7d0e-4b59-9f8e-2a1d6c4b7e10''',
   '''test-[a-z]+-secret-0123456789abcdef''',
+  '''ci_[a-z_]+_0123456789abcdef''',
 ]

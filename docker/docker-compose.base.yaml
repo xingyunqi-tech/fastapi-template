@@ -1,0 +1,85 @@
+# 各环境共用的服务：Mailpit、migrate（一次性）、api（Granian）
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.postgres.yaml up
+
+name: fastapi-temp-dev
+
+x-app: &app
+  build: &app-build
+    context: ..
+    dockerfile: Dockerfile
+    target: production
+  image: fastapi-temp:local
+  env_file:
+    - ../.env.example
+  environment: &app-env
+    DATABASE_HOST: postgres
+    MAIL_HOST: mailpit
+    MAIL_PORT: '1025'
+
+services:
+  # api 与 worker 共用的 PID 命名空间，保证共享 PROMETHEUS_MULTIPROC_DIR 中按 PID 命名的文件不冲突
+  pidns:
+    build: *app-build
+    image: fastapi-temp:local
+    command: ['python', '-c', 'import signal, sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); signal.pause()']
+    network_mode: none
+    healthcheck:
+      test: ['CMD', 'true']
+      interval: 30s
+      start_period: 10s
+      start_interval: 1s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - '${MAIL_CLIENT_PORT:-1080}:8025'
+      - '${MAIL_PORT:-1025}:1025'
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  migrate:
+    <<: *app
+    command:
+      - sh
+      - -c
+      - >-
+        app migrate
+        && app permissions clear-cache
+        && if [ "$${RUN_SEEDS:-false}" = true ]; then app seed; fi
+    restart: 'no'
+
+  api:
+    <<: *app
+    pid: service:pidns
+    ports:
+      - '${APP_PORT:-3000}:3000'
+    environment:
+      <<: *app-env
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    volumes:
+      - prometheus-multiproc:/tmp/prometheus
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${APP_PORT:-3000}/$${API_PREFIX:-api}/v1/health/live', timeout=5)\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      start_interval: 2s
+
+volumes:
+  prometheus-multiproc:

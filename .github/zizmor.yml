@@ -1,0 +1,9 @@
+rules:
+  # check.yml 只做检查，不产出发布物
+  cache-poisoning:
+    ignore:
+      - check.yml
+  # 部署矩阵按目标前缀动态读取 <PREFIX>_HOST 等 secrets
+  overprovisioned-secrets:
+    ignore:
+      - deploy.yml

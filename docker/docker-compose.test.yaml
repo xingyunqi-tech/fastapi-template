@@ -1,0 +1,46 @@
+# 测试环境：development 镜像，挂载源码与测试，容器内可执行 pytest
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.postgres.yaml -f docker/docker-compose.test.yaml up --build
+
+x-test-build: &test-build
+  context: ..
+  dockerfile: Dockerfile
+  target: development
+
+x-test-env: &test-env
+  APP_ENV: test
+
+x-test-volumes: &test-volumes
+  - ../src:/app/src
+  - ../tests:/app/tests
+
+services:
+  pidns:
+    build: *test-build
+    image: fastapi-temp:dev
+
+  migrate:
+    build: *test-build
+    image: fastapi-temp:dev
+    environment:
+      <<: *test-env
+      RUN_SEEDS: 'true'
+
+  api:
+    build: *test-build
+    image: fastapi-temp:dev
+    environment: *test-env
+    volumes: *test-volumes
+
+  worker:
+    build: *test-build
+    image: fastapi-temp:dev
+    environment: *test-env
+    volumes: *test-volumes
+
+  scheduler:
+    build: *test-build
+    image: fastapi-temp:dev
+    environment: *test-env
+    volumes: *test-volumes

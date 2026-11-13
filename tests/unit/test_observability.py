@@ -428,13 +428,22 @@ class TestMultiprocess:
         assert "http_active_connections" in output
         assert list(tmp_path.iterdir())
 
-    def test_main_clears_stale_files_before_serving(
+    def test_main_clears_files_of_dead_processes_before_serving(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         directory = tmp_path / "prom"
         directory.mkdir()
-        for name in ("counter_1.db", "gauge_livesum_2.db"):
+        dead = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.getpid())"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        live = os.getpid()
+        for name in (f"counter_{dead}.db", f"gauge_livesum_{dead}.db"):
             (directory / name).write_bytes(b"stale")
+        for name in (f"counter_{live}.db", f"gauge_livesum_{live}.db", "histogram_main.db"):
+            (directory / name).write_bytes(b"live")
         (directory / "keep.txt").write_text("x")
         monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(directory))
         monkeypatch.setenv("WEB_CONCURRENCY", "4")
@@ -451,7 +460,30 @@ class TestMultiprocess:
 
         app_main.main()
 
-        assert seen == [["keep.txt"]]
+        assert seen == [
+            sorted(
+                [f"counter_{live}.db", f"gauge_livesum_{live}.db", "histogram_main.db", "keep.txt"]
+            )
+        ]
+
+    def test_main_keeps_files_of_processes_owned_by_other_users(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = tmp_path / "prom"
+        directory.mkdir()
+        (directory / "counter_4242.db").write_bytes(b"live")
+        monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(directory))
+        monkeypatch.setenv("WEB_CONCURRENCY", "1")
+        monkeypatch.setattr(app_main, "Granian", _NoopGranian)
+
+        def kill(pid: int, signal: int) -> None:
+            raise PermissionError(pid, signal)
+
+        monkeypatch.setattr(os, "kill", kill)
+
+        app_main.main()
+
+        assert [p.name for p in directory.iterdir()] == ["counter_4242.db"]
 
     def test_main_warns_when_workers_share_no_directory(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

@@ -7,7 +7,7 @@ PYTEST := $(RUN) pytest
 
 .PHONY: help
 help: ## 列出可用目标
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: install
 install: ## 安装依赖与 Git 钩子
@@ -51,7 +51,7 @@ test: ## 单元 + 集成 + 契约测试（含覆盖率）
 	$(PYTEST) -m "unit or integration or contract" -n auto --cov --cov-report=term --cov-report=xml
 
 .PHONY: test-e2e
-test-e2e: ## e2e 测试
+test-e2e: ## e2e 测试：ci 组合以生产镜像起完整服务栈，结束后 down -v（E2E_KEEP_STACK=1 保留）
 	$(PYTEST) -m e2e
 
 .PHONY: test-contract
@@ -79,12 +79,40 @@ generate-resource: ## 生成 CRUD 模块骨架（make generate-resource name=Pro
 infra: ## 启动本地 Postgres / Redis / Mailpit（docker compose）
 	docker compose -f docker/infra.compose.yaml up -d --wait
 
+IMAGE ?= fastapi-temp:local
+COMPOSE_DEV := docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.postgres.yaml -f docker/docker-compose.dev.yaml
+
+.PHONY: docker-build
+docker-build: ## 构建生产镜像（IMAGE，默认 fastapi-temp:local）
+	docker build --target production -t $(IMAGE) .
+
+.PHONY: up
+up: ## docker compose 起开发服务栈（api / worker / scheduler / migrate + 依赖，develop.watch）
+	$(COMPOSE_DEV) up --build --watch
+
+.PHONY: down
+down: ## 停止开发服务栈
+	$(COMPOSE_DEV) down
+
 .PHONY: openapi-sync
 openapi-sync: ## 从 nestjs-template 固定提交导出 openapi/ 基线
 	scripts/openapi-sync.sh
 
+.PHONY: security
+security: ## pip-audit 生产依赖（high 及以上失败）
+	@tmp="$$(mktemp -d)" && trap 'rm -rf "$$tmp"' EXIT && \
+	$(UV) export --frozen --no-dev --no-emit-project --format requirements-txt -q -o "$$tmp/requirements.txt" && \
+	{ uvx pip-audit==2.10.1 -r "$$tmp/requirements.txt" --disable-pip --require-hashes --progress-spinner off \
+		-f json -o "$$tmp/audit.json" || test -s "$$tmp/audit.json"; } && \
+	$(UV) run --script scripts/audit_severity.py "$$tmp/audit.json"
+
+.PHONY: workflow-lint
+workflow-lint: ## actionlint + zizmor（min-severity medium）
+	actionlint
+	uvx zizmor==1.32.0 --min-severity medium .
+
 .PHONY: ci
-ci: check test ## 本地运行 CI 门禁
+ci: check test security workflow-lint ## 本地运行 CI 门禁
 
 .PHONY: clean
 clean: ## 清理缓存与构建产物

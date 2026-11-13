@@ -6,7 +6,8 @@
 #   NESTJS_REF         导出所用提交（默认取 openapi/SOURCE 的 commit）
 #   NESTJS_BRANCH      记入 SOURCE 的分支名（默认 release/exam-prep）
 #   NESTJS_SCRIPT_REF  scripts/export-validation.ts 所在提交（默认取 openapi/SOURCE 的 validation_script，否则 NESTJS_BRANCH）
-#   NESTJS_PORT        导出期间 nestjs 映射到宿主的端口（默认 3001）
+#   NESTJS_PORT        导出期间 nestjs 映射到宿主的端口（默认 3001，被占用时退出）
+#   NESTJS_SYNC_PROJECT  导出期间的 docker compose 项目名（默认 nestjs-openapi-sync-<仓库目录名>）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,6 +15,13 @@ OUT="$ROOT/openapi"
 NESTJS_DIR="${NESTJS_DIR:-$ROOT/../nestjs-template}"
 NESTJS_BRANCH="${NESTJS_BRANCH:-release/exam-prep}"
 export NESTJS_PORT="${NESTJS_PORT:-3001}"
+REPO_SLUG="$(basename "$ROOT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n-' '-')"
+NESTJS_SYNC_PROJECT="${NESTJS_SYNC_PROJECT:-nestjs-openapi-sync-${REPO_SLUG}}"
+
+if (exec 3<>"/dev/tcp/127.0.0.1/${NESTJS_PORT}") 2>/dev/null; then
+  echo "端口 ${NESTJS_PORT} 已被占用，请设置 NESTJS_PORT 为空闲端口后重试" >&2
+  exit 1
+fi
 
 if [[ -z "${NESTJS_REF:-}" && -f "$OUT/SOURCE" ]]; then
   NESTJS_REF="$(sed -n 's/^commit=//p' "$OUT/SOURCE")"
@@ -33,7 +41,7 @@ SCHEMA_TABLES="user role status session permission role_permission file audit_lo
 export NESTJS_ENV_FILE="$WORKTREE/env-example-relational"
 STAGE="$(mktemp -d)"
 TMP_BASELINE="$STAGE/nestjs-baseline.json"
-COMPOSE=(docker compose -p nestjs-openapi-sync -f "$ROOT/scripts/nestjs/nestjs.compose.yaml")
+COMPOSE=(docker compose -p "$NESTJS_SYNC_PROJECT" -f "$ROOT/scripts/nestjs/nestjs.compose.yaml")
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true

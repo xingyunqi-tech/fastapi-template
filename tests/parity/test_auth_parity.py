@@ -1,10 +1,12 @@
 import hashlib
+import secrets
 import time
 from typing import Any
+lazy from collections.abc import Iterator
 
 import pytest
 
-from tests.parity.conftest import Pair, Parity
+from tests.parity.conftest import Pair, Parity, TempUser, temp_user
 
 VOLATILE_KEYS = {
     "token",
@@ -123,6 +125,28 @@ def test_email_link_errors(parity: Parity, url: str, body: dict[str, Any]) -> No
     assert_same(parity.request("POST", url, json=body))
 
 
+def test_throttled_response(parity: Parity) -> None:
+    n = secrets.randbelow(1 << 20)
+    headers = {"X-Forwarded-For": f"172.{16 + (n >> 16)}.{(n >> 8) & 0xFF}.{n & 0xFF}"}
+    body = {"email": "missing@example.com"}
+    url = "/api/v1/auth/forgot/password"
+    python_client, nestjs_client = parity.clients
+    for _ in range(3):
+        assert_same(parity.request("POST", url, json=body, headers=headers))
+
+    pair = Pair(
+        python_client.post(url, json=body, headers=headers),
+        nestjs_client.post(url, json=body, headers=headers),
+        expect_throttled=True,
+    )
+
+    for response in pair.both():
+        assert response.status_code == 429, response.text
+        assert response.headers["retry-after"].isdigit()
+        assert not [name for name in response.headers if name.startswith("x-ratelimit-")]
+    assert_same(pair)
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -155,6 +179,12 @@ def test_me_and_sessions(parity: Parity) -> None:
     assert set(python.json()["data"][0]) == set(nestjs.json()["data"][0])
 
 
+@pytest.fixture(scope="module")
+def profile_user(parity: Parity) -> Iterator[TempUser]:
+    with temp_user(parity, "profile") as user:
+        yield user
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -166,9 +196,8 @@ def test_me_and_sessions(parity: Parity) -> None:
         {"photo": {"id": "3f0c8a52-7d0e-4b59-9f8e-2a1d6c4b7e10"}},
     ],
 )
-def test_update_me_errors(parity: Parity, body: dict[str, Any]) -> None:
-    pair_tokens = tokens(parity, "john.doe@example.com")
-    assert_same(authed(parity, "PUT", "/api/v1/auth/me", pair_tokens, json=body))
+def test_update_me_errors(parity: Parity, profile_user: TempUser, body: dict[str, Any]) -> None:
+    assert_same(authed(parity, "PUT", "/api/v1/auth/me", profile_user.tokens, json=body))
 
 
 @pytest.mark.parametrize(
@@ -179,9 +208,10 @@ def test_update_me_errors(parity: Parity, body: dict[str, Any]) -> None:
         {"oldPassword": "x", "newPassword": "y"},
     ],
 )
-def test_change_password_errors(parity: Parity, body: dict[str, Any]) -> None:
-    pair_tokens = tokens(parity, "john.doe@example.com")
-    assert_same(authed(parity, "PUT", "/api/v1/auth/password", pair_tokens, json=body))
+def test_change_password_errors(
+    parity: Parity, profile_user: TempUser, body: dict[str, Any]
+) -> None:
+    assert_same(authed(parity, "PUT", "/api/v1/auth/password", profile_user.tokens, json=body))
 
 
 def test_refresh_rotation(parity: Parity) -> None:

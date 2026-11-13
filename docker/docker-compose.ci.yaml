@@ -1,0 +1,44 @@
+# CI / e2e：生产镜像（APP_ENV=production）起完整服务栈，宿主端口随机分配（docker compose port 查询）
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.postgres.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.ci.yaml -p fastapi-e2e up --build --wait
+
+x-ci-env: &ci-env
+  APP_ENV: production
+  AUTH_JWT_SECRET: ci_jwt_secret_0123456789abcdefghijklmnop
+  AUTH_REFRESH_SECRET: ci_refresh_secret_0123456789abcdefghijklmnop
+  AUTH_FORGOT_SECRET: ci_forgot_secret_0123456789abcdefghijklmnop
+  AUTH_CONFIRM_EMAIL_SECRET: ci_confirm_email_secret_0123456789abcdefghijklmnop
+  SWAGGER_ENABLED: 'true'
+  METRICS_TOKEN: ci_metrics_token_0123456789abcdef
+  THROTTLE_ENABLED: ${CI_THROTTLE_ENABLED:-true}
+  TRUST_PROXY: '1'
+  WEB_CONCURRENCY: '2'
+
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  mailpit:
+    ports: !override
+      - '127.0.0.1::8025'
+
+  migrate:
+    environment:
+      <<: *ci-env
+      APP_ENV: test
+      RUN_SEEDS: 'true'
+
+  api:
+    ports: !override
+      - '127.0.0.1::3000'
+    environment: *ci-env
+
+  worker:
+    environment: *ci-env
+
+  scheduler:
+    environment: *ci-env

@@ -1,0 +1,139 @@
+# 清理 GHCR 与 TCR 个人版旧镜像：deploy.yml 成功后调用、每周一 03:00（北京时间）定时、手动（dry_run 只打印）
+#
+# GHCR 保留 latest 及最近 2 个带 tag 的镜像并删除无 tag 的镜像；TCR 保留 latest 指向的镜像及其余最近推送的镜像共 2 个
+# TCR 需要 Secrets TENCENTCLOUD_SECRET_ID / TENCENTCLOUD_SECRET_KEY 与 Variables TENCENT_TCR_NAMESPACE、TENCENT_TCR_REGION（默认 ap-guangzhou），未配置时跳过
+
+name: Cleanup Registry
+
+on:
+  schedule:
+    - cron: '0 19 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只打印将被删除的镜像，不实际删除'
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    secrets:
+      TENCENTCLOUD_SECRET_ID:
+        required: false
+      TENCENTCLOUD_SECRET_KEY:
+        required: false
+
+concurrency:
+  group: registry-cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_BASENAME: fastapi-temp
+
+jobs:
+  ghcr:
+    name: Cleanup GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old images
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          packages: ${{ env.IMAGE_BASENAME }}
+          exclude-tags: latest
+          keep-n-tagged: 2
+          delete-untagged: true
+          dry-run: ${{ inputs.dry_run == true }}
+
+  tcr:
+    name: Cleanup TCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check config
+        id: check
+        run: |
+          missing=()
+          for var in TENCENTCLOUD_SECRET_ID TENCENTCLOUD_SECRET_KEY TCR_NAMESPACE; do
+            if [[ -z "${!var}" ]]; then
+              missing+=("$var")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::notice::未配置 ${missing[*]}，跳过 TCR 清理"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TCR_NAMESPACE: ${{ vars.TENCENT_TCR_NAMESPACE }}
+
+      - name: Install tccli
+        if: steps.check.outputs.enabled == 'true'
+        run: pipx install tccli==3.1.180.1
+
+      - name: Delete old tags
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          repo="${TCR_NAMESPACE,,}/${IMAGE_BASENAME,,}"
+
+          check_response() {
+            if jq -e '(.Response // .).Error' <<< "$1" > /dev/null; then
+              echo "::error::tccli 返回错误: $(jq -c '(.Response // .).Error' <<< "$1")" >&2
+              exit 1
+            fi
+          }
+
+          list_tags() {
+            local offset=0 page count
+            while :; do
+              page=$(tccli tcr DescribeImagePersonal --RepoName "$repo" --Offset "$offset" --Limit 100)
+              check_response "$page"
+              jq -c '(.Response // .).Data.TagInfo[] | {name: .TagName, digest: .TagId, time: (.PushTime // .UpdateTime // .CreationTime // "")}' <<< "$page"
+              count=$(jq '(.Response // .).Data.TagInfo | length' <<< "$page")
+              (( count < 100 )) && break
+              offset=$(( offset + 100 ))
+            done
+          }
+
+          tags=$(list_tags)
+          if [[ -z "$tags" ]]; then
+            echo "${repo} 没有镜像，无需清理"
+            exit 0
+          fi
+          latest_digest=$(jq -r 'select(.name == "latest") | .digest' <<< "$tags")
+          keep_digests=$(jq -sc --arg l "$latest_digest" --argjson n "$KEEP_COUNT" '
+            (if $l == "" then [] else [$l] end) as $base
+            | $base + (map(select(.digest as $d | $base | index($d) | not)) | group_by(.digest)
+              | map({digest: .[0].digest, time: (map(.time) | max)})
+              | sort_by(.time) | reverse | .[:($n - ($base | length))] | map(.digest))' <<< "$tags")
+          echo "保留镜像: $(jq -r 'join(", ")' <<< "$keep_digests")"
+          mapfile -t stale < <(jq -r --argjson k "$keep_digests" 'select(.digest as $d | $k | index($d) | not) | .name' <<< "$tags")
+          if (( ${#stale[@]} == 0 )); then
+            echo "无需清理"
+          fi
+          for tag in "${stale[@]}"; do
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "[dry-run] 删除 ${repo}:${tag}"
+            else
+              echo "删除 ${repo}:${tag}"
+              result=$(tccli tcr DeleteImagePersonal --RepoName "$repo" --Tag "$tag")
+              check_response "$result"
+            fi
+          done
+        env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          TENCENTCLOUD_REGION: ${{ vars.TENCENT_TCR_REGION || 'ap-guangzhou' }}
+          TCR_NAMESPACE: ${{ vars.TENCENT_TCR_NAMESPACE }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          KEEP_COUNT: 2

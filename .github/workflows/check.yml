@@ -1,0 +1,383 @@
+# 代码质量检查：lint、workflow-lint、type-check、test、migrations、contract、security、build、image-scan、e2e、parity
+
+name: Check
+
+on:
+  push:
+    branches: [main, master, 'release/**']
+  pull_request:
+    branches: [main, master, 'release/**']
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  NESTJS_REPOSITORY: xingyunqi-tech/nestjs-template
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - run: make lint
+
+      - name: hadolint
+        run: docker run --rm -i "$HADOLINT_IMAGE" < Dockerfile
+
+  workflow-lint:
+    name: Workflow Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          advanced-security: false
+          min-severity: medium
+          version: 1.32.0
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: mypy
+        run: uv run --frozen mypy
+
+      - name: ty
+        continue-on-error: true
+        run: uv run --frozen ty check
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - run: make test
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: api
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d api"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Prepare .env
+        run: cp .env.example .env
+
+      - name: upgrade
+        run: make migrate
+
+      - name: check
+        run: uv run --frozen alembic check
+
+      - name: downgrade
+        run: uv run --frozen alembic downgrade base
+
+      - name: upgrade again
+        run: make migrate
+
+  contract:
+    name: Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - run: make test-contract
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Dependency audit
+        run: make security
+
+      - name: Secret scan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            log_opts="$BASE_SHA..HEAD"
+          else
+            log_opts="-1"
+          fi
+          docker run --rm -v "$PWD:/repo" "$GITLEAKS_IMAGE" git /repo --no-banner --redact --log-opts="$log_opts"
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Build package
+        run: uv build
+
+      - name: Build production image
+        run: docker build --target production -t fastapi-temp:build .
+
+  image-scan:
+    name: Image Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build production image
+        run: docker build --target production -t fastapi-temp:scan .
+
+      - name: Trivy
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE"
+          image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress
+          fastapi-temp:scan
+
+  e2e:
+    name: E2E (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, type-check, test, build, migrations, workflow-lint, security]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - run: make test-e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for container in $(docker ps -aq); do
+            echo "===== $(docker inspect --format '{{.Name}}' "$container")"
+            docker logs "$container" 2>&1 | tail -n 500
+          done > e2e.log
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-logs
+          path: e2e.log
+
+  parity:
+    name: Parity (nestjs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [build, migrations]
+    env:
+      NESTJS_IMAGE: nestjs-ref:production
+      NESTJS_PORT: 3001
+      NESTJS_PROJECT: parity-nestjs
+      PARITY_PYTHON_URL: http://localhost:3000
+      PARITY_NESTJS_URL: http://localhost:3001
+      PARITY_PYTHON_PG_CONTAINER: fastapi-temp-infra-postgres-1
+      PARITY_NESTJS_PG_CONTAINER: parity-nestjs-postgres-1
+      PARITY_PYTHON_REDIS_URL: redis://localhost:6379/0
+      PARITY_NESTJS_REDIS_CONTAINER: parity-nestjs-redis-1
+      SCHEMA_TABLES: >-
+        user role status session permission role_permission file audit_logs config region
+        notification notification_setting address favorite feedback user_consent account_cleanup admin_alert
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned nestjs commit
+        id: source
+        run: echo "commit=$(sed -n 's/^commit=//p' openapi/SOURCE)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.NESTJS_REPOSITORY }}
+          ref: ${{ steps.source.outputs.commit }}
+          path: .nestjs
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Build nestjs images
+        run: |
+          docker build --target builder -t nestjs-ref:builder .nestjs
+          docker build --target production -t nestjs-ref:production .nestjs
+
+      - name: Start nestjs
+        run: |
+          export NESTJS_ENV_FILE="$RUNNER_TEMP/nestjs.env"
+          echo "NESTJS_ENV_FILE=$NESTJS_ENV_FILE" >> "$GITHUB_ENV"
+          sed -e 's/^THROTTLE_ENABLED=.*/THROTTLE_ENABLED=true/' -e 's/^TRUST_PROXY=.*/TRUST_PROXY=1/' \
+            .nestjs/env-example-relational > "$NESTJS_ENV_FILE"
+          compose=(docker compose -p "$NESTJS_PROJECT" -f scripts/nestjs/nestjs.compose.yaml)
+          "${compose[@]}" up -d --wait postgres redis
+          "${compose[@]}" up -d api
+
+      - name: Start fastapi
+        run: |
+          sed -e 's/^APP_NAME=.*/APP_NAME="NestJS API"/' -e 's/^REDIS_ENABLED=.*/REDIS_ENABLED=true/' \
+            -e 's/^THROTTLE_ENABLED=.*/THROTTLE_ENABLED=true/' -e 's/^TRUST_PROXY=.*/TRUST_PROXY=1/' \
+            .env.example > .env
+          make infra
+          make migrate
+          make seed
+          nohup make serve > "$RUNNER_TEMP/fastapi.log" 2>&1 &
+          nohup uv run --frozen app worker > "$RUNNER_TEMP/fastapi-worker.log" 2>&1 &
+
+      - name: Wait for services
+        run: |
+          for url in "$PARITY_PYTHON_URL/" "$PARITY_NESTJS_URL/"; do
+            for i in $(seq 1 90); do
+              curl -sf --max-time 5 -o /dev/null "$url" && break
+              if [[ $i -eq 90 ]]; then
+                echo "::error::${url} 未能在 180s 内就绪"
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - name: tests/parity
+        run: make test-parity
+
+      - name: nestjs auth.e2e-spec.ts against fastapi
+        run: |
+          THROTTLE_ENABLED=false APP_PORT=3002 nohup make serve > "$RUNNER_TEMP/fastapi-spec.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf --max-time 5 -o /dev/null http://localhost:3002/ && break
+            if [[ $i -eq 60 ]]; then
+              echo "::error::http://localhost:3002/ 未能在 120s 内就绪"
+              exit 1
+            fi
+            sleep 2
+          done
+          docker run --rm --network host -e APP_PORT=3002 nestjs-ref:builder \
+            pnpm exec vitest run --config vitest.e2e.config.mts test/user/auth.e2e-spec.ts
+
+      - name: Schema comparison
+        run: |
+          nestjs_port="$(docker compose -p "$NESTJS_PROJECT" -f scripts/nestjs/nestjs.compose.yaml port postgres 5432 | cut -d: -f2)"
+          read -ra tables <<< "$SCHEMA_TABLES"
+          uv run --script scripts/schema_snapshot.py "postgresql://root:secret@127.0.0.1:${nestjs_port}/api" "${tables[@]}" > "$RUNNER_TEMP/nestjs.sql"
+          uv run --script scripts/schema_snapshot.py "postgresql://root:secret@127.0.0.1:5432/api" "${tables[@]}" > "$RUNNER_TEMP/fastapi.sql"
+          diff -u db/nestjs-schema.sql "$RUNNER_TEMP/nestjs.sql"
+          missing="$(comm -23 <(sort "$RUNNER_TEMP/nestjs.sql") <(sort "$RUNNER_TEMP/fastapi.sql") | grep -vE 'FK_feedback_(errata|question) ' || true)"
+          extra="$(comm -13 <(sort "$RUNNER_TEMP/nestjs.sql") <(sort "$RUNNER_TEMP/fastapi.sql"))"
+          if [[ -n "$missing$extra" ]]; then
+            printf '仅 nestjs:\n%s\n仅 fastapi:\n%s\n' "$missing" "$extra"
+            exit 1
+          fi
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          cp "$RUNNER_TEMP"/fastapi*.log . || true
+          docker compose -p "$NESTJS_PROJECT" -f scripts/nestjs/nestjs.compose.yaml logs api > nestjs.log 2>&1 || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parity-logs
+          path: |
+            fastapi.log
+            fastapi-worker.log
+            fastapi-spec.log
+            nestjs.log

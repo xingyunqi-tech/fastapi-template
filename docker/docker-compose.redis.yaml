@@ -1,0 +1,127 @@
+# Redis（缓存、限流、队列）与依赖 Redis 的 worker、scheduler 进程；RedisInsight 在 profile tools
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.postgres.yaml up
+
+x-redis-env: &redis-env
+  REDIS_ENABLED: 'true'
+  REDIS_HOST: redis
+  REDIS_PORT: '6379'
+
+x-redis-depends: &redis-depends
+  redis:
+    condition: service_healthy
+
+x-queue-process: &queue-process
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    target: production
+  image: fastapi-temp:local
+  env_file:
+    - ../.env.example
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:8.10.3-alpine
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight:3.8.0
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: 6379
+    ports:
+      - '${REDIS_INSIGHT_PORT:-5540}:5540'
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  migrate:
+    environment: *redis-env
+    depends_on: *redis-depends
+
+  api:
+    environment: *redis-env
+    depends_on: *redis-depends
+
+  worker:
+    <<: *queue-process
+    command: ['app', 'worker']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          'import glob, sys; sys.exit(not any(open(f, "rb").read().endswith(b"/bin/app\0worker\0") for f in glob.glob("/proc/[0-9]*/cmdline")))',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    pid: service:pidns
+    environment:
+      <<: *redis-env
+      DATABASE_HOST: postgres
+      MAIL_HOST: mailpit
+      MAIL_PORT: '1025'
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    volumes:
+      - prometheus-multiproc:/tmp/prometheus
+    depends_on:
+      <<: *redis-depends
+      api:
+        condition: service_healthy
+        restart: true
+
+  scheduler:
+    <<: *queue-process
+    command: ['app', 'scheduler']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          'import glob, sys; sys.exit(not any(open(f, "rb").read().endswith(b"/bin/app\0scheduler\0") for f in glob.glob("/proc/[0-9]*/cmdline")))',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    environment:
+      <<: *redis-env
+      DATABASE_HOST: postgres
+    depends_on:
+      <<: *redis-depends
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  redis-data:
+  redisinsight-data:
+  prometheus-multiproc:

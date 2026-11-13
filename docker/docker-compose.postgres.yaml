@@ -1,0 +1,41 @@
+# PostgreSQL 与 Adminer（profile tools）
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.postgres.yaml up
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    ports:
+      - '${DATABASE_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME:-root}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secret}
+      POSTGRES_DB: ${DATABASE_NAME:-api}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USERNAME:-root} -d ${DATABASE_NAME:-api}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  adminer:
+    image: adminer:6.3.0
+    restart: always
+    ports:
+      - '${ADMINER_PORT:-8080}:8080'
+    depends_on:
+      - postgres
+    profiles:
+      - tools
+
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

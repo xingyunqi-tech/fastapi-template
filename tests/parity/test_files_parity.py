@@ -3,14 +3,14 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.parity.conftest import Pair
+from tests.parity.conftest import Pair, TempUser
 from tests.parity.test_auth_parity import normalize, tokens
 
 if TYPE_CHECKING:
     from tests.parity.conftest import Parity
 
 UPLOAD = "/api/v1/files/upload"
-USER = "john.doe@example.com"
+USER = "user"
 ADMIN = "admin@example.com"
 PNG = b"\x89PNG\r\n\x1a\nabc"
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -31,8 +31,8 @@ type Tokens = dict[str, tuple[str, str]]
 
 
 @pytest.fixture(scope="module")
-def session_tokens(parity: Parity) -> Tokens:
-    return {email: tokens(parity, email) for email in (USER, ADMIN)}
+def session_tokens(parity: Parity, shared_user: TempUser) -> Tokens:
+    return {USER: shared_user.tokens, ADMIN: tokens(parity, ADMIN)}
 
 
 def authed(

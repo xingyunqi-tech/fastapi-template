@@ -1,0 +1,64 @@
+# 开发环境：development 镜像，develop.watch 同步源码并热重载
+#
+# 用法：
+#   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.postgres.yaml -f docker/docker-compose.dev.yaml up --build --watch
+
+x-dev-build: &dev-build
+  context: ..
+  dockerfile: Dockerfile
+  target: development
+
+x-dev-env: &dev-env
+  APP_ENV: development
+
+x-dev-watch: &dev-watch
+  - action: sync+restart
+    path: ../src
+    target: /app/src
+  - action: rebuild
+    path: ../pyproject.toml
+  - action: rebuild
+    path: ../uv.lock
+
+services:
+  pidns:
+    build: *dev-build
+    image: fastapi-temp:dev
+
+  migrate:
+    build: *dev-build
+    image: fastapi-temp:dev
+    environment:
+      <<: *dev-env
+      RUN_SEEDS: 'true'
+
+  api:
+    build: *dev-build
+    image: fastapi-temp:dev
+    environment: *dev-env
+    develop:
+      watch:
+        - action: sync
+          path: ../src
+          target: /app/src
+        - action: sync
+          path: ../tests
+          target: /app/tests
+        - action: rebuild
+          path: ../pyproject.toml
+        - action: rebuild
+          path: ../uv.lock
+
+  worker:
+    build: *dev-build
+    image: fastapi-temp:dev
+    environment: *dev-env
+    develop:
+      watch: *dev-watch
+
+  scheduler:
+    build: *dev-build
+    image: fastapi-temp:dev
+    environment: *dev-env
+    develop:
+      watch: *dev-watch

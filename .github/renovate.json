@@ -6,6 +6,9 @@
   "prConcurrentLimit": 5,
   "labels": ["dependencies"],
   "ignorePaths": ["scripts/nestjs/nestjs.compose.yaml"],
+  "docker-compose": {
+    "managerFilePatterns": ["/(^|/)docker/[^/]+\\.ya?ml$/"]
+  },
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 9am on monday"]
@@ -19,8 +22,10 @@
       "enabled": false
     },
     {
-      "matchManagers": ["github-actions"],
-      "groupName": "github actions"
+      "matchManagers": ["github-actions", "custom.regex"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+      "groupName": "github actions",
+      "automerge": true
     },
     {
       "matchManagers": ["pep621"],
@@ -30,13 +35,23 @@
     },
     {
       "matchManagers": ["dockerfile", "docker-compose"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
       "groupName": "docker images",
       "automerge": true
     },
     {
       "matchUpdateTypes": ["major"],
       "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "_IMAGE: (?<depName>[^:\\s/]+/[^:\\s]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?"
+      ],
+      "datasourceTemplate": "docker"
     }
   ]
 }

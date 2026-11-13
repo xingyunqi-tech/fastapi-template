@@ -140,12 +140,29 @@ def render(app_name: str, *, include_default: bool) -> bytes:
     return generate_latest(_AppLabeled(sources, app_name))
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _file_pid(path: Path) -> int | None:
+    suffix = path.stem.rpartition("_")[2]
+    return int(suffix) if suffix.isdigit() else None
+
+
 def prepare_multiprocess(web_concurrency: int) -> None:
-    """派生 worker 之前调用：清空多进程目录中的旧 `*.db`，或在多 worker 未设置该目录时告警。"""
+    """派生 worker 之前调用：删除多进程目录中已退出进程的 `*.db`；多 worker 未设置该目录时告警。"""
     directory = os.environ.get(MULTIPROC_ENV)
     if directory:
-        for stale in Path(directory).glob("*.db"):
-            stale.unlink(missing_ok=True)
+        for path in Path(directory).glob("*.db"):
+            pid = _file_pid(path)
+            if pid is not None and not _pid_alive(pid):
+                path.unlink(missing_ok=True)
     elif web_concurrency > 1:
         logger.warning(
             "WEB_CONCURRENCY=%d but %s is not set: each worker keeps its own metric values "
