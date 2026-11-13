@@ -81,6 +81,13 @@ class TestMemoryGcra:
         assert gcra.consume("b", 1000, 1, now=0).allowed is True
         assert gcra.consume("a", 1000, 1, now=0).allowed is False
 
+    def test_first_request_is_allowed_at_any_clock_value(self) -> None:
+        now = 268382706.34399077
+        decision = MemoryGcra().consume("k", 60_000, 1, now=now)
+
+        assert decision.allowed is True
+        assert decision.remaining == 0
+
     def test_remaining_with_fractional_interval(self) -> None:
         gcra = MemoryGcra()
 

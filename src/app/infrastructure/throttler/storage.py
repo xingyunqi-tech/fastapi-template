@@ -22,6 +22,7 @@ COMMAND_TIMEOUT_S: Final = 0.5
 THROTTLER_FALLBACK_ALERT_KEY: Final = "throttler-storage-fallback"
 MEMORY_MAX_KEYS: Final = 10_000
 
+GCRA_TOLERANCE_MS: Final = 1e-6
 GCRA_SCRIPT: Final = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) * 1000 + tonumber(now_parts[2]) / 1000
@@ -33,9 +34,9 @@ if tat < now then
   tat = now
 end
 local new_tat = tat + interval
-local allow_at = new_tat - period
-if allow_at > now then
-  return {0, 0, math.ceil(tat - now), math.ceil(allow_at - now)}
+local wait = (tat - now) + interval - period
+if wait > 1e-6 then
+  return {0, 0, math.ceil(tat - now), math.ceil(wait)}
 end
 redis.call('SET', KEYS[1], tostring(new_tat), 'PX', math.ceil(new_tat - now))
 local remaining = math.floor((period - (new_tat - now)) / interval + 1e-9)
@@ -73,9 +74,9 @@ class MemoryGcra:
         interval = ttl_ms / limit
         tat = max(self._tat.get(key, now), now)
         new_tat = tat + interval
-        allow_at = new_tat - ttl_ms
-        if allow_at > now:
-            return Decision(False, 0, math.ceil(tat - now), math.ceil(allow_at - now))
+        wait = (tat - now) + interval - ttl_ms
+        if wait > GCRA_TOLERANCE_MS:
+            return Decision(False, 0, math.ceil(tat - now), math.ceil(wait))
         self._store(key, new_tat, now)
         remaining = math.floor((ttl_ms - (new_tat - now)) / interval + 1e-9)
         return Decision(True, remaining, math.ceil(new_tat - now), 0)
