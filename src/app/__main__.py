@@ -17,6 +17,7 @@ def main() -> None:
         address="0.0.0.0",  # noqa: S104
         port=settings.app.port,
         workers=settings.app.web_concurrency,
+        respawn_failed_workers=True,
     ).serve()
 
 

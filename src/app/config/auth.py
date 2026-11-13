@@ -24,6 +24,7 @@ class AuthSettings(SettingsGroup):
     password_hasher: PasswordHasher = Field(
         default=PasswordHasher.ARGON2ID, validation_alias="PASSWORD_HASHER"
     )
+    hash_concurrency: int = Field(default=2, ge=1, validation_alias="PASSWORD_HASH_CONCURRENCY")
 
     def secrets(self) -> list[SecretStr]:
         return [self.secret, self.refresh_secret, self.forgot_secret, self.confirm_email_secret]

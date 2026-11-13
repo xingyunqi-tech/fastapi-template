@@ -8,7 +8,7 @@ PostgreSQL 18（与 nestjs 共库或 parity 对照时为 17.11）、SQLAlchemy 2
 |---|---|---|
 | `DATABASE_URL` | 空 | 设置时优先，驱动统一替换为 `postgresql+asyncpg` |
 | `DATABASE_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `NAME` | `localhost` / `5432` / `root` / `secret` / `api` | 未设置 `DATABASE_URL` 时使用 |
-| `DATABASE_MAX_CONNECTIONS` | `100` | 连接池：`pool_size = min(N, 20)`，其余为 overflow |
+| `DATABASE_MAX_CONNECTIONS` | `100` | 全部 API 进程合计上限，每进程 `N // WEB_CONCURRENCY`：`pool_size = min(该值, 20)`，其余为 overflow |
 | `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres ssl 选项，CA / KEY / CERT 为 PEM 文本 |
 | `DB_SCHEMA_OWNER` | `alembic` | `external` 表示表结构由 nestjs 迁移管理，见下文 |
 

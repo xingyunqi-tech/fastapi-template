@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import logging
+import uuid
 
 import pytest
 from pwdlib.hashers.bcrypt import BcryptHasher
@@ -10,11 +12,13 @@ lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
 
 from app.common.exceptions import HttpError, find_unique_violation, not_found
+from app.config import Settings
 from app.core.auth.router import _service
 from app.core.session.repository import SessionRepository
 from app.core.users.repository import UserRepository
 from app.infrastructure.database.schema_check import ensure_external_schema, missing_columns
 from app.infrastructure.database.session import Database, after_commit
+from tests.integration.conftest import PgServer, _build_app, client_for, clone_database_async
 from tests.integration.test_auth import PASSWORD, bearer, login
 
 
@@ -169,3 +173,21 @@ async def test_user_list_orders_by_id_after_requested_sort(
         assert same == sorted(same)
         if not query:
             assert [user["id"] for user in users] == sorted(user["id"] for user in users)
+
+
+async def test_authenticated_request_needs_one_connection(
+    pg_server: PgServer, template_db: str
+) -> None:
+    name = await clone_database_async(pg_server, f"single_{uuid.uuid4().hex[:12]}")
+    settings = Settings.load().database.model_copy(
+        update={"url": pg_server.url(name), "max_connections": 1}
+    )
+    database = Database.from_settings(settings)
+    try:
+        async with client_for(_build_app(database)) as http:
+            tokens = await login(http, "john.doe@example.com")
+            async with asyncio.timeout(10):
+                response = await http.get("/api/v1/auth/me", headers=bearer(tokens["token"]))
+        assert response.status_code == 200
+    finally:
+        await database.dispose()

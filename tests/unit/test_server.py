@@ -29,4 +29,5 @@ def test_serves_app_on_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
     assert instance.target == "app.main:app"
     assert instance.kwargs["port"] == 3200
     assert instance.kwargs["workers"] == 2
+    assert instance.kwargs["respawn_failed_workers"] is True
     assert instance.served

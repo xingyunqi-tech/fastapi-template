@@ -6,9 +6,13 @@ import re
 import secrets
 import time
 import warnings
+import weakref
+from asyncio import AbstractEventLoop, get_running_loop
 from dataclasses import dataclass
 from typing import Any, Final
+lazy from collections.abc import Callable
 
+import anyio
 import anyio.to_thread
 import jwt
 from jwt.warnings import InsecureKeyLengthWarning
@@ -19,6 +23,9 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 from app.config import PasswordHasher
 
 BCRYPT_ROUNDS: Final = 10
+ARGON2_TIME_COST: Final = 2
+ARGON2_MEMORY_COST_KIB: Final = 19_456
+ARGON2_PARALLELISM: Final = 1
 _MS_RE: Final = re.compile(
     r"(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h"
     r"|days?|d|weeks?|w|years?|yrs?|y)?",
@@ -68,21 +75,36 @@ class VerifyResult:
 class Passwords:
     """客户端传 MD5，服务端存 argon2id（默认）或 bcrypt；可验证两种格式并在需要时重哈希。"""
 
-    def __init__(self, hasher: PasswordHasher) -> None:
+    def __init__(self, hasher: PasswordHasher, *, concurrency: int = 2) -> None:
         bcrypt = BcryptHasher(rounds=BCRYPT_ROUNDS)
-        argon2 = Argon2Hasher()
+        argon2 = Argon2Hasher(
+            time_cost=ARGON2_TIME_COST,
+            memory_cost=ARGON2_MEMORY_COST_KIB,
+            parallelism=ARGON2_PARALLELISM,
+        )
         preferred = bcrypt if hasher is PasswordHasher.BCRYPT else argon2
         fallback = argon2 if hasher is PasswordHasher.BCRYPT else bcrypt
         self._hash = PasswordHash((preferred, fallback))
+        self._concurrency = concurrency
+        self._limiters: weakref.WeakKeyDictionary[AbstractEventLoop, anyio.CapacityLimiter] = (
+            weakref.WeakKeyDictionary()
+        )
 
     def hash(self, md5_password: str) -> str:
         return self._hash.hash(md5_password)
 
     async def hash_async(self, md5_password: str) -> str:
-        return await anyio.to_thread.run_sync(self.hash, md5_password)
+        return await self._run(self.hash, md5_password)
 
     async def verify_md5_async(self, md5_password: str, password_hash: str) -> VerifyResult:
-        return await anyio.to_thread.run_sync(self.verify_md5, md5_password, password_hash)
+        return await self._run(self.verify_md5, md5_password, password_hash)
+
+    async def _run[**P, T](self, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        loop = get_running_loop()
+        limiter = self._limiters.get(loop)
+        if limiter is None:
+            limiter = self._limiters[loop] = anyio.CapacityLimiter(self._concurrency)
+        return await anyio.to_thread.run_sync(lambda: func(*args, **kwargs), limiter=limiter)
 
     def verify_md5(self, md5_password: str, password_hash: str) -> VerifyResult:
         """依次尝试原值与大写 MD5；验证通过且哈希格式需要升级时返回新哈希。"""

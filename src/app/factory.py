@@ -76,9 +76,11 @@ def build_context(settings: Settings) -> AppContext:
     queue = TaskQueue.from_settings(settings)
     context = AppContext(
         settings=settings,
-        database=Database.from_settings(settings.database),
+        database=Database.from_settings(settings.database, processes=settings.app.web_concurrency),
         cache=cache,
-        passwords=Passwords(settings.auth.password_hasher),
+        passwords=Passwords(
+            settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency
+        ),
         mailer=_mailer(settings, queue),
         redis=redis,
         queue=queue,

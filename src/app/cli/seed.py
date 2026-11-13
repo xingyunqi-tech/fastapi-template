@@ -103,7 +103,7 @@ async def _count_role(session: AsyncSession, role: RoleId) -> int:
 
 
 async def _seed_users(session: AsyncSession, settings: Settings) -> None:
-    passwords = Passwords(settings.auth.password_hasher)
+    passwords = Passwords(settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency)
     production = settings.app.is_production
     admin_email = (
         (os.environ.get("SEED_ADMIN_EMAIL") or "").strip().lower() or None

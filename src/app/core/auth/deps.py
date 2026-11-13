@@ -60,10 +60,10 @@ def is_status_allowed_for_auth(status_id: int | None) -> bool:
     return status_id in {StatusId.ACTIVE, StatusId.INACTIVE}
 
 
-async def _touch(context: AppContext, session_id: int) -> None:
-    """独立短事务更新 lastActiveAt；失败只记日志。"""
+async def _touch(context: AppContext, session: DbSession, session_id: int) -> None:
+    """在请求事务的 SAVEPOINT 中更新 lastActiveAt；失败只记日志。"""
     try:
-        async with context.database.transaction() as session:
+        async with session.begin_nested():
             await SessionService(SessionRepository(session), context.cache).touch(session_id)
     except Exception as error:
         logger.warning("Failed to update lastActiveAt of session %s: %s", session_id, error)
@@ -92,7 +92,7 @@ async def _validate_access(
         raise unauthorized("Session expired")
     if not is_status_allowed_for_auth(user.status_id):
         raise unauthorized("User is not active")
-    await _touch(context, record.id)
+    await _touch(context, session, record.id)
     await context.cache.set(
         key, {"statusId": user.status_id, "roleId": user.role_id}, JWT_USER_CACHE_TTL_MS
     )
