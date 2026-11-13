@@ -14,7 +14,7 @@ from app.infrastructure.scheduler import create_scheduler
 settings = get_settings()
 configure_logging(settings)
 setup_sentry(settings)
-context = build_context(settings)
+context = build_context(settings, max_connections=settings.database.worker_max_connections)
 if context.queue is None:
     raise RuntimeError("task queue is not configured")
 queue = context.queue

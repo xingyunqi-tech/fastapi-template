@@ -35,9 +35,16 @@ class Database:
         self.sessionmaker = sessionmaker
 
     @classmethod
-    def from_settings(cls, settings: DatabaseSettings, *, processes: int = 1) -> Database:
-        """`DATABASE_MAX_CONNECTIONS` 为全部 API 进程合计上限，按进程数均分。"""
-        limit = max(settings.max_connections // processes, 1)
+    def from_settings(
+        cls,
+        settings: DatabaseSettings,
+        *,
+        max_connections: int | None = None,
+        processes: int = 1,
+    ) -> Database:
+        """`max_connections`（缺省取 `DATABASE_MAX_CONNECTIONS`）为合计上限，按进程数均分。"""
+        total = settings.max_connections if max_connections is None else max_connections
+        limit = max(total // processes, 1)
         engine = create_async_engine(
             settings.sqlalchemy_url(),
             pool_size=min(limit, 20),

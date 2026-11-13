@@ -1,3 +1,5 @@
+import importlib
+import sys
 import threading
 
 import anyio
@@ -5,7 +7,8 @@ import pytest
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.common.security import Passwords
-from app.config import DatabaseSettings, PasswordHasher, Settings
+from app.config import DatabaseSettings, PasswordHasher, Settings, get_settings
+from app.factory import build_context
 from app.infrastructure.database.session import Database
 
 MD5 = "e10adc3949ba59abbe56e057f20f883e"
@@ -64,3 +67,58 @@ def test_pool_splits_max_connections_across_processes(
     assert isinstance(pool, AsyncAdaptedQueuePool)
     assert pool.size() == pool_size
     assert pool._max_overflow == overflow
+
+
+def _pool(database: Database) -> AsyncAdaptedQueuePool:
+    assert database.engine is not None
+    pool = database.engine.pool
+    assert isinstance(pool, AsyncAdaptedQueuePool)
+    return pool
+
+
+def test_connection_limits_default_to_80_for_api_and_10_for_worker() -> None:
+    database = Settings.load().database
+    assert database.max_connections == 80
+    assert database.worker_max_connections == 10
+
+
+def test_worker_limit_reads_worker_database_max_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_DATABASE_MAX_CONNECTIONS", "6")
+    assert Settings.load().database.worker_max_connections == 6
+
+
+async def test_api_context_splits_database_max_connections_by_web_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    context = build_context(Settings.load())
+    pool = _pool(context.database)
+    assert (pool.size(), pool._max_overflow) == (20, 0)
+    await context.database.dispose()
+
+
+async def test_context_with_explicit_limit_ignores_web_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    settings = Settings.load()
+    context = build_context(settings, max_connections=settings.database.worker_max_connections)
+    pool = _pool(context.database)
+    assert (pool.size(), pool._max_overflow) == (10, 0)
+    await context.database.dispose()
+
+
+async def test_worker_process_uses_worker_database_max_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REDIS_ENABLED", "true")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    get_settings.cache_clear()
+    monkeypatch.delitem(sys.modules, "app.infrastructure.queue.worker", raising=False)
+    worker = importlib.import_module("app.infrastructure.queue.worker")
+    pool = _pool(worker.context.database)
+    assert (pool.size(), pool._max_overflow) == (10, 0)
+    await worker.context.database.dispose()
+    await worker.context.redis.aclose()

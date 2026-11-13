@@ -21,7 +21,10 @@ class DatabaseSettings(SettingsGroup):
     username: str = Field(default="root", validation_alias="DATABASE_USERNAME")
     password: SecretStr = Field(default=SecretStr("secret"), validation_alias="DATABASE_PASSWORD")
     name: str = Field(default="api", validation_alias="DATABASE_NAME")
-    max_connections: int = Field(default=100, ge=1, validation_alias="DATABASE_MAX_CONNECTIONS")
+    max_connections: int = Field(default=80, ge=1, validation_alias="DATABASE_MAX_CONNECTIONS")
+    worker_max_connections: int = Field(
+        default=10, ge=1, validation_alias="WORKER_DATABASE_MAX_CONNECTIONS"
+    )
     ssl_enabled: EnvFlag = Field(default=False, validation_alias="DATABASE_SSL_ENABLED")
     reject_unauthorized: EnvFlag = Field(
         default=True, validation_alias="DATABASE_REJECT_UNAUTHORIZED"

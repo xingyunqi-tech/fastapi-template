@@ -70,13 +70,18 @@ PRODUCTION_CORS_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
 PRODUCTION_CORS_HEADERS = "Content-Type,Authorization,Accept-Language"
 
 
-def build_context(settings: Settings) -> AppContext:
+def build_context(settings: Settings, *, max_connections: int | None = None) -> AppContext:
+    """`max_connections` 为本进程连接上限；缺省按 API 进程数均分 `DATABASE_MAX_CONNECTIONS`。"""
     redis = Redis.from_url(settings.redis.url()) if settings.redis.enabled else None
     cache: Cache = RedisCache(redis) if redis is not None else MemoryCache()
     queue = TaskQueue.from_settings(settings)
     context = AppContext(
         settings=settings,
-        database=Database.from_settings(settings.database, processes=settings.app.web_concurrency),
+        database=(
+            Database.from_settings(settings.database, processes=settings.app.web_concurrency)
+            if max_connections is None
+            else Database.from_settings(settings.database, max_connections=max_connections)
+        ),
         cache=cache,
         passwords=Passwords(
             settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency

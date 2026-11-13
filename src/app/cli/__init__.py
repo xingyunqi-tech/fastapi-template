@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 from alembic import command
@@ -16,6 +16,8 @@ from app.config import SchemaOwner, Settings, get_settings
 from app.core.permissions.service import ROLE_PERMISSIONS_CACHE_KEY
 from app.factory import build_context
 from app.infrastructure.logging import configure_logging
+
+CLI_DATABASE_MAX_CONNECTIONS: Final = 1
 
 cli = typer.Typer(no_args_is_help=True, add_completion=False)
 permissions_cli = typer.Typer(no_args_is_help=True)
@@ -38,7 +40,7 @@ def seed() -> None:
     """写入角色、状态、权限、行政区划、配置与初始账号（已存在的不覆盖）。"""
 
     async def run() -> None:
-        context = build_context(get_settings())
+        context = build_context(get_settings(), max_connections=CLI_DATABASE_MAX_CONNECTIONS)
         async with context.database.transaction() as session:
             await run_seed(session, context.settings)
         await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
@@ -52,7 +54,7 @@ def clear_permission_cache() -> None:
     """清除角色权限缓存。"""
 
     async def run() -> None:
-        context = build_context(get_settings())
+        context = build_context(get_settings(), max_connections=CLI_DATABASE_MAX_CONNECTIONS)
         await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
         await context.database.dispose()
 

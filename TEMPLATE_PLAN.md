@@ -463,7 +463,7 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 |---|---|
 | `NODE_ENV` | `APP_ENV`（development / test / production） |
 | `DATABASE_TYPE`、`DATABASE_SYNCHRONIZE` | 不需要 |
-| — | `PASSWORD_HASHER`、`PASSWORD_HASH_CONCURRENCY`、`DB_SCHEMA_OWNER`、`OTEL_ENABLED`、`OTEL_EXPORTER_OTLP_ENDPOINT`、`SENTRY_DSN`、`WEB_CONCURRENCY`、`PROMETHEUS_MULTIPROC_DIR` |
+| — | `PASSWORD_HASHER`、`PASSWORD_HASH_CONCURRENCY`、`WORKER_DATABASE_MAX_CONNECTIONS`、`DB_SCHEMA_OWNER`、`OTEL_ENABLED`、`OTEL_EXPORTER_OTLP_ENDPOINT`、`SENTRY_DSN`、`WEB_CONCURRENCY`、`PROMETHEUS_MULTIPROC_DIR` |
 
 与 nestjs 同名同义、契约相关的变量（必须支持，默认值与 nestjs 一致）：
 
@@ -485,6 +485,8 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 | `WECHAT_APP_ID` / `WECHAT_APP_SECRET` / `ALIPAY_APP_ID` | 空 | 健康检查的微信 / 支付宝 API 可达检查，未配置时跳过（M4 登录集成同用这些变量） |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USER` / `MAIL_PASSWORD` / `MAIL_IGNORE_TLS` / `MAIL_SECURE` / `MAIL_REQUIRE_TLS` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` | `MAIL_PORT` 587，其余空 / `false` | SMTP，TLS 选项语义同 nodemailer；nestjs 始终必填 `MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME`，本服务仅生产必填，非生产未设置时只记日志 |
 | `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres 的 ssl 选项，CA / KEY / CERT 为 PEM 文本 |
+
+`DATABASE_MAX_CONNECTIONS` 同名但默认值与 nestjs 不同：默认 `80`（nestjs 为 `100`），语义为全部 API 进程合计上限，按 `WEB_CONCURRENCY` 均分到每个进程。worker、scheduler 进程各自按 `WORKER_DATABASE_MAX_CONNECTIONS`（默认 `10`）建连接池，不按 `WEB_CONCURRENCY` 均分；`app migrate`、`app seed` 为部署时运行的一次性进程，各用 1 个连接。部署时须满足 API + worker + scheduler ≤ Postgres `max_connections`，默认值为 80 + 10 + 10 ≤ 100。
 
 nestjs 未使用 `REDIS_KEY_PREFIX`（键前缀写死在代码里，如 `throttle:`、`lock:`、`session:rotated:`），本服务同样不引入，Redis 键名与 nestjs 逐字一致，便于共用实例。例外：限流算法不同（§5 第 4 项），GCRA 状态存在独立键 `throttle:<sha256>:default:gcra`（哈希输入与 nestjs 相同），共用实例时 GCRA 后端（Python / Go / Java）共用该键、共同计数，nestjs 用固定窗口键、单独计数，两者互不干扰；队列用 Taskiq stream（`taskiq:*`），与 BullMQ 的 `bull:*` 不互通。
 

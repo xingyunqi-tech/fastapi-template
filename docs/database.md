@@ -8,11 +8,22 @@ PostgreSQL 18（与 nestjs 共库或 parity 对照时为 17.11）、SQLAlchemy 2
 |---|---|---|
 | `DATABASE_URL` | 空 | 设置时优先，驱动统一替换为 `postgresql+asyncpg` |
 | `DATABASE_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `NAME` | `localhost` / `5432` / `root` / `secret` / `api` | 未设置 `DATABASE_URL` 时使用 |
-| `DATABASE_MAX_CONNECTIONS` | `100` | 全部 API 进程合计上限，每进程 `N // WEB_CONCURRENCY`：`pool_size = min(该值, 20)`，其余为 overflow |
+| `DATABASE_MAX_CONNECTIONS` | `80` | 全部 API 进程合计上限，每进程 `N // WEB_CONCURRENCY`：`pool_size = min(该值, 20)`，其余为 overflow |
+| `WORKER_DATABASE_MAX_CONNECTIONS` | `10` | worker、scheduler 每个进程的连接上限，不按 `WEB_CONCURRENCY` 均分 |
 | `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres ssl 选项，CA / KEY / CERT 为 PEM 文本 |
 | `DB_SCHEMA_OWNER` | `alembic` | `external` 表示表结构由 nestjs 迁移管理，见下文 |
 
 连接会话时区固定为 UTC。
+
+各进程的连接上限：
+
+| 进程 | 上限 |
+|---|---|
+| API（Granian 各 worker 合计） | `DATABASE_MAX_CONNECTIONS` |
+| worker、scheduler | 各 `WORKER_DATABASE_MAX_CONNECTIONS`；`app worker --workers N` 时为 N 倍 |
+| `app migrate`、`app seed`、`app permissions clear-cache` | 1，部署时一次性运行 |
+
+部署时须满足 API + worker + scheduler ≤ Postgres `max_connections`，默认值为 80 + 10 + 10 ≤ 100。
 
 ## 模型
 
