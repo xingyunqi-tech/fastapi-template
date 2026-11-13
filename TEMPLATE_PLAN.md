@@ -346,7 +346,7 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 | 1 | 密码哈希 | bcrypt(md5)，cost 10 | **argon2id(md5)**（OWASP 首选）；登录时可验证旧 bcrypt 哈希并自动重哈希为 argon2id（pwdlib `verify_and_update`）。客户端仍传 MD5，前端无感 |
 | 2 | 会话 | 已同步到 nestjs | 会话表可空列 `userAgent`（≤512）、`ip`、`lastActiveAt`（每会话最多 5 分钟写一次）；「我的设备」列表、下线指定设备、下线其他设备三个接口，见 §4.6 |
 | 3 | 数据库迁移 | 每个应用容器启动时由 `scripts/startup.sh` 跑迁移（生产镜像不含 npm，直接 `node` 执行 TypeORM CLI） | 独立一次性 `migrate` 服务 / job，应用 `depends_on: service_completed_successfully`；多副本不会并发迁移 |
-| 4 | 限流算法 | 固定窗口 | Redis Lua **GCRA**（平滑、无窗口边界突刺）；响应头名称与 nestjs 的 @nestjs/throttler 一致：`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时带 `Retry-After`；两种算法的剩余次数与重置时间不同，parity 只比对这些头存在且为整数；GCRA 状态存独立键（见 §9），共用 Redis 时两个后端各自计数；无 Redis 时按 worker 进程各自计数 |
+| 4 | 限流算法 | 固定窗口 | Redis Lua **GCRA**（平滑、无窗口边界突刺）；响应头名称与 nestjs 的 @nestjs/throttler 一致：`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`，429 时带 `Retry-After`；两种算法的剩余次数与重置时间不同，parity 只比对这些头存在且为整数；GCRA 状态存独立键（见 §9），共用 Redis 时 GCRA 后端（Python / Go / Java）共用 `:gcra` 键、共同计数，nestjs 用固定窗口键、单独计数；无 Redis 时按 worker 进程各自计数 |
 | 5 | Request ID | 已同步到 nestjs（校验 + 回写） | 同 nestjs；日志另带 OTel `trace_id` / `span_id`，日志与链路可互相跳转 |
 | 6 | OpenAPI | 运行时生成，无版本管理，spec 不含校验约束 | 不自行生成对外文档：`/docs-json` 输出入库的 nestjs 完整基线原文，校验元数据 `validation.json` 一并入库（`make openapi-sync`）；契约测试逐 operation 比对实现与基线，定时 drift job 发现 nestjs 漂移，见 §4.3、§11 |
 | 7 | 新表主键 | uuid v4 | **UUIDv7**（Python 3.14+ 标准库 `uuid.uuid7()`，按时间有序，索引友好）；已有 int 主键（user 等）保持不变 |
@@ -486,7 +486,13 @@ nestjs 用 class-transformer + `JSON.stringify` 输出，Pydantic 默认行为�
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USER` / `MAIL_PASSWORD` / `MAIL_IGNORE_TLS` / `MAIL_SECURE` / `MAIL_REQUIRE_TLS` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` | `MAIL_PORT` 587，其余空 / `false` | SMTP，TLS 选项语义同 nodemailer；nestjs 始终必填 `MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME`，本服务仅生产必填，非生产未设置时只记日志 |
 | `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres 的 ssl 选项，CA / KEY / CERT 为 PEM 文本 |
 
-nestjs 未使用 `REDIS_KEY_PREFIX`（键前缀写死在代码里，如 `throttle:`、`lock:`、`session:rotated:`），本服务同样不引入，Redis 键名与 nestjs 逐字一致，便于共用实例。例外：限流算法不同（§5 第 4 项），GCRA 状态存在独立键 `throttle:<sha256>:default:gcra`（哈希输入与 nestjs 相同），共用实例时两个后端各自计数、互不干扰；队列用 Taskiq stream（`taskiq:*`），与 BullMQ 的 `bull:*` 不互通。
+nestjs 未使用 `REDIS_KEY_PREFIX`（键前缀写死在代码里，如 `throttle:`、`lock:`、`session:rotated:`），本服务同样不引入，Redis 键名与 nestjs 逐字一致，便于共用实例。例外：限流算法不同（§5 第 4 项），GCRA 状态存在独立键 `throttle:<sha256>:default:gcra`（哈希输入与 nestjs 相同），共用实例时 GCRA 后端（Python / Go / Java）共用该键、共同计数，nestjs 用固定窗口键、单独计数，两者互不干扰；队列用 Taskiq stream（`taskiq:*`），与 BullMQ 的 `bull:*` 不互通。
+
+GCRA 键 `throttle:<sha256>:default:gcra` 的值格式为 Python、Go、Java 三个后端共用 Redis 时的约定：
+
+- 值为 TAT（理论到达时间），单位毫秒，以 Redis `TIME` 为时间基准，十进制字符串存储；过期时间为 `PX ceil(TAT - now)`
+- 读取方须兼容任意小数位（含无小数）
+- Python 在 Lua 中用 `tostring` 写入（`%.14g`，当前毫秒时间戳下最多 1 位小数）；Go、Java 内部用整数微秒计算，写入时转成最多 3 位小数的毫秒字符串
 
 Settings 按分组拆成多个 `BaseSettings`，敏感字段用 `SecretStr`，启动时一次性校验。
 
