@@ -7,9 +7,9 @@ import pytest
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.common.security import Passwords
-from app.config import DatabaseSettings, PasswordHasher, Settings, get_settings
+from app.config import DatabaseSettings, PasswordHasher, Settings, SettingsError, get_settings
 from app.factory import build_context
-from app.infrastructure.database.session import Database
+from app.infrastructure.database.session import Database, _connect_args
 
 MD5 = "e10adc3949ba59abbe56e057f20f883e"
 
@@ -122,3 +122,27 @@ async def test_worker_process_uses_worker_database_max_connections(
     assert (pool.size(), pool._max_overflow) == (10, 0)
     await worker.context.database.dispose()
     await worker.context.redis.aclose()
+
+
+def test_connection_timeout_defaults_to_10000_ms() -> None:
+    assert Settings.load().database.connection_timeout_ms == 10000
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_connection_timeout_rejects_non_positive_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("DATABASE_CONNECTION_TIMEOUT_MS", value)
+    with pytest.raises(SettingsError, match="DATABASE_CONNECTION_TIMEOUT_MS"):
+        Settings.load()
+
+
+async def test_pool_and_connect_timeouts_follow_database_connection_timeout_ms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_CONNECTION_TIMEOUT_MS", "2500")
+    settings = Settings.load().database
+    database = Database.from_settings(settings)
+    assert _pool(database)._timeout == 2.5
+    assert _connect_args(settings)["timeout"] == 2.5
+    await database.dispose()

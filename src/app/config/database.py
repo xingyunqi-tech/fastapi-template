@@ -25,6 +25,9 @@ class DatabaseSettings(SettingsGroup):
     worker_max_connections: int = Field(
         default=10, ge=1, validation_alias="WORKER_DATABASE_MAX_CONNECTIONS"
     )
+    connection_timeout_ms: int = Field(
+        default=10000, ge=1, validation_alias="DATABASE_CONNECTION_TIMEOUT_MS"
+    )
     ssl_enabled: EnvFlag = Field(default=False, validation_alias="DATABASE_SSL_ENABLED")
     reject_unauthorized: EnvFlag = Field(
         default=True, validation_alias="DATABASE_REJECT_UNAUTHORIZED"

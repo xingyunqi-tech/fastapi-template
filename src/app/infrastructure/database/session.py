@@ -50,6 +50,7 @@ class Database:
             pool_size=min(limit, 20),
             max_overflow=max(limit - 20, 0),
             pool_pre_ping=True,
+            pool_timeout=settings.connection_timeout_ms / 1000,
             connect_args=_connect_args(settings),
         )
         return cls(engine, async_sessionmaker(engine, expire_on_commit=False))
@@ -92,7 +93,10 @@ class Database:
 
 
 def _connect_args(settings: DatabaseSettings) -> dict[str, Any]:
-    args: dict[str, Any] = {"server_settings": {"timezone": "UTC"}}
+    args: dict[str, Any] = {
+        "server_settings": {"timezone": "UTC"},
+        "timeout": settings.connection_timeout_ms / 1000,
+    }
     context: ssl.SSLContext | None = settings.ssl_context()
     if context is not None:
         args["ssl"] = context
