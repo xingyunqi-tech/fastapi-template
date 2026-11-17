@@ -211,3 +211,94 @@ def test_private_file_access(parity: Parity, session_tokens: Tokens) -> None:
         assert python.status_code == nestjs.status_code == expected_status
         assert python.headers["content-type"] == nestjs.headers["content-type"]
         assert python.content == nestjs.content
+
+
+def _public_urls(parity: Parity, session_tokens: Tokens) -> tuple[str, str]:
+    python_file, nestjs_file = _upload_pair(parity, session_tokens, "image")
+    return (
+        "/api/v1/files/" + python_file["path"].rsplit("/", 1)[-1],
+        "/api/v1/files/" + nestjs_file["path"].rsplit("/", 1)[-1],
+    )
+
+
+def _get_both(
+    parity: Parity,
+    urls: tuple[str, str],
+    headers: tuple[dict[str, str], dict[str, str]],
+    method: str = "GET",
+) -> Pair:
+    return Pair(
+        *(
+            client.request(method, url, headers=side)
+            for client, url, side in zip(parity.clients, urls, headers, strict=True)
+        )
+    )
+
+
+def _assert_same_download(pair: Pair, header_names: tuple[str, ...]) -> None:
+    python, nestjs = pair.both()
+    assert python.status_code == nestjs.status_code, (python.text, nestjs.text)
+    assert python.content == nestjs.content
+    for name in header_names:
+        assert python.headers.get(name) == nestjs.headers.get(name), name
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bytes=abc", "bytes=5-2", "items=0-1", "bytes=100-200", "bytes=-3", "bytes=0-1",
+        "bytes=3-", "bytes=0-1,3-4", "bytes=0-1,1-2", "bytes=", "bytes=-0", "bytes=5-100",
+    ],
+)  # fmt: skip
+def test_public_file_download_ranges(parity: Parity, session_tokens: Tokens, value: str) -> None:
+    urls = _public_urls(parity, session_tokens)
+    pair = _get_both(parity, urls, ({"Range": value}, {"Range": value}))
+    _assert_same_download(
+        pair, ("content-type", "content-range", "content-length", "accept-ranges")
+    )
+
+
+_EPOCH = "Thu, 01 Jan 1970 00:00:00 GMT"
+
+
+@pytest.mark.parametrize(
+    ("side_header", "headers"),
+    [
+        ("If-None-Match", {}),
+        ("If-None-Match", {"Cache-Control": "no-cache"}),
+        (None, {"If-None-Match": "*"}),
+        (None, {"If-None-Match": 'W/"x"'}),
+        ("If-Modified-Since", {}),
+        (None, {"If-Modified-Since": _EPOCH}),
+        (None, {"If-Match": '"x"'}),
+        (None, {"If-Match": "*"}),
+        (None, {"If-Unmodified-Since": _EPOCH}),
+        ("If-Range", {"Range": "bytes=0-1"}),
+        (None, {"If-Range": '"x"', "Range": "bytes=0-1"}),
+        (None, {"If-Range": '"x"', "Range": "bytes=100-200"}),
+        ("If-Range-Date", {"Range": "bytes=0-1"}),
+    ],
+)
+def test_public_file_download_conditional(
+    parity: Parity, session_tokens: Tokens, side_header: str | None, headers: dict[str, str]
+) -> None:
+    urls = _public_urls(parity, session_tokens)
+    first = _get_both(parity, urls, ({}, {}))
+    sides: tuple[dict[str, str], dict[str, str]] = ({**headers}, {**headers})
+    for side, response in zip(sides, first.both(), strict=True):
+        if side_header == "If-Range-Date":
+            side["If-Range"] = response.headers["last-modified"]
+        elif side_header in {"If-None-Match", "If-Range"}:
+            side[side_header] = response.headers["etag"]
+        elif side_header == "If-Modified-Since":
+            side[side_header] = response.headers["last-modified"]
+    _assert_same_download(
+        _get_both(parity, urls, sides),
+        ("content-type", "content-range", "content-length", "accept-ranges", "cache-control"),
+    )
+
+
+def test_public_file_head_range(parity: Parity, session_tokens: Tokens) -> None:
+    urls = _public_urls(parity, session_tokens)
+    pair = _get_both(parity, urls, ({"Range": "bytes=0-1"}, {"Range": "bytes=0-1"}), "HEAD")
+    _assert_same_download(pair, ("content-length", "content-range"))

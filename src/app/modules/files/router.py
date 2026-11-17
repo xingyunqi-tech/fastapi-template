@@ -2,13 +2,12 @@
 
 import mimetypes
 import re
-from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path as FsPath
 from typing import TYPE_CHECKING, Annotated, Any, Final
 from uuid import UUID
 
 from fastapi import Depends, Path, Request
-from starlette.responses import FileResponse, Response
+from starlette.responses import Response
 
 from app.common.context import AppContext, Context
 from app.common.exceptions import bad_request, forbidden, not_found
@@ -37,6 +36,7 @@ from app.modules.files.schemas import (
     PresignedFileResponseDto,
     UploadFileQueryDto,
 )
+from app.modules.files.send import file_response
 from app.modules.files.service import FilesService
 from app.modules.files.storage import (
     LOCAL_FILES_ROOT,
@@ -56,8 +56,6 @@ from app.modules.files.uploads import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-    from starlette.datastructures import Headers
 
     from app.modules.files.models import FileModel
 
@@ -292,30 +290,6 @@ async def upload_presigned_file(
     return {"file": serialize_file(file, context.file_urls), "uploadSignedUrl": signed_url}
 
 
-def _weak_etag_matches(header: str, etag: str) -> bool:
-    if header.strip() == "*":
-        return True
-    target = etag.removeprefix("W/")
-    return any(tag.strip().removeprefix("W/") == target for tag in header.split(","))
-
-
-def _is_fresh(headers: Headers, etag: str, mtime: float) -> bool:
-    """`fresh`：If-None-Match 优先，其次 If-Modified-Since；带 no-cache 时视为过期。"""
-    if_none_match = headers.get("if-none-match")
-    if_modified_since = headers.get("if-modified-since")
-    if not if_none_match and not if_modified_since:
-        return False
-    if "no-cache" in (headers.get("cache-control") or ""):
-        return False
-    if if_none_match:
-        return _weak_etag_matches(if_none_match, etag)
-    try:
-        since = parsedate_to_datetime(if_modified_since or "").timestamp()
-    except TypeError, ValueError:
-        return False
-    return int(mtime) <= since
-
-
 def _content_type(path: FsPath) -> str:
     extension = path.suffix.removeprefix(".").lower()
     return (
@@ -326,21 +300,11 @@ def _content_type(path: FsPath) -> str:
 
 
 def send_file(request: Request, path: FsPath) -> Response:
-    """Express `res.sendFile`：弱 ETag、Last-Modified、Cache-Control，支持条件请求与 Range。"""
     try:
         stat = path.stat()
     except OSError:
         raise not_found({"error": "fileNotFound"}) from None
-    etag = f'W/"{stat.st_size:x}-{stat.st_mtime_ns // 1_000_000:x}"'
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=0",
-        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
-        "ETag": etag,
-    }
-    if _is_fresh(request.headers, etag, stat.st_mtime):
-        return Response(status_code=304, headers=headers)
-    return FileResponse(path, media_type=_content_type(path), headers=headers, stat_result=stat)
+    return file_response(request.headers, path, stat, _content_type(path))
 
 
 def redirect(request: Request, url: str) -> Response:

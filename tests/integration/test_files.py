@@ -488,6 +488,91 @@ class TestLocalDownload:
         cached = await local_client.get(url, headers={"If-None-Match": response.headers["etag"]})
         assert cached.status_code == 304
 
+    @pytest.mark.parametrize(
+        ("value", "status", "content", "content_range"),
+        [
+            ("bytes=abc", 200, PNG, None),
+            ("items=0-1", 200, PNG, None),
+            ("bytes=", 200, PNG, None),
+            ("bytes=0-1,3-4", 200, PNG, None),
+            ("bytes=0-1", 206, PNG[:2], "bytes 0-1/11"),
+            ("bytes=-3", 206, PNG[-3:], "bytes 8-10/11"),
+            ("bytes=3-", 206, PNG[3:], "bytes 3-10/11"),
+            ("bytes=5-100", 206, PNG[5:], "bytes 5-10/11"),
+            ("bytes=0-1,1-2", 206, PNG[:3], "bytes 0-2/11"),
+        ],
+    )
+    async def test_range_follows_express_send(
+        self,
+        local_client: httpx.AsyncClient,
+        value: str,
+        status: int,
+        content: bytes,
+        content_range: str | None,
+    ) -> None:
+        file = await upload(local_client, await token(local_client), "image")
+        url = file["path"].removeprefix("http://backend.test")
+
+        response = await local_client.get(url, headers={"Range": value})
+
+        assert response.status_code == status
+        assert response.content == content
+        assert response.headers["content-length"] == str(len(content))
+        assert response.headers.get("content-range") == content_range
+
+    @pytest.mark.parametrize("value", ["bytes=5-2", "bytes=100-200", "bytes=-0"])
+    async def test_unsatisfiable_range_is_416_envelope(
+        self, local_client: httpx.AsyncClient, value: str
+    ) -> None:
+        file = await upload(local_client, await token(local_client), "image")
+        url = file["path"].removeprefix("http://backend.test")
+
+        response = await local_client.get(url, headers={"Range": value})
+
+        assert response.status_code == 416
+        assert response.json() == envelope(416, "Range Not Satisfiable")
+        assert response.headers["content-range"] == "bytes */11"
+        assert response.headers["accept-ranges"] == "bytes"
+
+    async def test_conditional_requests_follow_express_send(
+        self, local_client: httpx.AsyncClient
+    ) -> None:
+        file = await upload(local_client, await token(local_client), "image")
+        url = file["path"].removeprefix("http://backend.test")
+        first = await local_client.get(url)
+        etag, modified = first.headers["etag"], first.headers["last-modified"]
+        epoch = "Thu, 01 Jan 1970 00:00:00 GMT"
+
+        async def status(headers: dict[str, str]) -> int:
+            return (await local_client.get(url, headers=headers)).status_code
+
+        assert await status({"If-None-Match": "*"}) == 304
+        assert await status({"If-None-Match": 'W/"x"'}) == 200
+        assert await status({"If-None-Match": etag, "Cache-Control": "no-cache"}) == 200
+        assert await status({"If-Modified-Since": modified}) == 304
+        assert await status({"If-Modified-Since": epoch}) == 200
+        assert await status({"If-Match": "*"}) == 200
+        assert await status({"If-Range": etag, "Range": "bytes=0-1"}) == 206
+        assert await status({"If-Range": modified, "Range": "bytes=0-1"}) == 206
+        assert await status({"If-Range": '"x"', "Range": "bytes=0-1"}) == 200
+        assert await status({"If-Range": '"x"', "Range": "bytes=100-200"}) == 200
+        for headers in ({"If-Match": '"x"'}, {"If-Unmodified-Since": epoch}):
+            failed = await local_client.get(url, headers=headers)
+            assert failed.status_code == 412
+            assert failed.json() == envelope(412, "Precondition Failed")
+        duplicated = [
+            [("Range", "bytes=0-1"), ("Range", "bytes=0-1")],
+            [("If-None-Match", 'W/"x"'), ("If-None-Match", etag)],
+            [("If-Modified-Since", epoch), ("If-Modified-Since", modified)],
+        ]
+        statuses = [
+            (await local_client.get(url, headers=headers)).status_code for headers in duplicated
+        ]
+        assert statuses == [200, 304, 200]
+        head = await local_client.head(url, headers={"Range": "bytes=0-1"})
+        assert (head.status_code, head.headers["content-length"]) == (206, "2")
+        assert head.headers["content-range"] == "bytes 0-1/11"
+
     async def test_unknown_or_private_file_is_not_found(
         self, local_client: httpx.AsyncClient
     ) -> None:
