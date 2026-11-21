@@ -101,13 +101,6 @@ class TestProbes:
         assert response.json() == UNAVAILABLE
         assert "cache-control" not in response.headers
 
-    async def test_simple_health_check_has_no_cache_header(self, make_app: AppFactory) -> None:
-        async with client_for(make_app()) as client:
-            response = await client.get("/api/health")
-
-        assert response.status_code == 200
-        assert "cache-control" not in response.headers
-
 
 class TestFullCheck:
     async def test_without_redis_and_payment_config(self, make_app: AppFactory) -> None:

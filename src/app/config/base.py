@@ -15,7 +15,7 @@ def _parse_env_flag(value: Any) -> Any:
 
 
 EnvFlag = Annotated[bool, BeforeValidator(_parse_env_flag)]
-"""对应 nestjs validate-config：只接受 `true` / `false`，空串视为未设置。"""
+"""只接受 `true` / `false`，空串视为未设置。"""
 
 
 class SettingsGroup(BaseSettings):

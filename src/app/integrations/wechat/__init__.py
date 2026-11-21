@@ -1,4 +1,4 @@
-"""微信：小程序 code2session、APP OAuth、小程序手机号、订阅消息（nestjs WechatService）。"""
+"""微信：小程序 code2session、APP OAuth、小程序手机号（nestjs WechatService）。"""
 
 import asyncio
 import logging
@@ -15,7 +15,6 @@ __all__ = [
     "WechatApiError",
     "WechatPhoneInfo",
     "WechatService",
-    "WechatSubscribeMessage",
     "WechatUserInfo",
 ]
 
@@ -43,14 +42,6 @@ class WechatUserInfo:
     nickname: str | None = None
     avatar: str | None = None
     gender: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WechatSubscribeMessage:
-    open_id: str
-    template_id: str
-    data: dict[str, str]
-    page: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,16 +271,4 @@ class WechatService:
         return WechatPhoneInfo(
             pure_phone_number=phone_info["purePhoneNumber"],
             country_code=str(phone_info.get("countryCode")),
-        )
-
-    async def send_subscribe_message(self, message: WechatSubscribeMessage) -> None:
-        """发送小程序订阅消息；微信返回非 0 errcode（如 43101 用户未订阅）时抛 WechatApiError。"""
-        body: dict[str, Any] = {"touser": message.open_id, "template_id": message.template_id}
-        if message.page is not None:
-            body["page"] = message.page
-        body["data"] = {key: {"value": value} for key, value in message.data.items()}
-        body["miniprogram_state"] = self.settings.mini_program_state.value
-        body["lang"] = "zh_CN"
-        await self._call_mini_app_api(
-            "/cgi-bin/message/subscribe/send", body, "Send subscribe message"
         )

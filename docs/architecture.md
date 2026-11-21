@@ -12,9 +12,9 @@ src/app/
 ├── contract/schemas.py  # 由 scripts/gen_schemas.py 从基线生成的 Pydantic 模型（类名即 nestjs DTO 名），禁止手改
 ├── common/              # 路由、信封、异常与翻译、校验引擎、中间件、分页、安全、i18n
 ├── core/                # auth、users、session、permissions
-├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、alerting、account_cleanup
+├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup
 ├── integrations/        # mail、sms（阿里云）、wechat、alipay
-└── modules/             # home、files、config、regions、notifications、addresses、favorites、feedbacks、consents、app_profile
+└── modules/             # files
 ```
 
 仓库根的其它目录：
@@ -22,10 +22,9 @@ src/app/
 | 目录 | 内容 |
 |---|---|
 | `openapi/` | `nestjs-baseline.json`（`/docs-json` 原文）、`validation.json`（class-validator 元数据）、`nest_handlers.json`（限流键映射）、`SOURCE`（nestjs 提交号）；运行时读取，镜像中包含 |
-| `db/nestjs-schema.sql` | nestjs 迁移后的表结构快照，parity 表结构比对基线 |
 | `migrations/` | Alembic（async env.py） |
-| `scripts/` | `openapi-sync.sh` 与 PEP 723 脚本（基线导出、schema 快照、校验用例、限流 handler 映射）、`gen_schemas.py`、`check_commit_msg.py`、`audit_severity.py` |
-| `tests/` | `unit`、`integration`、`contract`、`parity`、`e2e`，见 [testing.md](testing.md) |
+| `scripts/` | `gen_schemas.py`、`gen_nest_handlers.py`（限流 handler 映射）、`check_commit_msg.py`、`audit_severity.py` |
+| `tests/` | `unit`、`integration`、`e2e`，见 [testing.md](testing.md) |
 | `docker/`、`deploy/`、`.github/workflows/` | 见 [deploy.md](deploy.md) |
 
 ## 模块分层
@@ -40,7 +39,7 @@ src/app/
 | `router.py` | 薄路由，`ApiRouter.endpoint(...)` 声明 |
 | `account_cleaner.py` | 注销账号后的数据清理器（`@register_account_cleaner(order)`） |
 
-新模块需在 `factory.create_app` 中 `include_routes`，在 `infrastructure/database/models.py` 中导入 ORM 模型。路由注册顺序与 nestjs AppModule 中 controller 顺序一致，契约测试校验相对顺序。
+新模块需在 `factory.create_app` 中 `include_routes`，在 `infrastructure/database/models.py` 中导入 ORM 模型。
 
 ## 路由声明
 
@@ -114,21 +113,18 @@ src/app/
 |---|---|---|
 | 缓存 | `infrastructure/cache` | 键 `cache::<key>`、值 `{"value","expires"}`（与 Keyv 互通）；未启用 Redis 时用进程内存 |
 | 锁 | `infrastructure/redis` | `lock:<key>`，Redis 不可用时退回进程内锁 |
-| 限流 | `infrastructure/throttler` | GCRA（Redis Lua），键 `throttle:<sha256>:default:gcra`；JWT 路由按用户、其余按 IP（`TRUST_PROXY` 跳数）；Redis 故障回落内存并告警 |
-| 队列 | `infrastructure/queue` | Taskiq + Redis Stream：`taskiq:mail`、`taskiq:notification`、`taskiq:account-cleanup`、`taskiq:scheduler` |
-| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 清理软删会话、04:00 UTC 清理已读通知、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `lock:scheduler:<name>` |
+| 限流 | `infrastructure/throttler` | GCRA（Redis Lua），键 `throttle:<sha256>:default:gcra`；JWT 路由按用户、其余按 IP（`TRUST_PROXY` 跳数）；Redis 故障时回落内存，计入 `throttler_storage_fallback_total` 并记 error 日志 |
+| 队列 | `infrastructure/queue` | Taskiq + Redis Stream：`taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler` |
+| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 清理软删会话、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `lock:scheduler:<name>` |
 | 日志 | `infrastructure/logging` | structlog；生产 JSON、开发彩色单行；带 request_id、trace_id / span_id、user_id，敏感字段脱敏 |
 | 指标 | `infrastructure/metrics` | `/metrics`（`METRICS_PATH`），指标名、标签、桶同 nestjs；多进程共享 `PROMETHEUS_MULTIPROC_DIR` |
-| 健康检查 | `infrastructure/health` | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready`、`/api/health` |
+| 健康检查 | `infrastructure/health` | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready` |
 | 链路 / 错误上报 | `infrastructure/observability` | `OTEL_ENABLED`（OTLP/HTTP）、`SENTRY_DSN`，默认关闭 |
 | 审计 | `infrastructure/audit` | `audit=Auditable(...)` 的路由成功后写 `audit_logs` |
-| 告警 | `infrastructure/alerting` | 写 `admin_alert`，按 dedupKey 去重并通知管理员 |
-| 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器；`POST admin/users/:id/cleanup` 重新触发 |
+| 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器，最终失败记 error 日志 |
 | 邮件 | `integrations/mail`、`queue/mail.py` | 设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |
 | 文件 | `modules/files` | `FILE_DRIVER`：`local`（`./files`）、`s3`、`s3-presigned` |
 
 ## 配置
 
 `app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），变量名与 nestjs `env-example-relational` 一致，全部变量见 `.env.example`。生产环境额外校验：四个 JWT 密钥 ≥32 字符且互不相同、`REDIS_ENABLED=true`、`MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` 必填。
-
-与 nestjs 的行为差异见 [contract.md](contract.md) 的「与 nestjs 的行为差异」一节。

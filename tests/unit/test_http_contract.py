@@ -28,6 +28,9 @@ class AuthEmailLoginDto(BaseModel):
     password: str
 
 
+LIVE = "/api/v1/health/live"
+
+
 class FakeUniqueViolation(Exception):
     sqlstate = "23505"
 
@@ -361,7 +364,7 @@ class TestValidation:
 class TestBodyParser:
     @pytest.mark.parametrize(
         ("method", "path"),
-        [("POST", "/api/v1/nope"), ("GET", "/"), ("PATCH", "/api/health")],
+        [("POST", "/api/v1/nope"), ("GET", LIVE), ("PATCH", LIVE)],
     )
     def test_invalid_json_rejected_before_routing(
         self, client: TestClient, method: str, path: str
@@ -491,21 +494,21 @@ class TestRouting:
         }
 
     def test_method_mismatch_is_404_without_allow(self, client: TestClient) -> None:
-        response = client.patch("/api/health?x=1")
+        response = client.patch(f"{LIVE}?x=1")
 
         assert response.status_code == 404
         assert "allow" not in response.headers
-        assert body(response)["message"] == "Cannot PATCH /api/health?x=1"
+        assert body(response)["message"] == f"Cannot PATCH {LIVE}?x=1"
 
-    @pytest.mark.parametrize("path", ["/api/health/", "/API/Health", "/Api/v1/Test/OK/"])
+    @pytest.mark.parametrize("path", [f"{LIVE}/", "/API/V1/Health/Live", "/Api/v1/Test/OK/"])
     def test_trailing_slash_and_case_insensitive(self, client: TestClient, path: str) -> None:
         assert client.get(path).status_code == 200
 
     def test_double_trailing_slash_not_matched(self, client: TestClient) -> None:
-        assert client.get("/api/health//").status_code == 404
+        assert client.get(f"{LIVE}//").status_code == 404
 
     def test_head_on_get_route(self, client: TestClient) -> None:
-        response = client.head("/api/health")
+        response = client.head(LIVE)
 
         assert response.status_code == 200
         assert response.content == b""
@@ -513,21 +516,21 @@ class TestRouting:
 
 class TestRequestId:
     def test_echoes_valid_id(self, client: TestClient) -> None:
-        assert client.get("/", headers={"X-Request-Id": "abc.1:2-3"}).headers["x-request-id"] == (
+        assert client.get(LIVE, headers={"X-Request-Id": "abc.1:2-3"}).headers["x-request-id"] == (
             "abc.1:2-3"
         )
 
     @pytest.mark.parametrize("incoming", [None, "bad id!", "x" * 129, ""])
     def test_generates_uuid(self, client: TestClient, incoming: str | None) -> None:
         headers = {"X-Request-Id": incoming} if incoming is not None else {}
-        generated = client.get("/", headers=headers).headers["x-request-id"]
+        generated = client.get(LIVE, headers=headers).headers["x-request-id"]
 
         assert str(uuid.UUID(generated)) == generated
 
 
 class TestCors:
     def test_development_reflects_origin(self, client: TestClient) -> None:
-        response = client.get("/", headers={"Origin": "http://a.com"})
+        response = client.get(LIVE, headers={"Origin": "http://a.com"})
 
         assert response.headers["access-control-allow-origin"] == "http://a.com"
         assert response.headers["access-control-allow-credentials"] == "true"
@@ -537,7 +540,7 @@ class TestCors:
         )
 
     def test_no_origin_header(self, client: TestClient) -> None:
-        response = client.get("/")
+        response = client.get(LIVE)
 
         assert "access-control-allow-origin" not in response.headers
         assert response.headers["vary"] == "Origin"
@@ -564,8 +567,8 @@ class TestCors:
         monkeypatch.setenv("FRONTEND_DOMAIN", "https://a.com, https://b.com")
         client = TestClient(create_app(Settings.load()))
 
-        allowed = client.options("/", headers={"Origin": "https://b.com"})
-        denied = client.get("/", headers={"Origin": "https://evil.com"})
+        allowed = client.options(LIVE, headers={"Origin": "https://b.com"})
+        denied = client.get(LIVE, headers={"Origin": "https://evil.com"})
 
         assert allowed.headers["access-control-allow-origin"] == "https://b.com"
         assert allowed.headers["access-control-allow-headers"] == (
@@ -579,7 +582,7 @@ class TestCors:
 
 class TestSecurityHeaders:
     def test_matches_nestjs_helmet(self, client: TestClient) -> None:
-        headers = client.get("/").headers
+        headers = client.get(LIVE).headers
 
         assert headers["content-security-policy"].startswith("default-src 'self';base-uri 'self';")
         assert headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
@@ -591,19 +594,3 @@ class TestSecurityHeaders:
         csp = client.get("/docs").headers["content-security-policy"]
 
         assert "https://cdn.jsdelivr.net" in csp
-
-
-def test_simple_health_reports_current_memory(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import psutil  # type: ignore[import-untyped]
-
-    from app.modules.home import router as home
-
-    class Info:
-        rss = 300 * home.MB
-        uss = 120 * home.MB
-
-    monkeypatch.setattr(psutil.Process, "memory_full_info", lambda _: Info())
-    memory = client.get("/api/health").json()["data"]["memory"]
-    assert memory == {"heapUsed": 120, "heapTotal": 120, "rss": 300}

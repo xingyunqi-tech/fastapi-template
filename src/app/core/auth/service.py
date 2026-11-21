@@ -34,7 +34,6 @@ from app.core.users.service import UserInput, UsersService
 from app.infrastructure.database.session import affected_rows, after_commit
 from app.integrations.mail import Mailer, MailMessage
 from app.integrations.sms import SmsCodeType, mask_phone
-from app.modules.notifications.settings import initialize_default_settings
 lazy from app.common.client import ClientInfo
 lazy from app.config import AuthSettings
 lazy from app.core.session.models import SessionModel
@@ -173,11 +172,6 @@ class AuthService:
         data.role = {"id": RoleId.USER}
         data.status = {"id": StatusId.INACTIVE}
         user, _ = await self.users.create(data)
-        try:
-            async with self.session.begin_nested():
-                await initialize_default_settings(self.session, user.id)
-        except Exception:
-            logger.warning("Failed to initialize notification settings for user %s", user.id)
         hash_ = Jwt.sign(
             {"confirmEmailUserId": user.id},
             self.settings.confirm_email_secret.get_secret_value(),
@@ -367,14 +361,9 @@ class AuthService:
         return LoginResult(tokens, user, created)
 
     async def _create_user(self, data: UserInput) -> _NewUser:
-        """在保存点内创建用户并初始化通知设置，通知设置失败不影响创建。"""
+        """在保存点内创建用户。"""
         async with self.session.begin_nested():
             user, created = await self.users.create(data)
-        try:
-            async with self.session.begin_nested():
-                await initialize_default_settings(self.session, user.id)
-        except Exception:
-            logger.warning("Failed to initialize notification settings for user %s", user.id)
         return _NewUser(user, created)
 
     async def send_code(self, phone: str, type_: SmsCodeType) -> None:

@@ -1,6 +1,6 @@
 # 数据库
 
-PostgreSQL 18（与 nestjs 共库或 parity 对照时为 17.11）、SQLAlchemy 2.1 async + asyncpg、Alembic。
+PostgreSQL 18（与 nestjs 共库时为 17.11）、SQLAlchemy 2.1 async + asyncpg、Alembic。
 
 ## 连接配置
 
@@ -28,14 +28,14 @@ PostgreSQL 18（与 nestjs 共库或 parity 对照时为 17.11）、SQLAlchemy 2
 
 ## 模型
 
-- 表名、列名、约束名、索引与 nestjs 一致（`db/nestjs-schema.sql` 为对照快照）；列名 camelCase，ORM 属性 snake_case：`first_name: Mapped[str] = mapped_column("firstName", ...)`
+- 表名、列名、约束名、索引与 nestjs 一致；列名 camelCase，ORM 属性 snake_case：`first_name: Mapped[str] = mapped_column("firstName", ...)`
 - 时间列为 `timestamp without time zone`，约定存 UTC（`base.timestamp()`、`created_at()`、`updated_at()`）；API 输出为 `toISOString` 格式（毫秒、`Z`）
 - 软删除列 `deletedAt`；已删除用户的唯一字段由部分索引释放
-- uuid 主键（`file`、`user_consent`）默认值 `uuid_generate_v4()`，初始迁移创建 `uuid-ossp` 扩展
+- uuid 主键（`file`）默认值 `uuid_generate_v4()`，初始迁移创建 `uuid-ossp` 扩展
 - 新约束遵循 `Base.metadata` 的 `naming_convention`（`IDX_` / `UQ_` / `CK_` / `FK_` / `PK_` 前缀）
 - 全部模型在 `infrastructure/database/models.py` 汇总导入，Alembic 与测试从这里取 metadata
 
-表：`user`、`role`、`status`、`session`、`permission`、`role_permission`、`file`、`audit_logs`、`config`、`region`、`notification`、`notification_setting`、`address`、`favorite`、`feedback`、`user_consent`、`account_cleanup`、`admin_alert`。
+表：`user`、`role`、`status`、`session`、`permission`、`role_permission`、`file`、`audit_logs`、`account_cleanup`。
 
 ## 事务
 
@@ -55,7 +55,7 @@ uv run --frozen alembic check                         # 模型与迁移是否一
 uv run --frozen alembic downgrade base
 ```
 
-- 迁移文件在 `migrations/versions/`，命名 `<rev>_<slug>.py`；当前只有 `0001_initial_schema.py`
+- 迁移文件在 `migrations/versions/`，命名 `<rev>_<slug>.py`；当前为 `0001_initial_schema.py`、`0002_drop_business_tables.py`
 - `migrations/env.py` 使用 async 引擎，开启 `compare_type`、`compare_server_default`，连接参数取自 `DatabaseSettings`
 - 自动生成的迁移需人工检查后再执行；已合并的迁移不修改，变更通过新迁移完成
 - CI `migrations` job：`make migrate` → `alembic check` → `alembic downgrade base` → `make migrate`
@@ -76,8 +76,7 @@ uv run --frozen alembic downgrade base
 
 | 数据 | 来源 |
 |---|---|
-| 角色、状态、权限、角色权限、配置项 | `src/app/cli/seed_data/seed.json` |
-| 行政区划 | `src/app/cli/seed_data/region-data.json`（`region` 表为空时写入） |
+| 角色、状态、权限、角色权限 | `src/app/cli/seed_data/seed.json` |
 | 管理员 | 无 admin 用户时创建：非生产为 `admin@example.com` / `Secret00`；生产取 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`，未设置则不创建 |
 | 示例用户 | 非生产且无 user 角色用户时创建 `john.doe@example.com` / `Secret00` |
 

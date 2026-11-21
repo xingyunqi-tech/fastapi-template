@@ -8,7 +8,6 @@ from app.infrastructure import account_cleanup as _account_cleanup  # noqa: F401
 from app.infrastructure.logging import configure_logging
 from app.infrastructure.observability import setup_sentry
 from app.infrastructure.queue import mail as _mail  # noqa: F401
-from app.infrastructure.queue import notification as _notification  # noqa: F401
 from app.infrastructure.scheduler import create_scheduler
 
 settings = get_settings()

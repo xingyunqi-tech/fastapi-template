@@ -1,9 +1,7 @@
 import asyncio
 import contextlib
 import email
-import json
 import os
-import re
 import signal
 import socket
 import sys
@@ -12,12 +10,10 @@ import time
 import warnings
 from email.message import EmailMessage
 from email.policy import default as default_policy
-from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import urlparse
 lazy from collections.abc import AsyncIterator, Iterator
 
-import httpx
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy import select, text
@@ -27,7 +23,6 @@ lazy from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.common.context import AppContext
 from app.common.exceptions import validation_error
-from app.common.i18n import reset_language, set_language
 from app.common.params import Body
 from app.common.routing import ApiRouter, Auth
 from app.common.security import Jwt, Passwords
@@ -37,8 +32,6 @@ from app.factory import create_app
 from app.infrastructure import account_cleanup, metrics
 from app.infrastructure import queue as queue_module
 from app.infrastructure.account_cleanup import AccountCleanupProducer, pending_key
-from app.infrastructure.alerting import AdminAlertService, AlertLevel
-from app.infrastructure.alerting.models import AdminAlertModel
 from app.infrastructure.audit import Auditable, AuditAction, AuditService
 from app.infrastructure.audit.models import AuditLogModel
 from app.infrastructure.cache import MemoryCache
@@ -46,32 +39,20 @@ from app.infrastructure.database.session import Database
 from app.infrastructure.queue import TaskQueue, stream_name
 from app.infrastructure.queue import mail as mail_queue
 from app.infrastructure.queue.mail import QueueMailer
-from app.infrastructure.queue.notification import (
-    record_channel_result,
-    send_email,
-    send_sms,
-    send_wechat_subscribe,
-)
 from app.infrastructure.redis import LockService
 from app.infrastructure.scheduler import (
     cleanup_old_sessions,
     cleanup_old_sessions_task,
-    cleanup_read_notifications,
     create_scheduler,
     enqueue_pending_account_cleanups,
 )
 from app.integrations.mail import MailMessage, SmtpTransport
-from app.modules.notifications.models import NotificationModel
-from app.modules.notifications.service import CreateNotification, NotificationsService
 from tests.integration.conftest import client_for
 from tests.integration.test_auth import PASSWORD, bearer, login
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from aiosmtpd.controller import Controller
-
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "nestjs_mail"
-HASH = "eyJhbGciOi.pay-load_x"
 
 
 def _free_port() -> int:
@@ -210,11 +191,6 @@ def counter(metric: Any, **labels: str) -> float:
     return value
 
 
-def fixture_mail(name: str) -> dict[str, str]:
-    data: dict[str, str] = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
-    return data
-
-
 async def _user_id(database: Database, email_address: str) -> int:
     async with database.transaction() as session:
         value = await session.scalar(
@@ -252,58 +228,6 @@ class TestLockWithRedis:
 
 
 class TestMailQueue:
-    @pytest.mark.parametrize(
-        ("lang", "template", "data", "frontend", "fixture"),
-        [
-            (
-                "en",
-                "activation",
-                {"hash": HASH},
-                "http://localhost:3000, https://b.example",
-                "activation.en",
-            ),
-            (
-                "zh",
-                "reset-password",
-                {"hash": HASH, "tokenExpires": 1762828800000},
-                "https://app.example.com",
-                "reset-password.zh",
-            ),
-        ],
-    )
-    async def test_in_process_delivery_matches_nestjs(
-        self,
-        smtp: SmtpSink,
-        connection: AsyncConnection,
-        monkeypatch: pytest.MonkeyPatch,
-        lang: str,
-        template: str,
-        data: dict[str, Any],
-        frontend: str,
-        fixture: str,
-    ) -> None:
-        monkeypatch.setenv("FRONTEND_DOMAIN", frontend)
-        context = make_context(Database.bound_to(connection))
-        assert context.queue is not None
-        assert not context.queue.distributed
-        token = set_language(lang)
-        try:
-            await context.mailer.send(MailMessage(template, "to@example.com", data))
-        finally:
-            reset_language(token)
-        await context.queue.shutdown()
-        await smtp.wait_for(1)
-
-        expected = fixture_mail(fixture)
-        [message] = smtp.messages
-        assert message["Subject"] == expected["subject"]
-        assert message["From"] == "Api <noreply@example.com>"
-        assert message["To"] == "to@example.com"
-        assert smtp.html().removesuffix("\n") == expected["html"]
-        text_part = message.get_body(("plain",))
-        assert text_part is not None
-        assert str(text_part.get_content()).strip() == expected["text"]
-
     async def test_in_process_retries_with_backoff(
         self,
         smtp: SmtpSink,
@@ -652,108 +576,6 @@ class TestAudit:
         assert await _audit_logs(connection) == []
 
 
-class TestAlerting:
-    async def test_deduplicates_open_alerts_and_notifies_admins(
-        self, connection: AsyncConnection
-    ) -> None:
-        database = Database.bound_to(connection)
-        alerts = AdminAlertService(database)
-        raised_before = counter(metrics.admin_alerts_total, type="probe", level="WARN")
-        dedup_before = counter(metrics.admin_alerts_deduplicated_total, type="probe")
-
-        first = await alerts.raise_("probe", AlertLevel.WARN, "disk full", {"disk": "/"}, "probe:1")
-        second = await alerts.raise_("probe", AlertLevel.WARN, "disk full again", None, "probe:1")
-        other = await alerts.raise_("probe", AlertLevel.WARN, "other", None, "probe:2")
-        assert first is not None
-        assert other is not None
-        assert second is None
-        assert counter(metrics.admin_alerts_total, type="probe", level="WARN") == raised_before + 2
-        assert counter(metrics.admin_alerts_deduplicated_total, type="probe") == dedup_before + 1
-
-        async with database.transaction() as session:
-            rows = list(await session.scalars(select(AdminAlertModel).order_by(AdminAlertModel.id)))
-            assert [(r.dedup_key, r.message, r.payload) for r in rows] == [
-                ("probe:1", "disk full", {"disk": "/"}),
-                ("probe:2", "other", None),
-            ]
-            notifications = list(
-                await session.scalars(
-                    select(NotificationModel).where(NotificationModel.title == "[WARN] probe")
-                )
-            )
-            admin_count = await session.scalar(
-                text('SELECT count(*) FROM "user" WHERE "roleId" = 1 AND "deletedAt" IS NULL')
-            )
-            await session.execute(
-                text('UPDATE admin_alert SET "acknowledgedAt" = now() WHERE "dedupKey" = :key'),
-                {"key": "probe:1"},
-            )
-        assert len(notifications) == 2 * int(admin_count or 0) > 0
-        sample = notifications[0]
-        assert (sample.type, sample.category, sample.channels, sample.content) == (
-            "WARNING",
-            "SYSTEM",
-            ["IN_APP"],
-            "disk full",
-        )
-        assert sample.metadata_ == {"alertId": first.id, "dedupKey": "probe:1"}
-
-        again = await alerts.raise_("probe", AlertLevel.CRITICAL, "disk full", None, "probe:1")
-        assert again is not None
-        assert again.id != first.id
-        assert (
-            await _scalar(
-                connection,
-                'SELECT count(*) FROM admin_alert WHERE "dedupKey" = :key AND payload IS NULL',
-                key="probe:2",
-            )
-            == 1
-        )
-
-    async def test_failed_admin_notification_stops_remaining(
-        self,
-        connection: AsyncConnection,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        database = Database.bound_to(connection)
-        async with database.transaction() as session:
-            await session.execute(
-                text('UPDATE "user" SET "roleId" = 1 WHERE email = :email'),
-                {"email": "john.doe@example.com"},
-            )
-            admin_ids = list(
-                await session.scalars(
-                    text(
-                        'SELECT id FROM "user" WHERE "roleId" = 1 AND "deletedAt" IS NULL '
-                        "ORDER BY id"
-                    )
-                )
-            )
-        assert len(admin_ids) >= 2
-        failing = admin_ids[0]
-        original = NotificationsService.create
-
-        async def flaky(self: NotificationsService, data: CreateNotification) -> Any:
-            created = await original(self, data)
-            if data.user_id == failing:
-                await self.session.execute(text("SELECT 1 / 0"))
-            return created
-
-        monkeypatch.setattr(NotificationsService, "create", flaky)
-        alert = await AdminAlertService(database).raise_(
-            "partial", AlertLevel.INFO, "m", None, "partial:1"
-        )
-        assert alert is not None
-        recipients = await _scalar(
-            connection,
-            'SELECT array_agg("userId" ORDER BY "userId") FROM notification WHERE title = :title',
-            title="[INFO] partial",
-        )
-        assert recipients is None
-        assert f"Failed to notify admins of alert {alert.id}" in caplog.text
-
-
 class TestAccountCleanup:
     async def test_delete_account_runs_cleaners_in_process(
         self, committed_app: FastAPI, cleaners: list[tuple[str, int]]
@@ -795,11 +617,12 @@ class TestAccountCleanup:
         assert completed is not None
         assert active_sessions == 0
 
-    async def test_final_failure_raises_alert(
+    async def test_final_failure_logs_error(
         self,
         committed_app: FastAPI,
         cleaners: list[tuple[str, int]],
         no_sleep: list[float],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         @account_cleanup.register_account_cleaner(10)
         class Failing:
@@ -815,26 +638,21 @@ class TestAccountCleanup:
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
         user_id = await _user_id(context.database, "john.doe@example.com")
-        await AccountCleanupProducer(context).enqueue_cleanup(user_id)
-        await context.queue.shutdown()
+        with caplog.at_level("ERROR", logger="app.account_cleanup"):
+            await AccountCleanupProducer(context).enqueue_cleanup(user_id)
+            await context.queue.shutdown()
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
         async with context.database.transaction() as session:
-            alert = await session.scalar(
-                select(AdminAlertModel).where(
-                    AdminAlertModel.dedup_key == f"accountCleanupFailed:{user_id}"
-                )
-            )
             completed = await session.scalar(
                 text('SELECT count(*) FROM account_cleanup WHERE "userId" = :id'), {"id": user_id}
             )
-        assert alert is not None
-        assert (alert.type, alert.level) == ("accountCleanupFailed", "WARN")
-        assert alert.payload == {
-            "userId": user_id,
-            "reason": f"Account cleanup for user {user_id} failed: files (s3 down)",
-            "failedCleaners": ["files"],
-        }
         assert completed == 0
+        failures = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith(f"Account cleanup for user {user_id} failed")
+        ]
+        assert failures == [f"Account cleanup for user {user_id} failed: files (s3 down)"]
 
     async def test_redis_queue_deduplicates_pending_jobs(
         self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, int]]
@@ -907,385 +725,8 @@ class TestAccountCleanup:
         await redis.delete(pending_key(user_id))
 
 
-async def _insert_notification(
-    connection: AsyncConnection, user_id: int, *, deleted: bool = False
-) -> int:
-    async with Database.bound_to(connection).transaction() as session:
-        notification_id = await session.scalar(
-            text(
-                'INSERT INTO notification ("userId", type, category, title, content, channels, '
-                '"updatedAt", "deletedAt") VALUES '
-                "(:u, 'INFO', 'SYSTEM', 'Hi', 'Body', '[\"EMAIL\"]', NOW() - INTERVAL '1 day', "
-                "CASE WHEN :deleted THEN NOW() - INTERVAL '1 hour' END) RETURNING id"
-            ),
-            {"u": user_id, "deleted": deleted},
-        )
-    return int(notification_id)
-
-
-async def _notification_row(connection: AsyncConnection, notification_id: int) -> Any:
-    async with Database.bound_to(connection).transaction() as session:
-        result = await session.execute(
-            text(
-                'SELECT "sentChannels", "updatedAt" > NOW() - INTERVAL \'1 hour\' AS touched '
-                "FROM notification WHERE id = :id"
-            ),
-            {"id": notification_id},
-        )
-        return result.one()
-
-
-class TestNotificationQueue:
-    async def test_send_email_records_success_and_touches_updated_at(
-        self, smtp: SmtpSink, connection: AsyncConnection
-    ) -> None:
-        context = make_context(Database.bound_to(connection))
-        assert context.queue is not None
-        user_id = await _user_id(context.database, "john.doe@example.com")
-        notification_id = await _insert_notification(connection, user_id)
-        await context.queue.enqueue(
-            send_email,
-            {
-                "notificationId": notification_id,
-                "userId": user_id,
-                "title": "Hi",
-                "content": "Body",
-            },
-        )
-        await context.queue.shutdown()
-        await smtp.wait_for(1)
-        [message] = smtp.messages
-        assert (message["To"], message["Subject"]) == ("john.doe@example.com", "Hi")
-        row = await _notification_row(connection, notification_id)
-        assert row.touched
-        assert set(row.sentChannels) == {"EMAIL"}
-        assert row.sentChannels["EMAIL"]["sent"] is True
-        assert re.fullmatch(
-            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row.sentChannels["EMAIL"]["sentAt"]
-        )
-
-    async def test_send_email_records_failure_when_user_is_missing(
-        self, smtp: SmtpSink, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        context = make_context(Database.bound_to(connection))
-        assert context.queue is not None
-        user_id = await _user_id(context.database, "john.doe@example.com")
-        notification_id = await _insert_notification(connection, user_id)
-        before = counter(metrics.queue_jobs_total, queue_name="notification", status="failed")
-        await context.queue.enqueue(
-            send_email,
-            {"notificationId": notification_id, "userId": 987654, "title": "Hi", "content": "B"},
-        )
-        await context.queue.shutdown()
-        assert no_sleep == [1.0, 2.0]
-        assert smtp.messages == []
-        assert (
-            counter(metrics.queue_jobs_total, queue_name="notification", status="failed")
-            == before + 1
-        )
-        row = await _notification_row(connection, notification_id)
-        assert row.touched
-        result = row.sentChannels["EMAIL"]
-        assert (result["sent"], result["error"]) == (
-            False,
-            "User 987654 not found or has no email",
-        )
-
-    async def test_record_channel_result_skips_soft_deleted_notification(
-        self, connection: AsyncConnection
-    ) -> None:
-        context = make_context(Database.bound_to(connection))
-        user_id = await _user_id(context.database, "john.doe@example.com")
-        notification_id = await _insert_notification(connection, user_id, deleted=True)
-        await record_channel_result(context, notification_id, "EMAIL", True)
-        row = await _notification_row(connection, notification_id)
-        assert row.sentChannels == {}
-        assert not row.touched
-
-
-SMS_HOST = "dysmsapi.aliyuncs.com"
-STABLE_TOKEN_PATH = "/cgi-bin/stable_token"
-SUBSCRIBE_PATH = "/cgi-bin/message/subscribe/send"
-SUBSCRIBE_PAYLOAD = {
-    "scene": "orderPaid",
-    "values": {"orderNo": "N" * 40, "amount": "99.00元", "paidAt": "2026年10月14日 15:01"},
-    "page": "pages-sub/order/detail/index?id=7",
-}
-
-
-class ExternalApis:
-    """阿里云短信与微信接口的 MockTransport，记录收到的请求。"""
-
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
-        self.sms_reply: dict[str, Any] = {"Code": "OK", "Message": "OK", "BizId": "b"}
-        self.subscribe_reply: dict[str, Any] = {"errcode": 0, "errmsg": "ok"}
-        self.transport = httpx.MockTransport(self.handle)
-
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        if request.url.host == SMS_HOST:
-            return httpx.Response(200, json=self.sms_reply)
-        if request.url.path == STABLE_TOKEN_PATH:
-            return httpx.Response(200, json={"access_token": "TOKEN", "expires_in": 7200})
-        if request.url.path == SUBSCRIBE_PATH:
-            return httpx.Response(200, json=self.subscribe_reply)
-        return httpx.Response(404)
-
-    def paths(self) -> list[str]:
-        return [f"{request.url.host}{request.url.path}" for request in self.requests]
-
-
-@pytest.fixture
-def channel_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name, value in {
-        "SMS_MOCK_MODE": "false",
-        "SMS_ACCESS_KEY_ID": "AKID",
-        "SMS_ACCESS_KEY_SECRET": "SECRET",
-        "SMS_SIGN_NAME": "签名",
-        "SMS_TEMPLATE_CODE": "SMS_NOTIFY",
-        "WECHAT_MINI_APP_ID": "wx-app",
-        "WECHAT_MINI_APP_SECRET": "wx-secret",
-        "WECHAT_MINI_PROGRAM_STATE": "trial",
-        "WECHAT_SUBSCRIBE_ORDER_PAID_TEMPLATE_ID": "TPL_PAID",
-        "WECHAT_SUBSCRIBE_ORDER_PAID_FIELDS": "orderNo:character_string1,amount:amount2",
-    }.items():
-        monkeypatch.setenv(name, value)
-
-
-async def _channel_setup(
-    connection: AsyncConnection,
-    apis: ExternalApis,
-    *,
-    phone: str | None = "13800138000",
-    open_id: str | None = "openid-john",
-) -> tuple[AppContext, int, int]:
-    context = make_context(Database.bound_to(connection))
-    context.http_transport = apis.transport
-    user_id = await _user_id(context.database, "john.doe@example.com")
-    await connection.execute(
-        text('UPDATE "user" SET phone = :phone, "wechatOpenId" = :open_id WHERE id = :id'),
-        {"phone": phone, "open_id": open_id, "id": user_id},
-    )
-    return context, user_id, await _insert_notification(connection, user_id)
-
-
-async def _run(context: AppContext, task: Any, job: dict[str, Any]) -> None:
-    assert context.queue is not None
-    await context.queue.enqueue(task, job)
-    await context.queue.shutdown()
-
-
-def _failed_jobs() -> float:
-    return counter(metrics.queue_jobs_total, queue_name="notification", status="failed")
-
-
-@pytest.mark.usefixtures("channel_env")
-class TestNotificationChannels:
-    async def test_send_sms_uses_default_template_with_content(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        await _run(
-            context,
-            send_sms,
-            {"notificationId": notification_id, "userId": user_id, "content": "订单已发货"},
-        )
-        [request] = apis.requests
-        assert request.url.host == SMS_HOST
-        assert dict(parse_qsl(request.url.query.decode())) == {
-            "PhoneNumbers": "13800138000",
-            "SignName": "签名",
-            "TemplateCode": "SMS_NOTIFY",
-            "TemplateParam": '{"content":"订单已发货"}',
-        }
-        assert no_sleep == []
-        row = await _notification_row(connection, notification_id)
-        assert row.touched
-        assert set(row.sentChannels) == {"SMS"}
-        assert row.sentChannels["SMS"]["sent"] is True
-        assert "error" not in row.sentChannels["SMS"]
-        assert re.fullmatch(
-            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row.sentChannels["SMS"]["sentAt"]
-        )
-
-    async def test_send_sms_without_phone_records_failure_and_retries(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis, phone=None)
-        before = _failed_jobs()
-        await _run(
-            context,
-            send_sms,
-            {"notificationId": notification_id, "userId": user_id, "content": "B"},
-        )
-        assert apis.requests == []
-        assert no_sleep == [1.0, 2.0]
-        assert _failed_jobs() == before + 1
-        row = await _notification_row(connection, notification_id)
-        result = row.sentChannels["SMS"]
-        assert (result["sent"], result["error"]) == (
-            False,
-            f"User {user_id} not found or has no phone",
-        )
-
-    async def test_send_sms_provider_failure_is_retried(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        apis.sms_reply = {"Code": "isv.BUSINESS_LIMIT_CONTROL", "Message": "触发流控"}
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        await _run(
-            context,
-            send_sms,
-            {"notificationId": notification_id, "userId": user_id, "content": "B"},
-        )
-        assert apis.paths() == [f"{SMS_HOST}/"] * 3
-        assert no_sleep == [1.0, 2.0]
-        row = await _notification_row(connection, notification_id)
-        assert row.sentChannels["SMS"]["sent"] is False
-        assert row.sentChannels["SMS"]["error"] == "触发流控"
-
-    async def test_send_wechat_subscribe_posts_mapped_message(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.paths() == [
-            f"api.weixin.qq.com{STABLE_TOKEN_PATH}",
-            f"api.weixin.qq.com{SUBSCRIBE_PATH}",
-        ]
-        send = apis.requests[1]
-        assert send.url.params["access_token"] == "TOKEN"
-        assert json.loads(send.content) == {
-            "touser": "openid-john",
-            "template_id": "TPL_PAID",
-            "page": "pages-sub/order/detail/index?id=7",
-            "data": {"character_string1": {"value": "N" * 32}, "amount2": {"value": "99.00元"}},
-            "miniprogram_state": "trial",
-            "lang": "zh_CN",
-        }
-        assert no_sleep == []
-        row = await _notification_row(connection, notification_id)
-        assert row.touched
-        assert set(row.sentChannels) == {"PUSH"}
-        assert row.sentChannels["PUSH"]["sent"] is True
-
-    async def test_send_wechat_subscribe_skips_unconfigured_template(
-        self, connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("WECHAT_SUBSCRIBE_ORDER_PAID_TEMPLATE_ID")
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        before = counter(metrics.queue_jobs_total, queue_name="notification", status="completed")
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.requests == []
-        assert (
-            counter(metrics.queue_jobs_total, queue_name="notification", status="completed")
-            == before + 1
-        )
-        row = await _notification_row(connection, notification_id)
-        assert row.sentChannels == {}
-        assert not row.touched
-
-    async def test_send_wechat_subscribe_without_open_id_records_failure_once(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis, open_id=None)
-        before = _failed_jobs()
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.requests == []
-        assert no_sleep == []
-        assert _failed_jobs() == before
-        row = await _notification_row(connection, notification_id)
-        result = row.sentChannels["PUSH"]
-        assert (result["sent"], result["error"]) == (False, "User has no WeChat openId")
-
-    @pytest.mark.parametrize("errcode", [43101, 40003, 40037, 41030, 47003])
-    async def test_send_wechat_subscribe_unrecoverable_error_runs_once(
-        self, connection: AsyncConnection, no_sleep: list[float], errcode: int
-    ) -> None:
-        apis = ExternalApis()
-        apis.subscribe_reply = {"errcode": errcode, "errmsg": "rejected"}
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        before = _failed_jobs()
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.paths().count(f"api.weixin.qq.com{SUBSCRIBE_PATH}") == 1
-        assert no_sleep == []
-        assert _failed_jobs() == before + 1
-        row = await _notification_row(connection, notification_id)
-        result = row.sentChannels["PUSH"]
-        assert (result["sent"], result["error"]) == (
-            False,
-            f"WeChat API error {errcode}: rejected",
-        )
-
-    async def test_send_wechat_subscribe_without_credentials_runs_once(
-        self,
-        connection: AsyncConnection,
-        no_sleep: list[float],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("WECHAT_MINI_APP_SECRET")
-        apis = ExternalApis()
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        before = _failed_jobs()
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.requests == []
-        assert no_sleep == []
-        assert _failed_jobs() == before + 1
-        row = await _notification_row(connection, notification_id)
-        result = row.sentChannels["PUSH"]
-        assert (result["sent"], result["error"]) == (False, "Unprocessable Entity Exception")
-
-    async def test_send_wechat_subscribe_retryable_error_is_retried(
-        self, connection: AsyncConnection, no_sleep: list[float]
-    ) -> None:
-        apis = ExternalApis()
-        apis.subscribe_reply = {"errcode": -1, "errmsg": "system busy"}
-        context, user_id, notification_id = await _channel_setup(connection, apis)
-        before = _failed_jobs()
-        await _run(
-            context,
-            send_wechat_subscribe,
-            {"notificationId": notification_id, "userId": user_id, "payload": SUBSCRIBE_PAYLOAD},
-        )
-        assert apis.paths().count(f"api.weixin.qq.com{SUBSCRIBE_PATH}") == 3
-        assert no_sleep == [1.0, 2.0]
-        assert _failed_jobs() == before + 1
-        row = await _notification_row(connection, notification_id)
-        assert row.sentChannels["PUSH"]["error"] == "WeChat API error -1: system busy"
-
-
 class TestLifespan:
-    @pytest.mark.parametrize("slow_work", ["throttler", "mail"])
-    async def test_shutdown_waits_for_pending_background_work(
-        self, monkeypatch: pytest.MonkeyPatch, slow_work: str
-    ) -> None:
+    async def test_shutdown_waits_for_pending_mail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MAIL_HOST", "127.0.0.1")
         get_settings.cache_clear()
         app = create_app(Settings.load())
@@ -1303,15 +744,13 @@ class TestLifespan:
         monkeypatch.setattr(context.database, "dispose", recording_dispose)
 
         async def slow(name: str) -> None:
-            await asyncio.sleep(0.3 if name == slow_work else 0)
+            await asyncio.sleep(0.3)
             finished.append(name)
 
         async with app.router.lifespan_context(app):
-            throttler_task = asyncio.create_task(slow("throttler"))
-            app.state.throttler._pending.add(throttler_task)
             mail_task = asyncio.create_task(slow("mail"))
             mailer.pending.add(mail_task)
-        assert sorted(finished_before_dispose) == ["mail", "throttler"]
+        assert finished_before_dispose == ["mail"]
 
 
 class TestScheduler:
@@ -1324,16 +763,6 @@ class TestScheduler:
                     'INSERT INTO session (hash, "userId", "deletedAt") VALUES '
                     "('old', :u, NOW() - INTERVAL '8 days'), "
                     "('recent', :u, NOW() - INTERVAL '6 days'), ('active', :u, NULL)"
-                ),
-                {"u": user_id},
-            )
-            await session.execute(
-                text(
-                    'INSERT INTO notification ("userId", type, category, title, content, '
-                    '"isRead", "readAt") VALUES '
-                    "(:u, 'INFO', 'SYSTEM', 'old', 'c', true, NOW() - INTERVAL '31 days'), "
-                    "(:u, 'INFO', 'SYSTEM', 'recent', 'c', true, NOW() - INTERVAL '29 days'), "
-                    "(:u, 'INFO', 'SYSTEM', 'unread', 'c', false, NULL)"
                 ),
                 {"u": user_id},
             )
@@ -1353,16 +782,11 @@ class TestScheduler:
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
         assert await cleanup_old_sessions(context) == 0
-        assert await cleanup_read_notifications(context) == 1
         async with context.database.transaction() as session:
             hashes = await session.scalars(
                 text("SELECT hash FROM session WHERE hash IN ('old', 'recent', 'active')")
             )
             assert sorted(hashes) == ["active", "recent"]
-            deleted = await session.scalars(
-                text('SELECT title FROM notification WHERE "deletedAt" IS NOT NULL')
-            )
-            assert list(deleted) == ["old"]
 
     async def test_compensation_enqueues_users_deleted_before_grace(
         self, committed_app: FastAPI, cleaners: list[tuple[str, int]]
@@ -1410,6 +834,5 @@ class TestScheduler:
         }
         assert schedules == {
             "scheduler:cleanup-old-sessions": ("0 3 * * *", "UTC"),
-            "scheduler:cleanup-read-notifications": ("0 4 * * *", "UTC"),
             "scheduler:account-cleanup-compensation": ("25 * * * *", "Asia/Shanghai"),
         }

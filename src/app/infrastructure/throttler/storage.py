@@ -10,7 +10,6 @@ from typing import Final
 
 lazy from redis.asyncio import Redis
 
-from app.infrastructure.alerting import AlertLevel, AlertReporter
 from app.infrastructure.metrics import throttler_storage_fallback_total
 
 logger = logging.getLogger("app.throttler")
@@ -19,7 +18,6 @@ KEY_PREFIX: Final = "throttle:"
 THROTTLER_NAME: Final = "default"
 GCRA_KEY_SUFFIX: Final = ":gcra"
 COMMAND_TIMEOUT_S: Final = 0.5
-THROTTLER_FALLBACK_ALERT_KEY: Final = "throttler-storage-fallback"
 MEMORY_MAX_KEYS: Final = 10_000
 
 GCRA_TOLERANCE_MS: Final = 1e-6
@@ -98,11 +96,9 @@ class MemoryGcra:
 class ThrottlerStorage:
     """nestjs RedisThrottlerStorage：Redis 出错时计入回落指标并改用内存。"""
 
-    def __init__(self, alerts: AlertReporter | None = None) -> None:
+    def __init__(self) -> None:
         self.memory = MemoryGcra()
         self.degraded = False
-        self.alerts = alerts
-        self._pending: set[asyncio.Task[None]] = set()
 
     async def consume(self, redis: Redis | None, key: str, ttl_ms: int, limit: int) -> Decision:
         if redis is not None:
@@ -126,23 +122,6 @@ class ThrottlerStorage:
         logger.error(
             "Redis throttler storage unavailable, falling back to in-memory storage: %s", reason
         )
-        if self.alerts is not None:
-            task = asyncio.create_task(self._raise_alert(self.alerts, reason))
-            self._pending.add(task)
-            task.add_done_callback(self._pending.discard)
-
-    @staticmethod
-    async def _raise_alert(alerts: AlertReporter, reason: str) -> None:
-        try:
-            await alerts.raise_(
-                "throttler",
-                AlertLevel.CRITICAL,
-                f"限流存储 Redis 不可用，已降级为单实例内存计数：{reason}",
-                {"reason": reason},
-                THROTTLER_FALLBACK_ALERT_KEY,
-            )
-        except Exception:
-            logger.exception("Failed to raise throttler fallback alert")
 
     def _mark_recovered(self) -> None:
         if self.degraded:

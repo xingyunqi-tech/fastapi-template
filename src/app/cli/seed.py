@@ -14,13 +14,10 @@ from app.common.security import Passwords
 from app.core.permissions.models import PermissionModel, RolePermissionModel
 from app.core.permissions.service import RoleId, StatusId
 from app.core.users.models import RoleModel, StatusModel, UserModel
-from app.modules.config.models import ConfigModel
-from app.modules.regions.models import RegionModel
 lazy from app.config import Settings
 
 DATA_DIR: Final = Path(__file__).resolve().parent / "seed_data"
 DEFAULT_PASSWORD: Final = "Secret00"  # noqa: S105
-REGION_BATCH: Final = 500
 
 
 def _load(name: str) -> Any:
@@ -29,32 +26,6 @@ def _load(name: str) -> Any:
 
 def _md5(text: str) -> str:
     return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-
-
-def _normalize_code(code: str) -> str:
-    return code.ljust(12, "0")
-
-
-def _regions() -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    sort = 0
-
-    def add(code: str, name: str, level: int, parent: str | None) -> str:
-        nonlocal sort
-        normalized = _normalize_code(code)
-        rows.append(
-            {"code": normalized, "name": name, "level": level, "parent_code": parent, "sort": sort}
-        )
-        sort += 1
-        return normalized
-
-    for province in _load("region-data.json"):
-        province_code = add(province["code"], province["name"], 1, None)
-        for city in province.get("children") or []:
-            city_code = add(city["code"], city["name"], 2, province_code)
-            for district in city.get("children") or []:
-                add(district["code"], district["name"], 3, city_code)
-    return rows
 
 
 async def seed(session: AsyncSession, settings: Settings) -> None:
@@ -74,21 +45,7 @@ async def seed(session: AsyncSession, settings: Settings) -> None:
         )
         .on_conflict_do_nothing()
     )
-    if not await session.scalar(select(func.count()).select_from(RegionModel)):
-        regions = _regions()
-        for start in range(0, len(regions), REGION_BATCH):
-            await session.execute(insert(RegionModel).values(regions[start : start + REGION_BATCH]))
     await _seed_users(session, settings)
-    await session.execute(
-        insert(ConfigModel)
-        .values(
-            [
-                {"key": row["key"], "value": row["value"], "is_public": row["isPublic"]}
-                for row in data["config"]
-            ]
-        )
-        .on_conflict_do_nothing()
-    )
 
 
 async def _count_role(session: AsyncSession, role: RoleId) -> int:

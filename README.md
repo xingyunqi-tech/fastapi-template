@@ -18,8 +18,7 @@ FastAPI 后端模板。HTTP API 契约与 [nestjs-template](https://github.com/x
 - 统一响应信封、错误翻译（i18n en / zh）、class-validator 等价校验、Request ID、CORS、安全头、限流（GCRA）
 - 认证：邮箱、手机号密码、短信验证码、微信（小程序 / App / 手机号）、支付宝；JWT access + refresh 轮换；会话（设备）管理；RBAC
 - 用户管理、文件上传（`local` / `s3` / `s3-presigned`）与私有文件
-- 通用模块：config、regions、notifications、addresses、favorites、feedbacks、consents、app-profile
-- 健康检查、Prometheus 指标、审计、运营告警、账号注销清理、邮件（中英模板）、定时任务
+- 健康检查、Prometheus 指标、审计、账号注销清理、邮件（中英模板）、定时任务
 - `/docs-json` 逐字节输出 nestjs 完整 OpenAPI 基线（含本模板未实现的考试业务接口，请求返回 404 信封），`/docs` 为 Scalar 页面；`SWAGGER_ENABLED` 控制，生产默认关闭
 
 ## 快速开始
@@ -31,7 +30,7 @@ make install                  # uv sync + 安装 prek 钩子
 cp .env.example .env          # 要单独运行 worker 时把 REDIS_ENABLED 改为 true
 make infra                    # Postgres 18 :5432、Redis 8 :6379、Mailpit（SMTP :1025，UI :8025）
 make migrate                  # alembic upgrade head
-make seed                     # 角色、状态、权限、行政区划、配置、初始账号
+make seed                     # 角色、状态、权限、初始账号
 make dev                      # 热重载，http://localhost:3000
 uv run --frozen app worker    # 队列 worker（需 REDIS_ENABLED=true）
 uv run --frozen app scheduler # 定时任务调度
@@ -53,17 +52,14 @@ uv run --frozen app scheduler # 定时任务调度
 | `make typecheck` | mypy（门禁）+ ty（不阻塞） |
 | `make test-unit` | 单元测试 |
 | `make check` | lint + typecheck + test-unit |
-| `make test` | 单元 + 集成 + 契约测试（含覆盖率，集成测试需 Docker） |
-| `make test-contract` | 契约测试；`UPDATE_CONTRACT_DOC=1` 时重新生成 `docs/contract.md` |
+| `make test` | 单元 + 集成测试（含覆盖率，集成测试需 Docker） |
 | `make test-e2e` | e2e：ci 组合起完整服务栈后黑盒测试 |
-| `make test-parity` | 与 nestjs 同请求比对（`PARITY_PYTHON_URL` / `PARITY_NESTJS_URL`，默认 3000 / 3001） |
 | `make migrate` | 执行迁移（`DB_SCHEMA_OWNER=external` 时跳过） |
 | `make seed` | 写入种子数据 |
 | `make generate-resource name=Product` | 生成 CRUD 模块骨架 |
 | `make infra` | 启动本地 Postgres / Redis / Mailpit |
 | `make docker-build` | 构建生产镜像（`IMAGE`，默认 `fastapi-temp:local`） |
 | `make up` / `make down` | 起 / 停 compose 开发服务栈（`develop.watch`） |
-| `make openapi-sync` | 从 nestjs-template 固定提交导出 `openapi/` 等基线 |
 | `make security` | pip-audit 生产依赖（high 及以上失败） |
 | `make workflow-lint` | actionlint + zizmor（medium） |
 | `make ci` | check + test + security + workflow-lint |
@@ -96,5 +92,4 @@ uv run --frozen app scheduler # 定时任务调度
 | [docs/deploy.md](docs/deploy.md) | 镜像、compose、manage.sh、GitHub Actions |
 | [docs/testing.md](docs/testing.md) | 测试分层与运行方式 |
 | [docs/cli.md](docs/cli.md) | `app` 命令与代码生成器 |
-| [docs/contract.md](docs/contract.md) | 未实现接口清单、白名单、与 nestjs 的行为差异（生成） |
 | [CLAUDE.md](CLAUDE.md) | AI 助手约定 |

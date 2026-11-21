@@ -1,10 +1,9 @@
-import asyncio
 import hashlib
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
 from redis.asyncio import Redis
-from sqlalchemy import text
 
 from app.common.security import Jwt
 from app.infrastructure.database.session import Database
@@ -27,6 +26,8 @@ S3_ENV = {
     "AWS_DEFAULT_S3_BUCKET": "bucket",
     "AWS_S3_REGION": "us-east-1",
 }
+LIVE = "/api/v1/health/live"
+READY = "/api/v1/health/ready"
 TOO_MANY = {"code": 429, "message": "Too many requests, please try again later", "data": None}
 
 type AppFactory = Callable[..., FastAPI]
@@ -65,7 +66,7 @@ async def redis_client(redis_url: str) -> AsyncIterator[Redis]:
 class TestHeadersAndLimit:
     async def test_default_rule_sets_headers_then_blocks(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="3", THROTTLE_TTL="60")) as client:
-            responses = [await client.get("/") for _ in range(4)]
+            responses = [await client.get(LIVE) for _ in range(4)]
 
         for response, remaining in zip(responses[:3], ["2", "1", "0"], strict=True):
             assert response.status_code == 200
@@ -80,8 +81,8 @@ class TestHeadersAndLimit:
 
     async def test_zh_message(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            await client.get("/")
-            response = await client.get("/", headers={"Accept-Language": "zh"})
+            await client.get(LIVE)
+            response = await client.get(LIVE, headers={"Accept-Language": "zh"})
 
         assert response.status_code == 429
         assert response.json()["data"] is None
@@ -99,15 +100,15 @@ class TestHeadersAndLimit:
 
     async def test_routes_are_counted_separately(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get("/")
-            other = await client.get("/api/health")
+            first = await client.get(LIVE)
+            other = await client.get(READY)
 
         assert first.status_code == 200
         assert other.status_code == 200
 
     async def test_disabled_sends_no_headers(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_ENABLED="false", THROTTLE_LIMIT="1")) as client:
-            responses = [await client.get("/") for _ in range(3)]
+            responses = [await client.get(LIVE) for _ in range(3)]
 
         assert [r.status_code for r in responses] == [200, 200, 200]
         assert not any(name in responses[0].headers for name in RATE_HEADERS)
@@ -143,23 +144,23 @@ class TestTracker:
 
     async def test_public_route_ignores_token(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get("/", headers=user_token(1))
-            second = await client.get("/", headers=user_token(2))
+            first = await client.get(LIVE, headers=user_token(1))
+            second = await client.get(LIVE, headers=user_token(2))
 
         assert (first.status_code, second.status_code) == (200, 429)
 
     async def test_forwarded_for_with_trust_proxy(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1", TRUST_PROXY="1")) as client:
-            first = await client.get("/", headers={"X-Forwarded-For": "198.51.100.1"})
-            second = await client.get("/", headers={"X-Forwarded-For": "198.51.100.2"})
-            repeated = await client.get("/", headers={"X-Forwarded-For": "198.51.100.1"})
+            first = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
+            second = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.2"})
+            repeated = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
 
         assert [first.status_code, second.status_code, repeated.status_code] == [200, 200, 429]
 
     async def test_forwarded_for_ignored_without_trust_proxy(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get("/", headers={"X-Forwarded-For": "198.51.100.1"})
-            second = await client.get("/", headers={"X-Forwarded-For": "198.51.100.2"})
+            first = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
+            second = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.2"})
 
         assert [first.status_code, second.status_code] == [200, 429]
 
@@ -170,9 +171,9 @@ class TestRedisStorage:
     ) -> None:
         app = make_app(redis_client, THROTTLE_LIMIT="2")
         async with client_for(app) as client:
-            responses = [await client.get("/") for _ in range(3)]
+            responses = [await client.get(LIVE) for _ in range(3)]
 
-        key = redis_key(nest_key("HomeController-appInfo", f"ip:{CLIENT_IP}"))
+        key = redis_key(nest_key("HealthController-liveness", f"ip:{CLIENT_IP}"))
         assert key.endswith(":default:gcra")
         assert [r.status_code for r in responses] == [200, 200, 429]
         assert responses[1].headers["x-ratelimit-remaining"] == "0"
@@ -190,12 +191,12 @@ class TestRedisStorage:
     async def test_coexists_with_nestjs_counter_keys(
         self, make_app: AppFactory, redis_client: Redis
     ) -> None:
-        digest = nest_key("HomeController-appInfo", f"ip:{CLIENT_IP}")
+        digest = nest_key("HealthController-liveness", f"ip:{CLIENT_IP}")
         counter, block = f"throttle:{digest}:default", f"throttle:{digest}:default:block"
         await redis_client.set(counter, "7", px=60_000)
         await redis_client.set(block, "1", px=60_000)
         async with client_for(make_app(redis_client, THROTTLE_LIMIT="2")) as client:
-            responses = [await client.get("/") for _ in range(3)]
+            responses = [await client.get(LIVE) for _ in range(3)]
 
         assert [r.status_code for r in responses] == [200, 200, 429]
         assert await redis_client.get(counter) == b"7"
@@ -244,21 +245,22 @@ class TestRedisStorage:
         self, make_app: AppFactory, redis_client: Redis
     ) -> None:
         async with client_for(make_app(redis_client, THROTTLE_LIMIT="1")) as client:
-            first = await client.get("/")
+            first = await client.get(LIVE)
         async with client_for(make_app(redis_client, THROTTLE_LIMIT="1")) as client:
-            second = await client.get("/")
+            second = await client.get(LIVE)
 
         assert (first.status_code, second.status_code) == (200, 429)
 
     async def test_falls_back_to_memory_when_redis_fails(
-        self, make_app: AppFactory, connection: AsyncConnection
+        self, make_app: AppFactory, caplog: pytest.LogCaptureFixture
     ) -> None:
         broken = Redis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
         app = make_app(broken, THROTTLE_LIMIT="2")
         before = throttler_storage_fallback_total._value.get()
         try:
-            async with client_for(app) as client:
-                responses = [await client.get("/") for _ in range(3)]
+            with caplog.at_level(logging.ERROR, logger="app.throttler"):
+                async with client_for(app) as client:
+                    responses = [await client.get(LIVE) for _ in range(3)]
         finally:
             await broken.aclose()
 
@@ -267,19 +269,24 @@ class TestRedisStorage:
         assert responses[0].headers["x-ratelimit-limit"] == "2"
         assert storage.degraded is True
         assert throttler_storage_fallback_total._value.get() - before == 3
-        await asyncio.gather(*storage._pending)
-        alerts = await connection.execute(
-            text('SELECT type, level FROM admin_alert WHERE "dedupKey" = :key'),
-            {"key": "throttler-storage-fallback"},
+        fallback_logs = [
+            record
+            for record in caplog.records
+            if record.name == "app.throttler" and record.levelno == logging.ERROR
+        ]
+        assert len(fallback_logs) == 1
+        assert (
+            fallback_logs[0]
+            .getMessage()
+            .startswith("Redis throttler storage unavailable, falling back to in-memory storage:")
         )
-        assert alerts.all() == [("throttler", "CRITICAL")]
 
     async def test_recovers_from_fallback(self, make_app: AppFactory, redis_client: Redis) -> None:
         app = make_app(redis_client, THROTTLE_LIMIT="5")
         storage: ThrottlerStorage = app.state.throttler
         storage.degraded = True
         async with client_for(app) as client:
-            response = await client.get("/")
+            response = await client.get(LIVE)
 
         assert response.status_code == 200
         assert storage.degraded is False

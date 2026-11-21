@@ -9,7 +9,6 @@
 !src/
 !migrations/
 !openapi/
-!db/
 !scripts/
 !tests/
 

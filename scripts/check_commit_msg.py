@@ -1,4 +1,4 @@
-"""commit-msg 钩子：conventional commits，类型集合与 nestjs-template commitlint 一致。"""
+"""commit-msg 钩子：conventional commits。"""
 
 import re
 import sys

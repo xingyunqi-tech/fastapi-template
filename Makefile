@@ -47,27 +47,19 @@ test-unit: ## 单元测试
 check: lint typecheck test-unit ## lint + 类型检查 + 单元测试
 
 .PHONY: test
-test: ## 单元 + 集成 + 契约测试（含覆盖率）
-	$(PYTEST) -m "unit or integration or contract" -n auto --cov --cov-report=term --cov-report=xml
+test: ## 单元 + 集成测试（含覆盖率）
+	$(PYTEST) -m "unit or integration" -n auto --cov --cov-report=term --cov-report=xml
 
 .PHONY: test-e2e
 test-e2e: ## e2e 测试：ci 组合以生产镜像起完整服务栈，结束后 down -v（E2E_KEEP_STACK=1 保留）
 	$(PYTEST) -m e2e
-
-.PHONY: test-contract
-test-contract: ## 契约测试（UPDATE_CONTRACT_DOC=1 时重新生成 docs/contract.md）
-	$(PYTEST) -m contract -n auto
-
-.PHONY: test-parity
-test-parity: ## parity 测试（PARITY_PYTHON_URL / PARITY_NESTJS_URL，默认 3000 / 3001）
-	$(PYTEST) -m parity
 
 .PHONY: migrate
 migrate: ## 执行数据库迁移（DB_SCHEMA_OWNER=external 时跳过）
 	$(RUN) app migrate
 
 .PHONY: seed
-seed: ## 写入种子数据（角色、权限、行政区划、配置、初始账号）
+seed: ## 写入种子数据（角色、权限、初始账号）
 	$(RUN) app seed
 
 .PHONY: generate-resource
@@ -93,10 +85,6 @@ up: ## docker compose 起开发服务栈（api / worker / scheduler / migrate + 
 .PHONY: down
 down: ## 停止开发服务栈
 	$(COMPOSE_DEV) down
-
-.PHONY: openapi-sync
-openapi-sync: ## 从 nestjs-template 固定提交导出 openapi/ 基线
-	scripts/openapi-sync.sh
 
 .PHONY: security
 security: ## pip-audit 生产依赖（high 及以上失败）

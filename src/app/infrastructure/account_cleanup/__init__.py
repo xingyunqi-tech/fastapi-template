@@ -1,4 +1,4 @@
-"""注销账号后的数据清理：清理器登记与执行、`account_cleanup` 完成记录、失败告警、入队。"""
+"""注销账号后的数据清理：清理器登记与执行、`account_cleanup` 完成记录、失败日志、入队。"""
 
 import asyncio
 import logging
@@ -9,7 +9,6 @@ lazy from datetime import datetime
 from sqlalchemy import text
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.alerting import AdminAlertService, AlertLevel
 from app.infrastructure.database.session import after_commit
 from app.infrastructure.queue import (
     ACCOUNT_CLEANUP_QUEUE,
@@ -20,12 +19,10 @@ from app.infrastructure.queue import (
     tasks,
 )
 lazy from app.common.context import AppContext
-lazy from app.infrastructure.alerting import AlertReporter
 lazy from app.infrastructure.database.session import Database
 
 logger = logging.getLogger("app.account_cleanup")
 
-ACCOUNT_CLEANUP_FAILED_ALERT: Final = "accountCleanupFailed"
 CLEAN_ACCOUNT_TASK: Final = "account-cleanup:clean-account"
 ACCOUNT_CLEANUP_RETRY: Final = RetryPolicy(attempts=5, delay_ms=10_000)
 PENDING_KEY_TTL_MS: Final = 24 * 60 * 60 * 1000
@@ -80,31 +77,11 @@ class AccountCleanupError(Exception):
         self.causes = causes
 
 
-async def raise_account_cleanup_failure(
-    alerts: AlertReporter | None,
-    user_id: int,
-    error: BaseException,
-    failed_cleaners: list[str] | None = None,
-) -> None:
-    reason = str(error)
-    logger.error("Account cleanup for user %s failed: %s", user_id, reason)
-    payload: dict[str, Any] = {"userId": user_id, "reason": reason}
-    if failed_cleaners:
-        payload["failedCleaners"] = failed_cleaners
-    if alerts is None:
-        return
-    try:
-        await alerts.raise_(
-            ACCOUNT_CLEANUP_FAILED_ALERT,
-            AlertLevel.WARN,
-            f"用户 {user_id} 的注销数据清理失败：{reason}",
-            payload,
-            f"{ACCOUNT_CLEANUP_FAILED_ALERT}:{user_id}",
-        )
-    except Exception as alert_error:
-        logger.error(
-            "Failed to raise alert for account cleanup of user %s: %s", user_id, alert_error
-        )
+def log_account_cleanup_failure(user_id: int, error: BaseException) -> None:
+    if isinstance(error, AccountCleanupError):
+        logger.error("%s", error)
+    else:
+        logger.error("Account cleanup for user %s failed: %s", user_id, error)
 
 
 class AccountCleanupRepository:
@@ -143,17 +120,13 @@ class AccountCleanupRunner:
         self,
         database: Database,
         cleaners: list[AccountDataCleaner],
-        alerts: AlertReporter | None,
     ) -> None:
         self.database = database
         self.cleaners = cleaners
-        self.alerts = alerts
 
     @classmethod
     def from_context(cls, context: AppContext) -> AccountCleanupRunner:
-        return cls(
-            context.database, registered_cleaners(context), AdminAlertService(context.database)
-        )
+        return cls(context.database, registered_cleaners(context))
 
     @property
     def cleaner_names(self) -> list[str]:
@@ -176,12 +149,7 @@ class AccountCleanupRunner:
         logger.info("Account data of user %s cleaned", user_id)
 
     async def report_failure(self, user_id: int, error: BaseException) -> None:
-        await raise_account_cleanup_failure(
-            self.alerts,
-            user_id,
-            error,
-            error.failed_cleaners if isinstance(error, AccountCleanupError) else None,
-        )
+        log_account_cleanup_failure(user_id, error)
 
 
 _serial = asyncio.Lock()
@@ -192,7 +160,7 @@ async def clean_account(
     job: dict[str, Any],
     context: Annotated[AppContext, APP_CONTEXT],
 ) -> None:
-    """持 `lock:account-cleanup:user-<id>` 执行，锁被占用时跳过；失败重试，最终失败告警。"""
+    """持 `lock:account-cleanup:user-<id>` 执行，锁被占用时跳过；失败重试，最终失败记日志。"""
     user_id = int(job["userId"])
     runner = AccountCleanupRunner.from_context(context)
     async with _serial:
@@ -214,7 +182,7 @@ async def clean_account(
 
 
 class AccountCleanupProducer:
-    """账号清理任务入队，入队失败时告警；去重键存在（任务排队或执行中）时不再入队，任务结束时删除去重键。"""
+    """账号清理任务入队，入队失败时记日志；去重键存在（任务排队或执行中）时不再入队，任务结束时删除去重键。"""
 
     def __init__(self, context: AppContext) -> None:
         self.context = context
@@ -237,9 +205,7 @@ class AccountCleanupProducer:
                     await redis.delete(pending_key(user_id))
                 raise
         except Exception as error:
-            await raise_account_cleanup_failure(
-                AdminAlertService(self.context.database), user_id, error
-            )
+            log_account_cleanup_failure(user_id, error)
 
     def after_commit(self, session: AsyncSession) -> Callable[[int], Awaitable[None]]:
         """供 UsersService.remove 使用：事务提交后再入队。"""

@@ -57,20 +57,6 @@ async def cleanup_old_sessions(context: AppContext) -> int:
     return affected_rows(result)
 
 
-async def cleanup_read_notifications(context: AppContext) -> int:
-    """软删除已读超过 30 天的通知。"""
-    async with context.database.transaction() as session:
-        result = await session.execute(
-            text(
-                'UPDATE notification SET "deletedAt" = NOW() '
-                'WHERE "isRead" = true AND "readAt" IS NOT NULL '
-                "AND \"readAt\" < NOW() - INTERVAL '30 days' "
-                'AND "deletedAt" IS NULL'
-            )
-        )
-    return affected_rows(result)
-
-
 async def enqueue_pending_account_cleanups(context: AppContext) -> int:
     """已注销超过 30 分钟仍未完成清理的用户重新入队。"""
     async with context.database.transaction() as session:
@@ -113,18 +99,6 @@ async def cleanup_old_sessions_task(context: Annotated[AppContext, APP_CONTEXT])
         "cleanup-old-sessions",
         cleanup_old_sessions,
         lambda count: f"Cleanup completed: {count} old sessions permanently deleted",
-    )
-
-
-@tasks.task(
-    task_name="scheduler:cleanup-read-notifications", **_QUEUE, **_schedule("0 4 * * *", "UTC")
-)
-async def cleanup_read_notifications_task(context: Annotated[AppContext, APP_CONTEXT]) -> None:
-    await _run_task(
-        context,
-        "cleanup-read-notifications",
-        cleanup_read_notifications,
-        lambda count: f"Cleanup completed: {count} old read notifications soft deleted",
     )
 
 

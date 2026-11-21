@@ -1,6 +1,6 @@
 > 本文件面向 AI 助手（与 `CLAUDE.md` 内容相同）。人类开发者请看 [README.md](README.md)。
 
-本仓库是 FastAPI 后端模板，HTTP API 契约与 nestjs-template（`release/exam-prep` 分支，提交号见 `openapi/SOURCE`）逐项一致，前端由 `/docs-json` 生成的客户端可在两个后端之间无改动切换。方案与决策见 [TEMPLATE_PLAN.md](TEMPLATE_PLAN.md)。
+本仓库是独立的 Python / FastAPI 后端模板，可单独部署，也可作为 monorepo 中的签发方或验证方服务。实施方案与批次见 [TEMPLATE_PLAN.md](TEMPLATE_PLAN.md)；改造按 §15 分批进行，尚未完成的批次中 v1 实现仍在原位。
 
 ## 协作规则
 
@@ -28,47 +28,34 @@
 
 通过 Agent 派发的子任务同样受以上规则约束：派发时把注释规则与提交推送规则原文写进提示词，并要求子任务收尾时统计新增注释行数。
 
-## 契约规则
+## 约定优先
 
-`openapi/` 中的 nestjs 基线是契约的唯一来源。
-
-| 文件 | 来源 | 修改方式 |
-|---|---|---|
-| `openapi/nestjs-baseline.json`、`validation.json`、`nest_handlers.json`、`SOURCE` | `make openapi-sync` | 禁止手改 |
-| `db/nestjs-schema.sql`、`tests/contract/fixtures/validation-cases.json` | `make openapi-sync` | 禁止手改 |
-| `src/app/contract/schemas.py` | `uv run --frozen python scripts/gen_schemas.py` | 禁止手改，`make lint` 校验一致 |
-| `docs/contract.md` | `UPDATE_CONTRACT_DOC=1 make test-contract` | 只有「与 nestjs 的行为差异」一节手写 |
-
-- 契约变更（路径、方法、operationId、tag、参数、请求 / 响应 DTO、校验规则、错误形状）必须先在 nestjs-template 落地，再在本仓库 `NESTJS_REF=<提交> make openapi-sync` → `gen_schemas.py` → 补实现与测试
-- 不在本仓库新增基线之外的接口：契约测试要求每个已注册 operation 都存在于基线
-- 请求 / 响应模型使用 `app.contract.schemas` 中与 nestjs DTO 同名的类；响应 schema 为未包装的 DTO
-- 成功响应一律 HTTP 200（只有 `POST files/upload` 为 201）；错误统一为 `{code, message, data}` 信封，`message` 走 `common/i18n` 翻译
-- 刻意保留的行为差异记录在 [docs/contract.md](docs/contract.md)「与 nestjs 的行为差异」，新增差异需写入该节
+- 对外行为（路径、信封、错误码、校验、分页、数据类型、令牌、请求头、限流、日志、公共环境变量、身份与文件接口）以 [docs/platform-conventions.md](docs/platform-conventions.md) 为准；该文件与 go-template、springboot-template 逐字节相同，本仓库不单独修改
+- 新增 errorKey、共享限流规则或共享 Redis 键，须先在约定中登记并三仓库同步，再实现
+- 方案与约定冲突时以约定为准，并在 TEMPLATE_PLAN.md 中修正
 
 ## 架构约定
 
-- 路由一律用 `ApiRouter.endpoint(...)`，必须声明 `auth`（未声明时启动失败），operationId 与基线一致；RBAC 用 `permissions` / `any_permissions` 或 `ApiRouter(rbac=True)`
+- 路由一律用 `ApiRouter.endpoint(...)`，必须声明 `auth`（未声明时启动失败）；RBAC 用 `permissions` / `any_permissions` 或 `ApiRouter(rbac=True)`
 - 路由薄：业务在 service，数据访问在 repository
-- 表名、列名、约束名与 nestjs 一致；ORM 列名 camelCase、属性 snake_case
 - 每请求一个 `DbSession`，提交后副作用用 `after_commit`；路由外用 `context.database.transaction()`
-- 配置只从 `app.config.get_settings()` 读取，不直接读 `os.environ`；新变量与 nestjs 同名
-- Redis 键名与 nestjs 一致（`cache::`、`lock:`、`jwt:session:`、`session:rotated:`、`sms:code:` 等）
-- 新模块：在 `factory.create_app` 中 `include_routes`（顺序与 nestjs AppModule 一致），在 `infrastructure/database/models.py` 导入模型，用 `alembic revision --autogenerate` 生成迁移并人工检查；已合并的迁移不修改
+- 配置只从 `app.config.get_settings()` 读取，不直接读 `os.environ`
+- 新模块：在 `factory.create_app` 中 `include_routes`，在 `infrastructure/database/models.py` 导入模型，用 `alembic revision --autogenerate` 生成迁移并人工检查；已合并的迁移不修改
 
 ## 目录速查
 
 | 目录 | 内容 |
 |---|---|
 | `src/app/factory.py` | `create_app()`、中间件、路由注册、lifespan |
-| `src/app/common/` | 路由、信封、异常与翻译、校验引擎（复刻 class-validator）、中间件、分页、i18n |
+| `src/app/common/` | 路由、信封、异常与翻译、校验、中间件、分页、i18n |
 | `src/app/config/` | Settings 分组 |
 | `src/app/core/` | auth、users、session、permissions |
-| `src/app/infrastructure/` | database、cache、redis 锁、throttler、logging、metrics、health、observability、queue、scheduler、audit、alerting、account_cleanup |
+| `src/app/infrastructure/` | database、cache、redis 锁、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup |
 | `src/app/integrations/` | mail、sms、wechat、alipay |
-| `src/app/modules/` | home、files、config、regions、notifications、addresses、favorites、feedbacks、consents、app_profile |
+| `src/app/modules/` | files |
 | `src/app/cli/` | `app` 命令、seed 数据、代码生成模板 |
 | `migrations/` | Alembic |
-| `tests/` | unit、integration、contract、parity、e2e |
+| `tests/` | unit、integration、e2e |
 | `docker/`、`deploy/`、`.github/workflows/` | compose、manage.sh、CI / CD |
 
 ## 常用命令
@@ -81,8 +68,7 @@ make dev                  # http://localhost:3000
 uv run --frozen app worker
 make fmt                  # 格式化 + 自动修复
 make check                # lint + typecheck + 单元测试（pre-push 钩子执行）
-make test                 # 单元 + 集成 + 契约（集成测试需 Docker）
-make test-contract
+make test                 # 单元 + 集成（集成测试需 Docker）
 make ci                   # check + test + security + workflow-lint
 ```
 
@@ -94,12 +80,10 @@ make ci                   # check + test + security + workflow-lint
 |---|---|---|
 | unit | 无 | `make test-unit` |
 | integration | testcontainers | `make test` |
-| contract | 无 | `make test-contract` |
-| parity | 本服务与 nestjs 同时运行 | `make test-parity` |
 | e2e | Docker Compose | `make test-e2e` |
 
-marker 按目录自动添加。集成测试默认回滚模式；依赖真实提交的用例用 `committed_app` 并标 `@pytest.mark.committed`。改动接口行为时同时补集成测试与 parity 用例。详见 [docs/testing.md](docs/testing.md)。
+marker 按目录自动添加。集成测试默认回滚模式；依赖真实提交的用例用 `committed_app` 并标 `@pytest.mark.committed`。改动接口行为时同时补集成测试。详见 [docs/testing.md](docs/testing.md)。
 
 ## 文档
 
-[architecture](docs/architecture.md) · [auth](docs/auth.md) · [database](docs/database.md) · [deploy](docs/deploy.md) · [testing](docs/testing.md) · [cli](docs/cli.md) · [contract](docs/contract.md)
+[platform-conventions](docs/platform-conventions.md) · [architecture](docs/architecture.md) · [auth](docs/auth.md) · [database](docs/database.md) · [deploy](docs/deploy.md) · [testing](docs/testing.md) · [cli](docs/cli.md)

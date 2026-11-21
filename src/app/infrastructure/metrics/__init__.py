@@ -60,18 +60,6 @@ queue_jobs_total: Final = Counter(
     ["queue_name", "status"],
     registry=APP_REGISTRY,
 )
-admin_alerts_total: Final = Counter(
-    "admin_alerts_total",
-    "Total number of admin alerts raised",
-    ["type", "level"],
-    registry=APP_REGISTRY,
-)
-admin_alerts_deduplicated_total: Final = Counter(
-    "admin_alerts_deduplicated_total",
-    "Total number of admin alerts suppressed by an open alert with the same dedup key",
-    ["type"],
-    registry=APP_REGISTRY,
-)
 throttler_storage_fallback_total: Final = Counter(
     "throttler_storage_fallback_total",
     "Total number of rate limit checks served by the in-memory storage because Redis was "
@@ -90,14 +78,6 @@ def record_cache_miss(cache_name: str) -> None:
 
 def record_queue_job(queue_name: str, status: str) -> None:
     queue_jobs_total.labels(queue_name=queue_name, status=status).inc()
-
-
-def record_admin_alert(alert_type: str, level: str) -> None:
-    admin_alerts_total.labels(type=alert_type, level=level).inc()
-
-
-def record_admin_alert_deduplicated(alert_type: str) -> None:
-    admin_alerts_deduplicated_total.labels(type=alert_type).inc()
 
 
 def observe_database_query(operation: str, table: str, seconds: float) -> None:

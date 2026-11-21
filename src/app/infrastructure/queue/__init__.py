@@ -20,10 +20,9 @@ logger = logging.getLogger("app.queue")
 
 STREAM_PREFIX: Final = "taskiq:"
 MAIL_QUEUE: Final = "mail"
-NOTIFICATION_QUEUE: Final = "notification"
 ACCOUNT_CLEANUP_QUEUE: Final = "account-cleanup"
 SCHEDULER_QUEUE: Final = "scheduler"
-QUEUES: Final = (MAIL_QUEUE, NOTIFICATION_QUEUE, ACCOUNT_CLEANUP_QUEUE, SCHEDULER_QUEUE)
+QUEUES: Final = (MAIL_QUEUE, ACCOUNT_CLEANUP_QUEUE, SCHEDULER_QUEUE)
 STARTUP_TIMEOUT_S: Final = 5.0
 
 tasks = AsyncSharedBroker()

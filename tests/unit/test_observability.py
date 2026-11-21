@@ -308,14 +308,14 @@ class TestLogging:
         capsys.readouterr()
 
         response = TestClient(app).get(
-            "/?token=abc&page=1",
+            "/api/v1/health/live?token=abc&page=1",
             headers={"Authorization": f"Bearer {token}", "Cookie": "a=b", "X-Request-Id": "rid-1"},
         )
 
         lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
         [access] = [line for line in lines if line.get("logger") == "app.http.access"]
         assert response.status_code == 200
-        assert access["msg"] == "GET /?token=abc&page=1 200"
+        assert access["msg"] == "GET /api/v1/health/live?token=abc&page=1 200"
         assert access["level"] == "info"
         assert access["request_id"] == "rid-1"
         assert access["user_id"] == "7"
@@ -333,7 +333,7 @@ class TestLogging:
         app = create_app(Settings.load())
         capsys.readouterr()
 
-        response = TestClient(app).get("/", headers={"X-Request-Id": "bad id!"})
+        response = TestClient(app).get("/api/v1/health/live", headers={"X-Request-Id": "bad id!"})
 
         lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
         [access] = [line for line in lines if line.get("logger") == "app.http.access"]
@@ -544,7 +544,7 @@ class TestTelemetry:
         try:
             client = TestClient(create_app(Settings.load()))
             capsys.readouterr()
-            client.get("/")
+            client.get("/api/v1/health/live")
             lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x]
         finally:
             RedisInstrumentor().uninstrument()

@@ -1,11 +1,9 @@
 import asyncio
-import json
 import logging
 import re
 import socket
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,7 +18,6 @@ from app.infrastructure.account_cleanup import (
     register_account_cleaner,
     registered_cleaners,
 )
-from app.infrastructure.alerting import AlertLevel
 from app.infrastructure.audit import Auditable, AuditAction, _param_id, _response_id, sanitize
 from app.infrastructure.queue import RetryPolicy, TaskQueue, UnrecoverableError, run_job
 from app.infrastructure.redis import LockService
@@ -33,7 +30,6 @@ from app.integrations.mail import (
     handlebars_escape,
 )
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "nestjs_mail"
 HASH = "eyJhbGciOi.pay-load_x"
 
 
@@ -138,7 +134,7 @@ class TestRetry:
             reported.append(error)
 
         with pytest.raises(UnrecoverableError, match="invalid openid"):
-            await run_job("notification", RetryPolicy(3, 1000), failing, on_final_failure=report)
+            await run_job("mail", RetryPolicy(3, 1000), failing, on_final_failure=report)
         assert (calls, no_sleep) == (1, [])
         assert [str(error) for error in reported] == ["invalid openid"]
 
@@ -189,33 +185,6 @@ class TestRedisSettings:
 
 
 class TestMailComposer:
-    @pytest.mark.parametrize(
-        ("template", "lang", "frontend", "data"),
-        [
-            ("activation", "en", "http://localhost:3000, https://b.example", {"hash": HASH}),
-            (
-                "reset-password",
-                "zh",
-                "https://app.example.com",
-                {"hash": HASH, "tokenExpires": 1762828800000},
-            ),
-            ("confirm-new-email", "zh", "https://app.example.com", {"hash": HASH}),
-        ],
-    )
-    def test_matches_nestjs_rendering(
-        self, template: str, lang: str, frontend: str, data: dict[str, Any]
-    ) -> None:
-        app = AppSettings.model_validate(
-            {"APP_NAME": "Tom's <App> & Co", "FRONTEND_DOMAIN": frontend}
-        )
-        mail = MailComposer(app, get_i18n("en")).compose(MailMessage(template, "a@b.c", data), lang)
-        expected = json.loads((FIXTURES / f"{template}.{lang}.json").read_text(encoding="utf-8"))
-        assert (mail.subject, mail.text, mail.html) == (
-            expected["subject"],
-            expected["text"],
-            expected["html"],
-        )
-
     def test_unknown_language_falls_back(self) -> None:
         app = AppSettings.model_validate({"FRONTEND_DOMAIN": "http://x"})
         mail = MailComposer(app, get_i18n("en")).compose(
@@ -315,14 +284,6 @@ class _Cleaner:
             raise self.error
 
 
-class _Alerts:
-    def __init__(self) -> None:
-        self.raised: list[tuple[Any, ...]] = []
-
-    async def raise_(self, *args: Any) -> None:
-        self.raised.append(args)
-
-
 class TestAccountCleanupRunner:
     async def test_runs_every_cleaner_and_aggregates_failures(self) -> None:
         calls: list[str] = []
@@ -333,7 +294,6 @@ class TestAccountCleanupRunner:
                 _Cleaner("papers", calls, RuntimeError("busy")),
                 _Cleaner("files", calls),
             ],
-            _Alerts(),
         )
         with pytest.raises(AccountCleanupError) as caught:
             await runner.run(7)
@@ -341,18 +301,13 @@ class TestAccountCleanupRunner:
         assert caught.value.failed_cleaners == ["papers"]
         assert "papers (busy)" in str(caught.value)
 
-    async def test_report_failure_raises_deduplicated_alert(self) -> None:
-        alerts = _Alerts()
-        runner = AccountCleanupRunner(None, [], alerts)  # type: ignore[arg-type]
-        await runner.report_failure(7, AccountCleanupError(7, ["files"], [RuntimeError("s3")]))
-        [(type_, level, message, payload, dedup_key)] = alerts.raised
-        assert (type_, level, dedup_key) == (
-            "accountCleanupFailed",
-            AlertLevel.WARN,
-            "accountCleanupFailed:7",
-        )
-        assert "用户 7" in message
-        assert payload["failedCleaners"] == ["files"]
+    async def test_report_failure_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        runner = AccountCleanupRunner(None, [])  # type: ignore[arg-type]
+        with caplog.at_level(logging.ERROR, logger="app.account_cleanup"):
+            await runner.report_failure(7, AccountCleanupError(7, ["files"], [RuntimeError("s3")]))
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert record.getMessage() == "Account cleanup for user 7 failed: files (s3)"
 
     def test_registered_cleaners_run_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.infrastructure import account_cleanup

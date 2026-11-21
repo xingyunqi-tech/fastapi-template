@@ -1,7 +1,6 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -26,8 +25,6 @@ from app.core.auth import deps as _auth_deps  # noqa: F401
 from app.core.auth import router as auth
 from app.core.users import account_cleaner as _users_account_cleaner  # noqa: F401
 from app.core.users import router as users
-from app.infrastructure.account_cleanup import router as account_cleanup
-from app.infrastructure.alerting import AdminAlertService, AlertLevel
 from app.infrastructure.cache import Cache, MemoryCache, RedisCache
 from app.infrastructure.database.schema_check import ensure_external_schema
 from app.infrastructure.database.session import Database
@@ -44,22 +41,9 @@ from app.infrastructure.queue import TaskQueue
 from app.infrastructure.queue.mail import QueueMailer
 from app.infrastructure.throttler import RateLimitHeadersMiddleware, ThrottlerStorage
 from app.integrations.mail import LoggingMailer, Mailer
-from app.modules.addresses import account_cleaner as _addresses_account_cleaner  # noqa: F401
-from app.modules.addresses import router as addresses
-from app.modules.app_profile import router as app_profile
-from app.modules.config import router as app_config
-from app.modules.consents import router as consents
-from app.modules.favorites import account_cleaner as _favorites_account_cleaner  # noqa: F401
-from app.modules.favorites import router as favorites
-from app.modules.feedbacks import account_cleaner as _feedbacks_account_cleaner  # noqa: F401
-from app.modules.feedbacks import router as feedbacks
 from app.modules.files import account_cleaner as _files_account_cleaner  # noqa: F401
 from app.modules.files import router as files
 from app.modules.files.storage import close_s3_clients
-from app.modules.home import router as home
-from app.modules.notifications import account_cleaner as _notifications_account_cleaner  # noqa: F401
-from app.modules.notifications import router as notifications
-from app.modules.regions import router as regions
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
@@ -101,24 +85,6 @@ def _mailer(settings: Settings, queue: TaskQueue) -> Mailer:
     return LoggingMailer()
 
 
-class _ContextAlerts:
-    """按调用时的 app.state.context 写告警。"""
-
-    def __init__(self, app: FastAPI) -> None:
-        self.app = app
-
-    async def raise_(
-        self,
-        type_: str,
-        level: AlertLevel,
-        message: str,
-        payload: dict[str, Any] | None = None,
-        dedup_key: str | None = None,
-    ) -> None:
-        context: AppContext = self.app.state.context
-        await AdminAlertService(context.database).raise_(type_, level, message, payload, dedup_key)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     context: AppContext = app.state.context
@@ -132,7 +98,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await context.queue.shutdown()
     if isinstance(context.mailer, QueueMailer):
         await context.mailer.drain()
-    await asyncio.gather(*app.state.throttler._pending, return_exceptions=True)
     await close_s3_clients()
     await context.database.dispose()
     if context.redis is not None:
@@ -162,7 +127,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.context = build_context(settings)
-    app.state.throttler = ThrottlerStorage(_ContextAlerts(app))
+    app.state.throttler = ThrottlerStorage()
     register_exception_handlers(app, translator)
     if settings.app.swagger_enabled:
         mount_docs(app, settings.app.openapi_baseline_path)
@@ -172,19 +137,7 @@ def create_app(
     for files_router in files.routers_for(settings.file.driver):
         include_routes(app, files_router, api_prefix)
     include_routes(app, auth.router, api_prefix)
-    include_routes(app, notifications.router, api_prefix)
-    include_routes(app, home.root_router)
-    include_routes(app, home.api_router, api_prefix)
     include_routes(app, health.router, api_prefix)
-    include_routes(app, addresses.router, api_prefix)
-    include_routes(app, regions.router, api_prefix)
-    include_routes(app, favorites.router, api_prefix)
-    include_routes(app, app_config.router, api_prefix)
-    include_routes(app, feedbacks.router, api_prefix)
-    include_routes(app, consents.router, api_prefix)
-    include_routes(app, account_cleanup.router, api_prefix)
-    include_routes(app, app_profile.router, api_prefix)
-    include_routes(app, app_profile.admin_router, api_prefix)
     include_routes(app, metrics.build_router(settings.metrics.path))
     for router, prefix in extra_routers:
         include_routes(app, router, prefix)

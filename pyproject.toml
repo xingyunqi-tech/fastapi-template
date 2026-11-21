@@ -60,7 +60,6 @@ dev = [
     "ty>=0.0.100",
     "types-aioboto3>=15.5.0",
     "typos>=1.51.1",
-    "uvicorn[standard]>=0.40.0",
 ]
 
 [build-system]
@@ -144,8 +143,6 @@ markers = [
     "unit: 纯单元测试，不依赖外部服务",
     "integration: 依赖 testcontainers 启动的 Postgres / Redis",
     "e2e: 对 compose 启动的完整服务发请求",
-    "contract: OpenAPI 与 validation.json 契约比对",
-    "parity: 与 nestjs-template 同请求比对",
     "committed: 依赖真实提交，使用独立克隆库",
 ]
 
@@ -161,7 +158,7 @@ skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
 
 [tool.typos.files]
-extend-exclude = ["uv.lock", "openapi/*.json", "db/*.sql", "src/app/cli/seed_data/*.json"]
+extend-exclude = ["uv.lock", "openapi/*.json", "src/app/cli/seed_data/*.json"]
 
 [tool.typos.default]
 extend-ignore-re = ["(PK|FK|UQ|REL|IDX)_[0-9a-f]{20,}"]

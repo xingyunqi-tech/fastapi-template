@@ -22,8 +22,6 @@ NESTJS_CUSTOM_METRICS = {
     "cache_hits_total": "counter",
     "cache_misses_total": "counter",
     "queue_jobs_total": "counter",
-    "admin_alerts_total": "counter",
-    "admin_alerts_deduplicated_total": "counter",
     "throttler_storage_fallback_total": "counter",
 }
 HTTP_BUCKETS = ["0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1.0", "2.5", "5.0", "10.0"]
@@ -71,7 +69,7 @@ class TestExposition:
 
     async def test_names_types_and_labels_match_nestjs(self, make_app: AppFactory) -> None:
         async with client_for(make_app()) as client:
-            await client.get("/")
+            await client.get("/api/v1/health/live")
             response = await client.get("/metrics")
 
         text = response.text
@@ -84,7 +82,7 @@ class TestExposition:
             if line and not line.startswith("#"):
                 assert 'app="Metrics App"' in line
         buckets = re.findall(
-            r'^http_request_duration_seconds_bucket\{.*?le="([^"]+)".*?path="/",status="200"',
+            r'^http_request_duration_seconds_bucket\{.*?le="([^"]+)".*?path="/api/v1/health/live",status="200"',
             text,
             re.MULTILINE,
         )

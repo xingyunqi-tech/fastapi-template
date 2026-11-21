@@ -100,7 +100,6 @@ api 与 worker 挂载同一 `prometheus-multiproc` 卷并设 `PROMETHEUS_MULTIPR
 | `check.yml` | push / PR 到 main、master、`release/**`，手动 | 见下表 |
 | `deploy.yml` | 手动（输入 `deploy`、`target`: aliyun / tencent / all） | 构建 amd64 + arm64 生产镜像（SBOM、provenance）推 GHCR，`deploy=true` 时同时推腾讯云 TCR；按目标矩阵 scp `docker/docker-compose.ecs.yaml` 与 `deploy/manage.sh`，SSH 拉镜像（3 次重试）→ migrate → `up -d --remove-orphans` → 轮询 `/api/v1/health/ready` 30 次 → 保留最新 3 个镜像；成功后调用 cleanup-registry；notify 输出摘要 |
 | `cleanup-registry.yml` | 每周一 03:00（北京时间）、手动（`dry_run`）、deploy 调用 | GHCR 始终保留 `latest`（`exclude-tags`），另保留最近 2 个带 tag 的版本并删除无 tag 版本；TCR 保留 `latest` 指向的镜像及最近推送的共 2 个，未配置密钥时跳过 |
-| `nestjs-drift.yml` | 每天 01:00 UTC、手动 | 对 nestjs-template `release/exam-prep` HEAD 运行 `scripts/openapi-sync.sh`，与入库的 `openapi/`、`db/nestjs-schema.sql`、`tests/contract/fixtures/validation-cases.json` 比对，有差异时失败并在摘要输出 diff；不修改、不提交 |
 
 check.yml 的 job：
 
@@ -111,12 +110,10 @@ check.yml 的 job：
 | type-check | mypy；ty（`continue-on-error`） | – |
 | test | `make test`（testcontainers），上传 coverage.xml | – |
 | migrations | postgres service：upgrade → `alembic check` → downgrade base → upgrade | – |
-| contract | `make test-contract` | – |
 | security | `make security`（pip-audit）、gitleaks（只扫本次 push / PR 引入的提交） | – |
 | build | `uv build`、生产镜像构建 | – |
 | image-scan | 生产镜像 + Trivy（HIGH / CRITICAL，有修复版本） | – |
 | e2e | `make test-e2e`，失败上传容器日志 | lint、type-check、test、build、migrations、workflow-lint、security |
-| parity | 构建 `openapi/SOURCE` 中提交的 nestjs 镜像并启动；本服务 `make infra`、`migrate`、`seed`、`serve` + worker；`make test-parity`；nestjs `test/user/auth.e2e-spec.ts` 指向本服务；表结构与 `db/nestjs-schema.sql` 比对 | build、migrations |
 
 ### Secrets 与 Variables
 
