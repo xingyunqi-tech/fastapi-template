@@ -1,6 +1,6 @@
 # fastapi-temp
 
-FastAPI 后端模板。HTTP API 契约与 [nestjs-template](https://github.com/xingyunqi-tech/nestjs-template)（`release/exam-prep` 分支 `02fdb4d`，见 `openapi/SOURCE`）一致：vite-vue3-temp、uniapp-template 由 `/docs-json` 经 Orval 生成的前端可在两个后端之间无改动切换。改造方案见 [TEMPLATE_PLAN.md](TEMPLATE_PLAN.md)。
+FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platform-conventions.md) 为准，OpenAPI 由代码生成并入库为 `openapi/openapi.json`。改造方案见 [TEMPLATE_PLAN.md](TEMPLATE_PLAN.md)。
 
 | 项 | 选型 |
 |---|---|
@@ -15,11 +15,11 @@ FastAPI 后端模板。HTTP API 契约与 [nestjs-template](https://github.com/x
 
 ## 功能
 
-- 统一响应信封、错误翻译（i18n en / zh）、class-validator 等价校验、Request ID、CORS、安全头、限流（GCRA）
+- 统一响应信封与 errorKey 错误码、校验错误转换、i18n（zh / en）、Request ID、CORS、安全头、限流（GCRA）、幂等键
 - 认证：邮箱、手机号密码、短信验证码、微信（小程序 / App / 手机号）、支付宝；JWT access + refresh 轮换；会话（设备）管理；RBAC
 - 用户管理、文件上传（`local` / `s3` / `s3-presigned`）与私有文件
 - 健康检查、Prometheus 指标、审计、账号注销清理、邮件（中英模板）、定时任务
-- `/docs-json` 逐字节输出 nestjs 完整 OpenAPI 基线（含本模板未实现的考试业务接口，请求返回 404 信封），`/docs` 为 Scalar 页面；`SWAGGER_ENABLED` 控制，生产默认关闭
+- `/openapi.json`（OpenAPI 3.1）与 `/docs`（Scalar）；`DOCS_ENABLED` 控制，生产默认关闭；`make openapi` 导出到 `openapi/openapi.json`
 
 ## 快速开始
 
@@ -48,11 +48,13 @@ uv run --frozen app scheduler # 定时任务调度
 | `make dev` | 本地开发服务（`fastapi dev`，端口 `APP_PORT`，默认 3000） |
 | `make serve` | 以生产方式启动（Granian） |
 | `make fmt` | `ruff format` + `ruff check --fix` |
-| `make lint` | `ruff check`、`ruff format --check`、`typos`、`scripts/gen_schemas.py --check` |
+| `make lint` | `ruff check`、`ruff format --check`、`typos` |
 | `make typecheck` | mypy（门禁）+ ty（不阻塞） |
 | `make test-unit` | 单元测试 |
 | `make check` | lint + typecheck + test-unit |
-| `make test` | 单元 + 集成测试（含覆盖率，集成测试需 Docker） |
+| `make test` | 单元 + 约定 + 集成测试（含覆盖率，集成测试需 Docker） |
+| `make test-conventions` | 约定测试（探针路由） |
+| `make openapi` | 导出 `openapi/openapi.json` |
 | `make test-e2e` | e2e：ci 组合起完整服务栈后黑盒测试 |
 | `make migrate` | 执行迁移（`DB_SCHEMA_OWNER=external` 时跳过） |
 | `make seed` | 写入种子数据 |

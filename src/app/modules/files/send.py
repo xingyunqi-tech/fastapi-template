@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, Final
 import anyio
 from starlette.responses import Response
 
-from app.common.exceptions import HttpError
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from os import stat_result
@@ -215,7 +213,7 @@ def file_response(
         for name in ("if-match", "if-unmodified-since", "if-none-match", "if-modified-since")
     ):
         if _precondition_failed(headers, etag, last_modified):
-            raise HttpError(412, "Precondition Failed", headers=base)
+            return Response("Precondition Failed", status_code=412, headers=base)
         if _fresh(headers, etag, last_modified):
             return Response(status_code=304, headers=base)
 
@@ -226,8 +224,10 @@ def file_response(
         if not _range_fresh(headers, etag, last_modified):
             ranges = RANGE_INVALID
         if ranges == RANGE_UNSATISFIABLE:
-            raise HttpError(
-                416, "Range Not Satisfiable", headers={**base, "Content-Range": f"bytes */{size}"}
+            return Response(
+                "Range Not Satisfiable",
+                status_code=416,
+                headers={**base, "Content-Range": f"bytes */{size}"},
             )
         if isinstance(ranges, list) and len(ranges) == 1:
             byte_range = ranges[0]

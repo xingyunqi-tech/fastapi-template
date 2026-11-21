@@ -17,7 +17,7 @@ from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from app import __main__ as app_main
-from app.common.exceptions import HttpError
+from app.common.errors import AppError
 from app.common.security import Jwt
 from app.config import FileDriver, LogLevel, Settings, SettingsError
 from app.factory import create_app
@@ -227,7 +227,7 @@ class TestMonitoringToken:
     async def test_without_token_only_non_production_passes(self) -> None:
         await monitoring_token(_monitoring_request(None, False, None))
 
-        with pytest.raises(HttpError) as raised:
+        with pytest.raises(AppError) as raised:
             await monitoring_token(_monitoring_request(None, True, None))
         assert raised.value.status == 403
 

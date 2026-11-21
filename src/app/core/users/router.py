@@ -1,28 +1,26 @@
 from typing import Annotated, Any
 
+from fastapi import Depends, Path, Query
+
 from app.common.context import AppContext, Context
-from app.common.params import Body, IdParam, Query
+from app.common.errors import AppError
+from app.common.pagination import PageParams, SortField, sort_param
 from app.common.routing import ApiRouter, Auth
-from app.contract.schemas import (
-    CreateUserDto,
-    InfinityPaginationUserResponseDto,
-    UpdateUserDto,
-    User,
-)
+from app.common.types import SerialId
 from app.core.permissions.service import Permission
 from app.core.session.repository import SessionRepository
 from app.core.session.service import SessionService
-from app.core.users.repository import Sort, UserRepository
-from app.core.users.schemas import QueryUserDto
-from app.core.users.serializers import View, serialize_user
+from app.core.users.repository import SORTABLE, UserRepository
+from app.core.users.schemas import CreateUserRequest, UpdateUserRequest, User, UserPage
 from app.core.users.service import UsersService, user_input_from
 from app.infrastructure.account_cleanup import AccountCleanupProducer
 from app.infrastructure.database.session import DbSession
 from app.modules.files.service import FilesService
 
-MAX_LIMIT = 50
-
 router = ApiRouter(prefix="/v1/users", tags=["Users"], rbac=True)
+
+UserId = Annotated[SerialId, Path()]
+UserSort = Annotated[list[SortField], Depends(sort_param(tuple(SORTABLE)))]
 
 
 def build_users_service(context: AppContext, session: Any) -> UsersService:
@@ -40,42 +38,34 @@ def build_users_service(context: AppContext, session: Any) -> UsersService:
     "",
     operation_id="createUser",
     auth=Auth.JWT,
+    status=201,
     permissions=[Permission.USER_CREATE],
-    response_model=User,
     summary="创建用户（管理员）",
 )
-async def create_user(
-    body: Annotated[CreateUserDto, Body(CreateUserDto)], context: Context, session: DbSession
-) -> dict[str, Any]:
-    user, created = await build_users_service(context, session).create(user_input_from(body))
-    return serialize_user(user, context.file_urls, view=View.ADMIN, created=created)
+async def create_user(body: CreateUserRequest, context: Context, session: DbSession) -> User:
+    user = await build_users_service(context, session).create(user_input_from(body))
+    return User.from_model(user, context.file_urls)
 
 
 @router.endpoint(
     "GET",
     "",
-    operation_id="getUsers",
+    operation_id="listUsers",
     auth=Auth.JWT,
     permissions=[Permission.USER_LIST],
-    response_model=InfinityPaginationUserResponseDto,
     summary="获取用户列表（管理员）",
 )
-async def get_users(
-    query: Annotated[QueryUserDto, Query(QueryUserDto)], context: Context, session: DbSession
-) -> dict[str, Any]:
-    page = int(query.page) if query.page is not None else 1
-    limit = min(int(query.limit) if query.limit is not None else 10, MAX_LIMIT)
-    role_ids = (
-        [int(r.id) for r in query.filters.roles] if query.filters and query.filters.roles else None
+async def list_users(
+    page: Annotated[PageParams, Query()],
+    sort: UserSort,
+    context: Context,
+    session: DbSession,
+    role_id: Annotated[list[SerialId] | None, Query(alias="roleId")] = None,
+) -> UserPage:
+    users, total = await build_users_service(context, session).find_page(
+        role_ids=role_id, sort=sort, offset=page.offset, limit=page.page_size
     )
-    sort = [Sort(s.order_by, s.order) for s in query.sort] if query.sort else None
-    users = await build_users_service(context, session).find_many(
-        role_ids=role_ids, sort=sort, page=page, limit=limit
-    )
-    return {
-        "data": [serialize_user(u, context.file_urls, view=View.ADMIN) for u in users],
-        "hasNextPage": len(users) == limit,
-    }
+    return UserPage.of([User.from_model(u, context.file_urls) for u in users], total, page)
 
 
 @router.endpoint(
@@ -84,12 +74,13 @@ async def get_users(
     operation_id="getUser",
     auth=Auth.JWT,
     permissions=[Permission.USER_READ],
-    response_model=User,
     summary="获取用户详情（管理员）",
 )
-async def get_user(id: IdParam, context: Context, session: DbSession) -> dict[str, Any] | None:
+async def get_user(id: UserId, context: Context, session: DbSession) -> User:
     user = await build_users_service(context, session).find_by_id(id)
-    return serialize_user(user, context.file_urls, view=View.ADMIN) if user else None
+    if user is None:
+        raise AppError("user.notFound")
+    return User.from_model(user, context.file_urls)
 
 
 @router.endpoint(
@@ -98,17 +89,13 @@ async def get_user(id: IdParam, context: Context, session: DbSession) -> dict[st
     operation_id="updateUser",
     auth=Auth.JWT,
     permissions=[Permission.USER_UPDATE],
-    response_model=User,
     summary="更新用户（管理员）",
 )
 async def update_user(
-    id: IdParam,
-    body: Annotated[UpdateUserDto, Body(UpdateUserDto)],
-    context: Context,
-    session: DbSession,
-) -> dict[str, Any] | None:
+    id: UserId, body: UpdateUserRequest, context: Context, session: DbSession
+) -> User:
     user = await build_users_service(context, session).update_by_admin(id, user_input_from(body))
-    return serialize_user(user, context.file_urls, view=View.ADMIN)
+    return User.from_model(user, context.file_urls)
 
 
 @router.endpoint(
@@ -119,5 +106,5 @@ async def update_user(
     permissions=[Permission.USER_DELETE],
     summary="删除用户（管理员）",
 )
-async def delete_user(id: IdParam, context: Context, session: DbSession) -> None:
+async def delete_user(id: UserId, context: Context, session: DbSession) -> None:
     await build_users_service(context, session).remove(id)

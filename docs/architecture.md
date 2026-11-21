@@ -7,10 +7,9 @@ src/app/
 ├── __main__.py          # python -m app：Granian 启动（WEB_CONCURRENCY 个进程）
 ├── main.py              # app = create_app()，fastapi dev / Granian 入口
 ├── factory.py           # create_app()、build_context()、lifespan
-├── cli/                 # Typer `app` 命令：migrate、seed、worker、scheduler、permissions、generate
+├── cli/                 # Typer `app` 命令：migrate、seed、worker、scheduler、permissions、generate、openapi
 ├── config/              # Settings，按分组拆分（app、auth、database、redis、mail、file、throttler、metrics、log、observability、sms、wechat、alipay）
-├── contract/schemas.py  # 由 scripts/gen_schemas.py 从基线生成的 Pydantic 模型（类名即 nestjs DTO 名），禁止手改
-├── common/              # 路由、信封、异常与翻译、校验引擎、中间件、分页、安全、i18n
+├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、安全、i18n
 ├── core/                # auth、users、session、permissions
 ├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup
 ├── integrations/        # mail、sms（阿里云）、wechat、alipay
@@ -21,10 +20,10 @@ src/app/
 
 | 目录 | 内容 |
 |---|---|
-| `openapi/` | `nestjs-baseline.json`（`/docs-json` 原文）、`validation.json`（class-validator 元数据）、`nest_handlers.json`（限流键映射）、`SOURCE`（nestjs 提交号）；运行时读取，镜像中包含 |
+| `openapi/` | `openapi.json`（`app openapi export` 由代码导出，`--check` 校验一致）、`nest_handlers.json`（限流键映射） |
 | `migrations/` | Alembic（async env.py） |
-| `scripts/` | `gen_schemas.py`、`gen_nest_handlers.py`（限流 handler 映射）、`check_commit_msg.py`、`audit_severity.py` |
-| `tests/` | `unit`、`integration`、`e2e`，见 [testing.md](testing.md) |
+| `scripts/` | `gen_nest_handlers.py`（限流 handler 映射）、`check_commit_msg.py`、`audit_severity.py` |
+| `tests/` | `unit`、`conventions`、`integration`、`e2e`，见 [testing.md](testing.md) |
 | `docker/`、`deploy/`、`.github/workflows/` | 见 [deploy.md](deploy.md) |
 
 ## 模块分层
@@ -70,17 +69,15 @@ src/app/
 
 | 顺序 | 中间件 | 作用 |
 |---|---|---|
-| 1 | `RequestContextMiddleware` | Request ID（入站 `X-Request-Id` 合法则沿用）、`Accept-Language` 解析 |
-| 2 | `CorsMiddleware` | 生产按 `FRONTEND_DOMAIN` 白名单，其它环境反射来源 |
-| 3 | `RequestLoggingMiddleware` | pino-http 形状的请求日志 |
+| 1 | `CatchAllMiddleware` | 未处理异常转 500 `common.internalError` |
+| 2 | `SecurityHeadersMiddleware` | 安全响应头 |
+| 3 | `RateLimitHeadersMiddleware` | 写 `X-RateLimit-*` / `Retry-After` |
 | 4 | `MetricsMiddleware` | `METRICS_ENABLED=true` 时挂载 |
-| 5 | `RateLimitHeadersMiddleware` | 写 `X-RateLimit-*` / `Retry-After` |
-| 6 | `SecurityHeadersMiddleware` | 与 nestjs helmet 相同的头集合 |
-| 7 | `JsonBodyMiddleware` | 路由匹配前解析 JSON 体，256kb 上限（413）与解析错误（400） |
-| 8 | `RawPathMiddleware` | 按原始（百分号编码）路径匹配路由 |
-| 9 | `CatchAllMiddleware` | 未处理异常转 500 信封 |
+| 5 | `RequestLoggingMiddleware` | 请求日志 |
+| 6 | `CORSMiddleware` | 生产按 `CORS_ORIGINS` 白名单，其它环境允许任意来源；不发送 credentials |
+| 7 | `RequestContextMiddleware` | Request ID（入站 `X-Request-Id` 合法则沿用，否则 UUIDv7）、`Accept-Language` 解析 |
 
-路由内依赖顺序：限流守卫 → 鉴权 → 权限守卫 → 参数解析与校验（`common/params.py` 按 `openapi/validation.json` 复刻 nestjs ValidationPipe）→ handler → 信封包装。
+路由内顺序：`BODY_LIMIT` 计数（上传路由除外）→ 限流守卫 → 鉴权 → 权限守卫 → 幂等键 → Pydantic 解析与校验 → handler → 信封包装。
 
 数据库：每请求一个 `AsyncSession`（`DbSession` 依赖），见 [database.md](database.md)。
 
@@ -88,13 +85,12 @@ src/app/
 
 | 情况 | 输出 |
 |---|---|
-| 成功 | `{"code": 200, "message": "success", "data": ...}`，HTTP 200（upload 为 201）；`void` 接口无 `data` 键 |
-| HTTP 异常 | `{"code": <状态>, "message": <译文>, "data": <对象或 null>}`（`common/errors.py`，翻译规则同 nestjs AllExceptionsFilter） |
-| 校验失败 | 422，`data: {字段: "约束1, 约束2"}` |
-| 非法 `:id` | 400，`data: {"id": "Invalid id"}` |
-| 未匹配路由 / 方法不符 | 404，`message` 为 `Cannot <METHOD> <url>` |
+| 成功 | `{"code": 0, "message": "ok", "data": ...}`；无返回值时 `data: null` |
+| 错误 | `{"code", "message", "errorKey", "data", "requestId"}`；`raise AppError("<errorKey>")`，登记表见 `common/errors.py`（与约定 §2.4 一致） |
+| 校验失败 | 422 `common.validationFailed`，`data.errors[{field, rule, message, params?}]`；业务校验用 `field_error(field, rule)` |
+| 未匹配路由 / 方法不符 | 404 `common.notFound` / 405 `common.methodNotAllowed`（带 `Allow`） |
 
-翻译文件：`common/i18n/{en,zh}/common.json`（与 nestjs 相同），邮件模板文案在同目录其它 JSON 中。
+翻译文件：`common/i18n/{en,zh}/errors.json`（errorKey）、`rules.json`（校验 rule），邮件文案在 `common.json` 等文件中。
 
 ## 进程模型
 

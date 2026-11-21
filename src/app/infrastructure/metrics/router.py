@@ -15,7 +15,7 @@ def build_router(path: str) -> ApiRouter:
         f"/{path.strip('/')}",
         operation_id="getMetrics",
         auth=Auth.MONITORING,
-        wrap=False,
+        envelope=False,
         include_in_schema=False,
     )
     async def metrics(request: Request) -> Response:

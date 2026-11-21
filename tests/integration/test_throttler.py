@@ -10,7 +10,7 @@ from app.infrastructure.database.session import Database
 from app.infrastructure.metrics import throttler_storage_fallback_total
 from app.infrastructure.throttler import ThrottlerStorage, redis_key
 from tests.conftest import TEST_ENV
-from tests.integration.conftest import _build_app, client_for
+from tests.integration.conftest import _build_app, client_for, error_of
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -28,7 +28,6 @@ S3_ENV = {
 }
 LIVE = "/api/v1/health/live"
 READY = "/api/v1/health/ready"
-TOO_MANY = {"code": 429, "message": "Too many requests, please try again later", "data": None}
 
 type AppFactory = Callable[..., FastAPI]
 
@@ -75,18 +74,17 @@ class TestHeadersAndLimit:
             assert response.headers["x-ratelimit-reset"].isdigit()
         blocked = responses[3]
         assert blocked.status_code == 429
-        assert blocked.json() == TOO_MANY
+        assert error_of(blocked) == (429, "common.tooManyRequests")
         assert int(blocked.headers["retry-after"]) >= 1
         assert not any(name in blocked.headers for name in RATE_HEADERS)
 
-    async def test_zh_message(self, make_app: AppFactory) -> None:
+    async def test_message_follows_accept_language(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
             await client.get(LIVE)
-            response = await client.get(LIVE, headers={"Accept-Language": "zh"})
+            response = await client.get(LIVE, headers={"Accept-Language": "en"})
 
-        assert response.status_code == 429
-        assert response.json()["data"] is None
-        assert response.json()["message"] != TOO_MANY["message"]
+        assert error_of(response) == (429, "common.tooManyRequests")
+        assert response.json()["message"] == "Too many requests, please try again later"
 
     async def test_route_rule_overrides_default_and_precedes_validation(
         self, make_app: AppFactory

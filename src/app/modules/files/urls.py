@@ -1,11 +1,11 @@
-"""文件对外 URL（nestjs file-url.ts buildFileUrl）。"""
+"""文件对外 URL。"""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.config import FileDriver
 from app.modules.files.purposes import FileVisibility
-from app.modules.files.storage import S3Options, presigned_get_url
+from app.modules.files.storage import API_PREFIX, S3Options, presigned_get_url
 
 if TYPE_CHECKING:
     from app.config import FileSettings, Settings
@@ -22,7 +22,7 @@ class FileUrls:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> FileUrls:
-        return cls(settings.app.backend_domain, settings.app.api_prefix, settings.file)
+        return cls(settings.app.backend_domain, API_PREFIX, settings.file)
 
     def private_api_path(self, file_id: object) -> str:
         return f"/{self.api_prefix}/v1/files/private/{file_id}"

@@ -49,6 +49,7 @@ dev = [
     "fastapi-cli>=0.0.20",
     "httpx2>=2.16.0",
     "mypy>=2.3.1",
+    "polyfactory>=3.5.0",
     "prek>=0.5.3",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
@@ -92,7 +93,6 @@ ignore = ["N818"]
 "migrations/**" = ["TC"]
 "src/app/**/router.py" = ["TC"]
 "src/app/**/deps.py" = ["TC"]
-"src/app/common/params.py" = ["TC"]
 "src/app/common/context.py" = ["TC"]
 "src/app/infrastructure/database/session.py" = ["TC"]
 
@@ -100,7 +100,7 @@ ignore = ["N818"]
 runtime-evaluated-base-classes = [
     "app.infrastructure.database.base.Base",
     "pydantic.BaseModel",
-    "app.contract.schemas.ContractModel",
+    "app.common.types.ApiModel",
     "pydantic_settings.BaseSettings",
 ]
 
@@ -142,6 +142,7 @@ filterwarnings = ["error"]
 markers = [
     "unit: 纯单元测试，不依赖外部服务",
     "integration: 依赖 testcontainers 启动的 Postgres / Redis",
+    "conventions: 逐条断言 docs/platform-conventions.md 的可观察行为",
     "e2e: 对 compose 启动的完整服务发请求",
     "committed: 依赖真实提交，使用独立克隆库",
 ]

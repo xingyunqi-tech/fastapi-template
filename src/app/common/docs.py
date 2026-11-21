@@ -1,46 +1,46 @@
-lazy from pathlib import Path
+"""`DOCS_ENABLED` 时挂载 `/openapi.json` 与 Scalar 页面 `/docs`。"""
 
-from starlette.responses import HTMLResponse, Response
+from typing import Final
+
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 lazy from fastapi import FastAPI
 lazy from starlette.requests import Request
 
-SCALAR_VERSION = "1.76.0"
-DOCS_CSP = (
+SCALAR_VERSION: Final = "1.76.0"
+DOCS_CSP: Final = (
     "default-src 'self';script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;"
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;img-src 'self' data: https:;"
     "font-src 'self' https: data:;connect-src 'self';object-src 'none';frame-ancestors 'self'"
 )
 
-_SCALAR_HTML = """<!doctype html>
+_SCALAR_HTML: Final = """<!doctype html>
 <html>
   <head>
-    <title>API</title>
+    <title>{title}</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>
   <body>
-    <script id="api-reference" data-url="/docs-json"></script>
+    <script id="api-reference" data-url="/openapi.json"></script>
     <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@{version}"></script>
   </body>
 </html>
 """
 
 
-def mount_docs(app: FastAPI, baseline_path: Path) -> None:
-    """`/docs-json` 逐字节输出 nestjs 基线，`/docs` 为指向它的 Scalar 页面。"""
-    baseline = baseline_path.read_bytes()
-    html = _SCALAR_HTML.format(version=SCALAR_VERSION)
+def mount_docs(app: FastAPI) -> None:
+    html = _SCALAR_HTML.format(title=app.title, version=SCALAR_VERSION)
 
-    async def docs_json(_: Request) -> Response:
-        return Response(baseline, media_type="application/json; charset=utf-8")
+    async def openapi_json(_: Request) -> Response:
+        return JSONResponse(app.openapi())
 
     async def docs_ui(_: Request) -> Response:
         return HTMLResponse(html, headers={"Content-Security-Policy": DOCS_CSP})
 
     app.router.routes.extend(
         [
-            Route("/docs-json", docs_json, methods=["GET"], include_in_schema=False),
+            Route("/openapi.json", openapi_json, methods=["GET"], include_in_schema=False),
             Route("/docs", docs_ui, methods=["GET"], include_in_schema=False),
         ]
     )

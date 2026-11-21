@@ -125,7 +125,7 @@ def _url_params(template: str, data: dict[str, Any]) -> dict[str, str]:
 
 
 class MailComposer:
-    """nestjs MailService：按语言取标题与正文，链接为 FRONTEND_DOMAIN 的第一个域名 + 路径。"""
+    """按语言取标题与正文，链接为 APP_FRONTEND_URL + 路径。"""
 
     def __init__(self, app: AppSettings, i18n: I18n) -> None:
         self.app = app
@@ -141,9 +141,9 @@ class MailComposer:
         return self.i18n.translate(key, lang) or key
 
     def _url(self, path: str, params: dict[str, str]) -> str:
-        if not self.app.frontend_domain:
-            raise RuntimeError("FRONTEND_DOMAIN is required to build mail links")
-        base = self.app.frontend_domain.split(",")[0].strip() + path
+        if not self.app.frontend_url:
+            raise RuntimeError("APP_FRONTEND_URL is required to build mail links")
+        base = self.app.frontend_url.rstrip("/") + path
         query = "&".join(f"{_form_encode(k)}={_form_encode(v)}" for k, v in params.items())
         return f"{base}?{query}"
 

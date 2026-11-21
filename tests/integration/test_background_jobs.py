@@ -10,7 +10,7 @@ import time
 import warnings
 from email.message import EmailMessage
 from email.policy import default as default_policy
-from typing import Annotated, Any
+from typing import Any
 from urllib.parse import urlparse
 lazy from collections.abc import AsyncIterator, Iterator
 
@@ -22,12 +22,10 @@ lazy from fastapi import FastAPI
 lazy from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.common.context import AppContext
-from app.common.exceptions import validation_error
-from app.common.params import Body
+from app.common.errors import field_error
 from app.common.routing import ApiRouter, Auth
 from app.common.security import Jwt, Passwords
 from app.config import Settings, get_settings
-from app.contract.schemas import AuthUpdateDto
 from app.factory import create_app
 from app.infrastructure import account_cleanup, metrics
 from app.infrastructure import queue as queue_module
@@ -49,6 +47,7 @@ from app.infrastructure.scheduler import (
 from app.integrations.mail import MailMessage, SmtpTransport
 from tests.integration.conftest import client_for
 from tests.integration.test_auth import PASSWORD, bearer, login
+lazy from app.core.auth.schemas import UpdateMeRequest
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
@@ -100,7 +99,7 @@ def smtp(monkeypatch: pytest.MonkeyPatch) -> Iterator[SmtpSink]:
         "MAIL_DEFAULT_EMAIL": "noreply@example.com",
         "MAIL_DEFAULT_NAME": "Api",
         "APP_NAME": "Tom's <App> & Co",
-        "FRONTEND_DOMAIN": "https://app.example.com",
+        "APP_FRONTEND_URL": "https://app.example.com",
     }.items():
         monkeypatch.setenv(name, value)
     get_settings.cache_clear()
@@ -402,7 +401,7 @@ class TestMailQueue:
                 },
             )
         elapsed = time.monotonic() - started
-        assert response.json() == {"code": 200, "message": "success"}
+        assert response.json() == {"code": 0, "message": "ok", "data": None}
         assert elapsed < 5
         await built.mailer.drain()
         await smtp.wait_for(1)
@@ -419,33 +418,29 @@ audit_router = ApiRouter(prefix="/v1/audit-probe", tags=["AuditProbe"])
 @audit_router.endpoint(
     "PATCH",
     "/items/{id}",
-    operation_id="auditProbeUpdate",
+    operation_id="updateAuditProbe",
     auth=Auth.PUBLIC,
     audit=Auditable(AuditAction.UPDATE, "Item"),
 )
-async def audit_probe_update(
-    id: str, body: Annotated[AuthUpdateDto, Body(AuthUpdateDto)]
-) -> dict[str, Any]:
+async def audit_probe_update(id: str, body: UpdateMeRequest) -> dict[str, Any]:
     return {"id": id, "updated": True}
 
 
 @audit_router.endpoint(
     "PATCH",
     "/me/items/{id}",
-    operation_id="auditProbeUpdateMine",
+    operation_id="updateAuditProbeMine",
     auth=Auth.JWT,
     audit=Auditable(AuditAction.UPDATE, "Item"),
 )
-async def audit_probe_update_mine(
-    id: str, body: Annotated[AuthUpdateDto, Body(AuthUpdateDto)]
-) -> dict[str, Any]:
+async def audit_probe_update_mine(id: str, body: UpdateMeRequest) -> dict[str, Any]:
     return {"id": id, "updated": True}
 
 
 @audit_router.endpoint(
     "POST",
     "/items",
-    operation_id="auditProbeCreate",
+    operation_id="createAuditProbe",
     auth=Auth.PUBLIC,
     audit=Auditable(AuditAction.CREATE, "Item", include_response=True),
 )
@@ -456,12 +451,12 @@ async def audit_probe_create() -> dict[str, Any]:
 @audit_router.endpoint(
     "POST",
     "/fail",
-    operation_id="auditProbeFail",
+    operation_id="createAuditProbeFailure",
     auth=Auth.PUBLIC,
     audit=Auditable(AuditAction.DELETE, "Item"),
 )
 async def audit_probe_fail() -> None:
-    raise validation_error("item", "notFound")
+    raise field_error("item", "notFound")
 
 
 @pytest.fixture

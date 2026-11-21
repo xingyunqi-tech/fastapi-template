@@ -9,7 +9,7 @@ x-ci-env: &ci-env
   AUTH_REFRESH_SECRET: ci_refresh_secret_0123456789abcdefghijklmnop
   AUTH_FORGOT_SECRET: ci_forgot_secret_0123456789abcdefghijklmnop
   AUTH_CONFIRM_EMAIL_SECRET: ci_confirm_email_secret_0123456789abcdefghijklmnop
-  SWAGGER_ENABLED: 'true'
+  DOCS_ENABLED: 'true'
   METRICS_TOKEN: ci_metrics_token_0123456789abcdef
   THROTTLE_ENABLED: ${CI_THROTTLE_ENABLED:-true}
   TRUST_PROXY: '1'

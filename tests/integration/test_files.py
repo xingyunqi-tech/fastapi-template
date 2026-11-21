@@ -35,18 +35,20 @@ MINIO_IMAGE = "chainguard/minio:latest"
 BUCKET = "files-test"
 PNG = b"\x89PNG\r\n\x1a\nabc"
 UPLOAD = "/api/v1/files/upload"
-BAD_PURPOSE = {"purpose": "Unsupported upload purpose"}
-BAD_TYPE = {"file": "Unsupported file type"}
-NO_FILE = {"file": "Please select a file"}
-PURPOSE_ENUM = (
-    "purpose must be one of the following values: "
-    "image, private-image, content-image, audio, import, export"
-)
-INVALID = "Validation failed"
+BAD_PURPOSE = (422, {"query.purpose": "enum"})
+BAD_TYPE = (422, "file.typeNotAllowed")
+NO_FILE = (422, {"file": "required"})
+BAD_REQUEST = (400, "common.badRequest")
+TOO_LARGE = (413, "file.tooLarge")
+NOT_FOUND = (404, "common.notFound")
 
 
-def envelope(code: int, message: str, data: Any = None) -> dict[str, Any]:
-    return {"code": code, "message": message, "data": data}
+def outcome(response: httpx.Response) -> tuple[int, Any]:
+    """校验失败返回 `(422, {field: rule})`，其余返回 `(status, errorKey)`。"""
+    body = response.json()
+    if body["errorKey"] == "common.validationFailed":
+        return response.status_code, {e["field"]: e["rule"] for e in body["data"]["errors"]}
+    return response.status_code, body["errorKey"]
 
 
 class Ipv4MinioContainer(MinioContainer):
@@ -162,7 +164,7 @@ class TestLocalUpload:
         assert response.status_code == 201
         body = response.json()
         file = body["data"]["file"]
-        assert body["code"] == 200
+        assert body["code"] == 0
         assert list(file) == ["id", "path", "visibility", "mimeType", "size"]
         [name] = stored_files()
         assert file["path"] == f"http://backend.test/api/v1/files/{name}"
@@ -186,23 +188,15 @@ class TestLocalUpload:
     @pytest.mark.parametrize(
         ("params", "files", "expected"),
         [
-            ({"purpose": "xx"}, png(), envelope(422, INVALID, BAD_PURPOSE)),
-            ({"purpose": ["image", "image"]}, png(), envelope(422, INVALID, BAD_PURPOSE)),
-            ({"purpose": "audio"}, png(), envelope(403, "Missing permissions: content:manage")),
-            ({}, {"file": ("a.txt", b"hi", "text/plain")}, envelope(422, INVALID, BAD_TYPE)),
-            ({}, {"file": ("png", PNG, "image/png")}, envelope(422, INVALID, BAD_TYPE)),
-            (
-                {},
-                {"other": ("a.png", PNG, "image/png")},
-                envelope(400, "Unexpected file field - other"),
-            ),
-            (
-                {},
-                [("file", ("a.png", PNG)), ("file", ("b.png", PNG))],
-                envelope(400, "Unexpected file field - file"),
-            ),
-            ({}, {"file": ("", PNG, "image/png")}, envelope(422, INVALID, NO_FILE)),
-            ({"purpose": ""}, png(), envelope(422, INVALID, {"purpose": PURPOSE_ENUM})),
+            ({"purpose": "xx"}, png(), BAD_PURPOSE),
+            ({"purpose": ["image", "image"]}, png(), BAD_PURPOSE),
+            ({"purpose": "audio"}, png(), (403, "common.forbidden")),
+            ({}, {"file": ("a.txt", b"hi", "text/plain")}, BAD_TYPE),
+            ({}, {"file": ("png", PNG, "image/png")}, BAD_TYPE),
+            ({}, {"other": ("a.png", PNG, "image/png")}, BAD_REQUEST),
+            ({}, [("file", ("a.png", PNG)), ("file", ("b.png", PNG))], BAD_REQUEST),
+            ({}, {"file": ("", PNG, "image/png")}, NO_FILE),
+            ({"purpose": ""}, png(), BAD_PURPOSE),
         ],
     )
     async def test_upload_errors(
@@ -210,19 +204,17 @@ class TestLocalUpload:
         local_client: httpx.AsyncClient,
         params: dict[str, Any],
         files: Any,
-        expected: dict[str, Any],
+        expected: tuple[int, Any],
     ) -> None:
         headers = await token(local_client)
 
         response = await local_client.post(UPLOAD, params=params, headers=headers, files=files)
 
-        assert response.status_code == expected["code"]
-        assert response.json() == expected
+        assert outcome(response) == expected
         assert stored_files() == []
 
     async def test_missing_file_in_form_or_json_body(self, local_client: httpx.AsyncClient) -> None:
         headers = await token(local_client)
-        expected = envelope(422, "Validation failed", {"file": "Please select a file"})
 
         form = await local_client.post(UPLOAD, headers=headers, files={"x": (None, "1")})
         text_field = await local_client.post(UPLOAD, headers=headers, files={"file": (None, "1")})
@@ -230,12 +222,12 @@ class TestLocalUpload:
         empty = await local_client.post(UPLOAD, headers=headers)
 
         for response in (form, text_field, json_body, empty):
-            assert response.json() == expected
+            assert outcome(response) == NO_FILE
 
     async def test_requires_jwt_before_purpose_check(self, local_client: httpx.AsyncClient) -> None:
         response = await local_client.post(UPLOAD, params={"purpose": "xx"}, files=png())
 
-        assert response.json() == envelope(401, "Unauthorized")
+        assert outcome(response) == (401, "common.unauthorized")
 
     async def test_admin_may_upload_content_purpose_without_owner(
         self, local_client: httpx.AsyncClient, connection: AsyncConnection
@@ -258,8 +250,8 @@ class TestLocalUpload:
 
         response = await local_client.post(UPLOAD, headers=headers, content=body)
 
-        assert response.status_code == 400
-        assert response.json()["message"].startswith("Multipart: ")
+        assert outcome(response) == BAD_REQUEST
+        assert response.json()["data"]["reason"].startswith("Multipart: ")
 
     async def test_multipart_without_boundary(self, local_client: httpx.AsyncClient) -> None:
         headers = await token(local_client)
@@ -267,7 +259,8 @@ class TestLocalUpload:
 
         response = await local_client.post(UPLOAD, headers=headers, content=b"x")
 
-        assert response.json() == envelope(400, "Multipart: Boundary not found")
+        assert outcome(response) == BAD_REQUEST
+        assert response.json()["data"] == {"reason": "Multipart: Boundary not found"}
 
 
 def form_body(*parts: bytes, preamble: bytes = b"") -> bytes:
@@ -363,7 +356,8 @@ class TestMultipartParsing:
             UPLOAD, headers=headers, content=form_body(file_part(), text_part(field))
         )
 
-        assert response.json() == envelope(400, message)
+        assert outcome(response) == BAD_REQUEST
+        assert response.json()["data"] == {"reason": message}
         assert stored_files() == []
 
     @pytest.mark.parametrize(
@@ -428,7 +422,8 @@ class TestLocalUploadSizeLimits:
 
             response = await client.post(UPLOAD, headers=headers, files=big)
 
-        assert response.json() == envelope(413, "PAYLOAD_TOO_LARGE", {"file": "文件过大"})
+        assert outcome(response) == TOO_LARGE
+        assert response.json()["message"] == "文件过大"
         assert stored_files() == []
 
     async def test_file_over_purpose_limit_is_removed(self, make_app: AppFactory) -> None:
@@ -437,7 +432,7 @@ class TestLocalUploadSizeLimits:
 
             response = await client.post(UPLOAD, headers=headers, files=png())
 
-        assert response.json() == envelope(413, "PAYLOAD_TOO_LARGE", {"file": "File is too large"})
+        assert outcome(response) == TOO_LARGE
         assert stored_files() == []
 
     async def test_stream_over_max_file_size_is_aborted(self, make_app: AppFactory) -> None:
@@ -459,7 +454,7 @@ class TestLocalUploadSizeLimits:
 
             response = await client.post(UPLOAD, headers=headers, content=chunks())
 
-        assert response.json() == envelope(413, "PAYLOAD_TOO_LARGE", {"file": "File is too large"})
+        assert outcome(response) == TOO_LARGE
         assert stored_files() == []
 
 
@@ -521,7 +516,7 @@ class TestLocalDownload:
         assert response.headers.get("content-range") == content_range
 
     @pytest.mark.parametrize("value", ["bytes=5-2", "bytes=100-200", "bytes=-0"])
-    async def test_unsatisfiable_range_is_416_envelope(
+    async def test_unsatisfiable_range_is_416(
         self, local_client: httpx.AsyncClient, value: str
     ) -> None:
         file = await upload(local_client, await token(local_client), "image")
@@ -530,7 +525,7 @@ class TestLocalDownload:
         response = await local_client.get(url, headers={"Range": value})
 
         assert response.status_code == 416
-        assert response.json() == envelope(416, "Range Not Satisfiable")
+        assert response.text == "Range Not Satisfiable"
         assert response.headers["content-range"] == "bytes */11"
         assert response.headers["accept-ranges"] == "bytes"
 
@@ -559,7 +554,7 @@ class TestLocalDownload:
         for headers in ({"If-Match": '"x"'}, {"If-Unmodified-Since": epoch}):
             failed = await local_client.get(url, headers=headers)
             assert failed.status_code == 412
-            assert failed.json() == envelope(412, "Precondition Failed")
+            assert failed.text == "Precondition Failed"
         duplicated = [
             [("Range", "bytes=0-1"), ("Range", "bytes=0-1")],
             [("If-None-Match", 'W/"x"'), ("If-None-Match", etag)],
@@ -585,7 +580,7 @@ class TestLocalDownload:
 
         assert private["visibility"] == "PRIVATE"
         for response in (missing, hidden, upload_get):
-            assert response.json() == envelope(404, "File not found")
+            assert outcome(response) == NOT_FOUND
 
     async def test_private_file_access_rules(self, local_client: httpx.AsyncClient) -> None:
         owner = await token(local_client)
@@ -598,26 +593,26 @@ class TestLocalDownload:
         anonymous = await local_client.get(url)
 
         assert (allowed.status_code, allowed.content) == (200, PNG)
-        assert denied.json() == envelope(403, "You cannot access this file")
-        assert anonymous.json() == envelope(401, "Unauthorized")
+        assert outcome(denied) == (403, "common.forbidden")
+        assert outcome(anonymous) == (401, "common.unauthorized")
 
     @pytest.mark.parametrize(
-        ("file_id", "status", "message"),
+        ("file_id", "expected"),
         [
-            ("abc", 400, "Validation failed (uuid is expected)"),
-            ("00000000-0000-9000-0000-000000000000", 400, "Validation failed (uuid is expected)"),
-            ("00000000-0000-0000-0000-000000000000", 404, "File not found"),
-            ("AAAAAAAA-AAAA-1AAA-8AAA-AAAAAAAAAAAA", 404, "File not found"),
+            ("abc", (422, {"path.id": "uuid"})),
+            ("00000000-0000-9000-0000-000000000000", NOT_FOUND),
+            ("00000000-0000-0000-0000-000000000000", NOT_FOUND),
+            ("AAAAAAAA-AAAA-1AAA-8AAA-AAAAAAAAAAAA", NOT_FOUND),
         ],
     )
     async def test_private_file_id_validation(
-        self, local_client: httpx.AsyncClient, file_id: str, status: int, message: str
+        self, local_client: httpx.AsyncClient, file_id: str, expected: tuple[int, Any]
     ) -> None:
         headers = await token(local_client)
 
         response = await local_client.get(f"/api/v1/files/private/{file_id}", headers=headers)
 
-        assert response.json() == envelope(status, message)
+        assert outcome(response) == expected
 
     async def test_public_file_through_private_endpoint(
         self, local_client: httpx.AsyncClient
@@ -678,7 +673,7 @@ class TestS3Upload:
         async with client_for(make_app("s3", minio_endpoint, FILE_IMAGE_MAX_SIZE="10")) as client:
             response = await client.post(UPLOAD, headers=await token(client), files=png())
 
-        assert response.json() == envelope(413, "PAYLOAD_TOO_LARGE", {"file": "File is too large"})
+        assert outcome(response) == TOO_LARGE
         assert await bucket_keys(minio_endpoint) == before
 
     async def test_private_file_redirects_to_signed_url(
@@ -693,7 +688,7 @@ class TestS3Upload:
         assert response.status_code == 302
         assert response.headers["location"].startswith(f"{minio_endpoint}/{BUCKET}/")
         assert response.text.startswith("Found. Redirecting to ")
-        assert not_routed.json()["message"] == "Cannot GET /api/v1/files/whatever.png"
+        assert outcome(not_routed) == NOT_FOUND
 
 
 class TestS3PresignedUpload:
@@ -717,22 +712,11 @@ class TestS3PresignedUpload:
             assert (await plain.get(data["file"]["path"])).content == PNG
 
     @pytest.mark.parametrize(
-        ("body", "status", "data"),
+        ("body", "expected"),
         [
-            ({"fileName": "a.txt", "fileSize": 1}, 422, {"file": "Unsupported file type"}),
-            (
-                {"fileName": "a.png", "fileSize": 6 * 1024 * 1024},
-                413,
-                {"file": "File is too large"},
-            ),
-            (
-                {},
-                422,
-                {
-                    "fileName": "fileName must be a string",
-                    "fileSize": "fileSize must be a number conforming to the specified constraints",
-                },
-            ),
+            ({"fileName": "a.txt", "fileSize": 1}, BAD_TYPE),
+            ({"fileName": "a.png", "fileSize": 6 * 1024 * 1024}, TOO_LARGE),
+            ({}, (422, {"fileName": "required", "fileSize": "required"})),
         ],
     )
     async def test_errors(
@@ -740,13 +724,12 @@ class TestS3PresignedUpload:
         make_app: AppFactory,
         minio_endpoint: str,
         body: dict[str, Any],
-        status: int,
-        data: Any,
+        expected: tuple[int, Any],
     ) -> None:
         async with client_for(make_app("s3-presigned", minio_endpoint)) as client:
             response = await client.post(UPLOAD, headers=await token(client), json=body)
 
-        assert (response.status_code, response.json()["data"]) == (status, data)
+        assert outcome(response) == expected
 
 
 async def _cleaner_scenario(

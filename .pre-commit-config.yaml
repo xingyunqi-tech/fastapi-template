@@ -5,14 +5,11 @@ repos:
   - repo: builtin
     hooks:
       - id: check-added-large-files
-        exclude: ^openapi/
       - id: check-toml
       - id: check-yaml
         args: [--allow-multiple-documents]
       - id: end-of-file-fixer
-        exclude: ^openapi/
       - id: trailing-whitespace
-        exclude: ^openapi/
 
   - repo: local
     hooks:

@@ -6,7 +6,7 @@ import pytest
 from app.common.openapi import build_openapi
 from app.infrastructure.database.session import Database
 from app.infrastructure.metrics import METRICS_CONTENT_TYPE
-from tests.integration.conftest import _build_app, client_for
+from tests.integration.conftest import _build_app, client_for, error_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -150,7 +150,7 @@ class TestAccess:
             ok = await client.get("/metrics", headers={"Authorization": f"Bearer {TOKEN}"})
 
         assert missing.status_code == 403
-        assert missing.json() == {"code": 403, "message": "Forbidden resource", "data": None}
+        assert error_of(missing) == (403, "common.forbidden")
         assert ok.status_code == 200
 
     async def test_not_in_openapi(self, make_app: AppFactory) -> None:

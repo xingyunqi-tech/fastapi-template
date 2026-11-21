@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.common.exceptions import HttpError
+from app.common.errors import AppError
 from app.config import DatabaseSettings
 
 logger = logging.getLogger("app.database")
@@ -69,11 +69,11 @@ class Database:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncSession]:
-        """成功时提交并执行提交后副作用；业务错误（HttpError）保留已写入的数据后再抛出；其它异常回滚。"""
+        """成功时提交并执行提交后副作用；业务错误（AppError）保留已写入的数据后再抛出；其它异常回滚。"""
         async with self.sessionmaker() as session:
             try:
                 yield session
-            except HttpError:
+            except AppError:
                 session.info.pop(_AFTER_COMMIT_KEY, None)
                 await session.commit()
                 raise

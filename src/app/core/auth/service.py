@@ -8,14 +8,7 @@ from typing import Any
 from sqlalchemy import update
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.exceptions import (
-    HttpError,
-    find_unique_violation,
-    not_found_error,
-    unauthorized,
-    unprocessable,
-    validation_error,
-)
+from app.common.errors import AppError, FieldError, ValidationFailed, field_error
 from app.common.security import (
     InvalidTokenError,
     Jwt,
@@ -26,11 +19,12 @@ from app.common.security import (
     now_ms,
     password_fingerprint,
 )
-from app.core.auth.deps import JwtUser, RefreshUser, is_status_allowed_for_auth
+from app.core.auth.deps import JwtUser, RefreshUser, is_status_allowed_for_auth, unauthorized
 from app.core.permissions.service import RoleId, StatusId
 from app.core.users.models import UserModel
 from app.core.users.repository import UNSET
 from app.core.users.service import UserInput, UsersService
+from app.infrastructure.database.errors import find_unique_violation
 from app.infrastructure.database.session import affected_rows, after_commit
 from app.integrations.mail import Mailer, MailMessage
 from app.integrations.sms import SmsCodeType, mask_phone
@@ -38,7 +32,6 @@ lazy from app.common.client import ClientInfo
 lazy from app.config import AuthSettings
 lazy from app.core.session.models import SessionModel
 lazy from app.core.session.service import SessionService
-lazy from app.core.users.serializers import CreatedRelations
 lazy from app.integrations.alipay import AlipayService
 lazy from app.integrations.sms import SmsService
 lazy from app.integrations.wechat import WechatPhoneInfo, WechatService, WechatUserInfo
@@ -58,32 +51,22 @@ def _ensure_status_for_auth(user: UserModel, field: str) -> None:
         logger.warning(
             "Auth failed - user status not allowed: %s, status: %s", user.id, user.status_id
         )
-        raise validation_error(field, "userNotActive")
+        raise field_error(field, "userNotActive")
 
 
-def _phone_bound_to_other_wechat() -> HttpError:
-    return unprocessable(
-        {
-            "status": 422,
-            "error": "phoneBoundToOtherWechat",
-            "errors": {"phone": "boundToOtherWechat"},
-        }
-    )
+def _phone_bound_to_other_wechat() -> ValidationFailed:
+    return field_error("phone", "boundToOtherWechat")
 
 
 @dataclass(frozen=True, slots=True)
 class LoginResult:
-    """登录结果；新建的用户带 `created`，响应中的关联只含 id（同 nestjs save() 返回值）。"""
-
     tokens: dict[str, Any]
     user: UserModel
-    created: CreatedRelations | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _NewUser:
     user: UserModel
-    created: CreatedRelations
 
 
 class AuthService:
@@ -161,17 +144,17 @@ class AuthService:
     ) -> tuple[dict[str, Any], UserModel]:
         user = await self.users.find_by_email(email)
         if user is None:
-            raise validation_error("email", "notFound")
+            raise field_error("email", "notFound")
         if not user.password or not await self._verify_password(user, password):
-            raise validation_error("password", "incorrectPassword")
+            raise field_error("password", "incorrectPassword")
         if not is_status_allowed_for_auth(user.status_id):
-            raise validation_error("email", "userNotActive")
+            raise field_error("email", "userNotActive")
         return await self.create_session_and_tokens(user, client)
 
     async def register(self, data: UserInput) -> None:
         data.role = {"id": RoleId.USER}
         data.status = {"id": StatusId.INACTIVE}
-        user, _ = await self.users.create(data)
+        user = await self.users.create(data)
         hash_ = Jwt.sign(
             {"confirmEmailUserId": user.id},
             self.settings.confirm_email_secret.get_secret_value(),
@@ -183,24 +166,24 @@ class AuthService:
         try:
             return Jwt.verify(hash_, secret)
         except TokenExpiredError:
-            raise validation_error("hash", "tokenExpired") from None
+            raise AppError("auth.verificationTokenInvalid") from None
         except InvalidTokenError:
-            raise validation_error("hash", "invalidHash") from None
+            raise AppError("auth.verificationTokenInvalid") from None
 
     async def confirm_email(self, hash_: str) -> None:
         payload = self._decode(hash_, self.settings.confirm_email_secret.get_secret_value())
         user = await self.users.find_by_id(int(payload.get("confirmEmailUserId") or 0))
         if user is None:
-            raise not_found_error("notFound")
+            raise AppError("user.notFound")
         if user.status_id != StatusId.INACTIVE:
-            raise validation_error("hash", "alreadyConfirmed")
+            raise field_error("hash", "alreadyConfirmed")
         await self.users.update(user.id, UserInput(status={"id": StatusId.ACTIVE}))
 
     async def confirm_new_email(self, hash_: str) -> None:
         payload = self._decode(hash_, self.settings.confirm_email_secret.get_secret_value())
         user = await self.users.find_by_id(int(payload.get("confirmEmailUserId") or 0))
         if user is None:
-            raise not_found_error("notFound")
+            raise AppError("user.notFound")
         data = UserInput(email=payload.get("newEmail"))
         if user.status_id == StatusId.INACTIVE:
             data.status = {"id": StatusId.ACTIVE}
@@ -209,7 +192,7 @@ class AuthService:
     async def forgot_password(self, email: str) -> None:
         user = await self.users.find_by_email(email)
         if user is None:
-            raise validation_error("email", "emailNotExists")
+            raise field_error("email", "emailNotExists")
         token_expires = now_ms() + int(ms(self.settings.forgot_expires))
         hash_ = Jwt.sign(
             {"forgotUserId": user.id, "pwd": password_fingerprint(user.password)},
@@ -224,9 +207,9 @@ class AuthService:
         payload = self._decode(hash_, self.settings.forgot_secret.get_secret_value())
         user = await self.users.find_by_id(int(payload.get("forgotUserId") or 0))
         if user is None:
-            raise validation_error("hash", "notFound")
+            raise AppError("auth.verificationTokenInvalid")
         if payload.get("pwd") != password_fingerprint(user.password):
-            raise validation_error("hash", "invalidHash")
+            raise AppError("auth.verificationTokenInvalid")
         result = await self.session.execute(
             update(UserModel)
             .where(
@@ -239,7 +222,7 @@ class AuthService:
             .values(password=await self.passwords.hash_async(password))
         )
         if not affected_rows(result):
-            raise validation_error("hash", "invalidHash")
+            raise AppError("auth.verificationTokenInvalid")
         await self.sessions.delete_by_user(user.id)
 
     async def me(self, current: JwtUser) -> UserModel | None:
@@ -248,14 +231,14 @@ class AuthService:
     async def _verify_identity(self, user: UserModel, old_password: Any, sms_code: Any) -> None:
         if user.password:
             if not old_password:
-                raise validation_error("oldPassword", "missingOldPassword")
+                raise field_error("oldPassword", "missingOldPassword")
             if not await self._verify_password(user, old_password):
-                raise validation_error("oldPassword", "incorrectOldPassword")
+                raise AppError("auth.passwordIncorrect")
             return
         if not user.phone:
-            raise validation_error("phone", "phoneRequiredForVerification")
+            raise field_error("phone", "phoneRequiredForVerification")
         if not sms_code:
-            raise validation_error("smsCode", "missingSmsCode")
+            raise field_error("smsCode", "missingSmsCode")
         await self._verify_sms_code(user.phone, sms_code, SmsCodeType.VERIFY_IDENTITY)
 
     async def update(
@@ -263,17 +246,17 @@ class AuthService:
     ) -> UserModel | None:
         user = await self.users.find_by_id(current.id)
         if user is None:
-            raise validation_error("user", "userNotFound")
+            raise field_error("user", "userNotFound")
         if data.password not in (UNSET, None) and data.password:
             if not old_password:
-                raise validation_error("oldPassword", "missingOldPassword")
+                raise field_error("oldPassword", "missingOldPassword")
             if not user.password or not await self._verify_password(user, old_password):
-                raise validation_error("oldPassword", "incorrectOldPassword")
+                raise AppError("auth.passwordIncorrect")
             await self.sessions.delete_by_user(user.id, exclude=current.session_id)
         if data.email not in (UNSET, None) and data.email and data.email != user.email:
             existing = await self.users.find_by_email(data.email)
             if existing is not None and existing.id != user.id:
-                raise validation_error("email", "emailExists")
+                raise field_error("email", "emailExists")
             await self._verify_identity(user, old_password, sms_code)
             hash_ = Jwt.sign(
                 {"confirmEmailUserId": user.id, "newEmail": data.email},
@@ -297,7 +280,7 @@ class AuthService:
         if owner.role is None:
             raise unauthorized()
         if not is_status_allowed_for_auth(owner.status_id):
-            raise validation_error("refresh", "userNotActive")
+            raise field_error("refresh", "userNotActive")
         hash_ = generate_session_hash()
         tokens = self._tokens(
             user_id=owner.id, role={"id": owner.role.id}, session_id=record.id, hash_=hash_
@@ -313,16 +296,16 @@ class AuthService:
     async def soft_delete(self, current: JwtUser, old_password: Any, sms_code: Any) -> None:
         user = await self.users.find_by_id(current.id)
         if user is None:
-            raise validation_error("user", "userNotFound")
+            raise field_error("user", "userNotFound")
         await self._verify_identity(user, old_password, sms_code)
         await self.users.remove(current.id)
 
     async def change_password(self, current: JwtUser, old_password: str, new_password: str) -> None:
         user = await self.users.find_by_id(current.id)
         if user is None:
-            raise validation_error("user", "userNotFound")
+            raise field_error("user", "userNotFound")
         if not user.password or not await self._verify_password(user, old_password):
-            raise validation_error("oldPassword", "incorrectOldPassword")
+            raise AppError("auth.passwordIncorrect")
         await self.users.update(current.id, UserInput(password=new_password))
         await self.sessions.delete_by_user(current.id, exclude=current.session_id)
 
@@ -331,7 +314,7 @@ class AuthService:
 
     async def revoke_session(self, current: JwtUser, session_id: int) -> None:
         if not await self.sessions.revoke_for_user(session_id, current.id):
-            raise not_found_error("sessionNotFound")
+            raise AppError("auth.sessionNotFound")
 
     async def revoke_other_sessions(self, current: JwtUser) -> None:
         await self.sessions.delete_by_user(current.id, exclude=current.session_id)
@@ -343,57 +326,49 @@ class AuthService:
         result = await self.sms.verify_code(phone, code, type_)
         if not result.success:
             logger.warning("SMS verification failed for: %s", mask_phone(phone))
-            raise validation_error("code", "invalidCode")
+            raise AppError("auth.verificationCodeInvalid")
 
-    async def _login(
-        self, user: UserModel, client: ClientInfo, created: CreatedRelations | None = None
-    ) -> LoginResult:
+    async def _login(self, user: UserModel, client: ClientInfo) -> LoginResult:
         hash_ = generate_session_hash()
         record = await self.sessions.create(
             user_id=user.id, hash_=hash_, user_agent=client.user_agent, ip=client.ip
         )
-        role = (
-            ({"id": created.role_id} if created.role_id is not None else None)
-            if created is not None
-            else _role_payload(user)
+        tokens = self._tokens(
+            user_id=user.id, role=_role_payload(user), session_id=record.id, hash_=hash_
         )
-        tokens = self._tokens(user_id=user.id, role=role, session_id=record.id, hash_=hash_)
-        return LoginResult(tokens, user, created)
+        return LoginResult(tokens, user)
 
     async def _create_user(self, data: UserInput) -> _NewUser:
         """在保存点内创建用户。"""
         async with self.session.begin_nested():
-            user, created = await self.users.create(data)
-        return _NewUser(user, created)
+            user = await self.users.create(data)
+        return _NewUser(user)
 
     async def send_code(self, phone: str, type_: SmsCodeType) -> None:
         logger.info("Send SMS code request for phone: %s, type: %s", mask_phone(phone), type_)
         if type_ is SmsCodeType.CHANGE_PHONE:
-            raise validation_error("type", "unsupportedCodeType")
+            raise field_error("type", "unsupportedCodeType")
         if type_ is SmsCodeType.REGISTER and await self.users.find_by_phone(phone):
-            raise validation_error("phone", "phoneAlreadyExists")
+            raise field_error("phone", "phoneAlreadyExists")
         if type_ in {
             SmsCodeType.LOGIN,
             SmsCodeType.RESET_PASSWORD,
             SmsCodeType.VERIFY_IDENTITY,
         } and not await self.users.find_by_phone(phone):
-            raise validation_error("phone", "phoneNotFound")
+            raise field_error("phone", "phoneNotFound")
         result = await self.sms.send_code(phone, type_)
         if not result.success:
             logger.warning("Failed to send SMS code to %s: %s", mask_phone(phone), result.message)
-            errors: dict[str, Any] = {
-                "phone": "rateLimited" if result.retry_after else "sendFailed"
-            }
-            if result.retry_after is not None:
-                errors["retryAfter"] = result.retry_after
-            raise unprocessable({"status": 422, "errors": errors})
+            rule = "rateLimited" if result.retry_after else "sendFailed"
+            params = {"retryAfter": result.retry_after} if result.retry_after is not None else None
+            raise ValidationFailed([FieldError("phone", rule, params)])
 
     async def validate_phone_login(
         self, phone: str, password: str, client: ClientInfo
     ) -> LoginResult:
         user = await self.users.find_by_phone(phone)
         if user is None or not user.password or not await self._verify_password(user, password):
-            raise validation_error("credentials", "incorrectPhoneOrPassword")
+            raise field_error("credentials", "incorrectPhoneOrPassword")
         _ensure_status_for_auth(user, "phone")
         return await self._login(user, client)
 
@@ -403,7 +378,7 @@ class AuthService:
         await self._verify_sms_code(phone, code, SmsCodeType.LOGIN)
         user = await self.users.find_by_phone(phone)
         if user is None:
-            raise validation_error("phone", "notFound")
+            raise field_error("phone", "notFound")
         _ensure_status_for_auth(user, "phone")
         return await self._login(user, client)
 
@@ -412,7 +387,7 @@ class AuthService:
     ) -> LoginResult:
         await self._verify_sms_code(phone, code, SmsCodeType.REGISTER)
         if await self.users.find_by_phone(phone):
-            raise validation_error("phone", "phoneAlreadyExists")
+            raise field_error("phone", "phoneAlreadyExists")
         new = await self._create_user(
             UserInput(
                 phone=phone,
@@ -423,15 +398,15 @@ class AuthService:
                 status={"id": StatusId.ACTIVE},
             )
         )
-        return await self._login(new.user, client, new.created)
+        return await self._login(new.user, client)
 
     async def reset_password_by_phone(self, phone: str, code: str, password: str) -> None:
         result = await self.sms.verify_code(phone, code, SmsCodeType.RESET_PASSWORD)
         if not result.success:
-            raise validation_error("code", "invalidCode")
+            raise AppError("auth.verificationCodeInvalid")
         user = await self.users.find_by_phone(phone)
         if user is None:
-            raise validation_error("phone", "phoneNotExists")
+            raise field_error("phone", "phoneNotExists")
         _ensure_status_for_auth(user, "phone")
         await self.session.execute(
             update(UserModel)
@@ -490,7 +465,7 @@ class AuthService:
                 raise
             _ensure_status_for_auth(existing, "wechat")
             return await self._login(existing, client)
-        return await self._login(new.user, client, new.created)
+        return await self._login(new.user, client)
 
     async def wechat_phone_login(
         self, login_code: str, phone_code: str, client: ClientInfo
@@ -510,24 +485,16 @@ class AuthService:
                 "WeChat phone login rejected - unsupported country code: %s",
                 phone_info.country_code,
             )
-            raise unprocessable(
-                {
-                    "status": 422,
-                    "error": "phoneRegionNotSupported",
-                    "errors": {"phone": "unsupportedRegion"},
-                }
-            )
+            raise field_error("phone", "unsupportedRegion")
         phone = phone_info.pure_phone_number
         found = await self._resolve_wechat_phone_user(info, phone, allow_retry=True)
         if found is None:
             found = await self._resolve_wechat_phone_user(info, phone, allow_retry=False)
         if found is None:
-            raise validation_error("user", "notFound")
+            raise field_error("user", "notFound")
         user = found.user if isinstance(found, _NewUser) else found
         _ensure_status_for_auth(user, "wechat")
-        return await self._login(
-            user, client, found.created if isinstance(found, _NewUser) else None
-        )
+        return await self._login(user, client)
 
     async def _resolve_wechat_phone_user(
         self, info: WechatUserInfo, phone: str, *, allow_retry: bool
@@ -608,6 +575,6 @@ class AuthService:
                 if user is None:
                     raise
             else:
-                return await self._login(new.user, client, new.created)
+                return await self._login(new.user, client)
         _ensure_status_for_auth(user, "alipay")
         return await self._login(user, client)

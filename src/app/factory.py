@@ -4,21 +4,21 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
+from starlette.middleware.cors import CORSMiddleware
 
 from app.common.context import AppContext
 from app.common.docs import mount_docs
-from app.common.errors import ErrorTranslator
-from app.common.handlers import register_exception_handlers
+from app.common.handlers import CatchAllMiddleware, register_exception_handlers
 from app.common.i18n import get_i18n
 from app.common.middleware import (
-    CatchAllMiddleware,
-    CorsMiddleware,
-    JsonBodyMiddleware,
-    RawPathMiddleware,
+    CORS_ALLOWED_HEADERS,
+    CORS_EXPOSED_HEADERS,
+    CORS_METHODS,
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
-from app.common.routing import ApiRouter, finalize_routes, include_routes
+from app.common.openapi import install_openapi, package_version
+from app.common.routing import API_PREFIX, ApiRouter, finalize_routes, include_routes
 from app.common.security import Passwords
 from app.config import SchemaOwner, Settings, get_settings
 from app.core.auth import deps as _auth_deps  # noqa: F401
@@ -49,9 +49,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
 
 logger = logging.getLogger("app")
-
-PRODUCTION_CORS_METHODS = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-PRODUCTION_CORS_HEADERS = "Content-Type,Authorization,Accept-Language"
 
 
 def build_context(settings: Settings, *, max_connections: int | None = None) -> AppContext:
@@ -114,10 +111,10 @@ def create_app(
     configure_logging(settings)
     setup_sentry(settings)
     instrument_sqlalchemy()
-    i18n = get_i18n(settings.app.fallback_language)
-    translator = ErrorTranslator(i18n)
+    i18n = get_i18n(settings.app.default_locale)
     app = FastAPI(
         title=settings.app.name,
+        version=package_version(),
         openapi_url=None,
         docs_url=None,
         redoc_url=None,
@@ -126,40 +123,38 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.i18n = i18n
     app.state.context = build_context(settings)
     app.state.throttler = ThrottlerStorage()
-    register_exception_handlers(app, translator)
-    if settings.app.swagger_enabled:
-        mount_docs(app, settings.app.openapi_baseline_path)
+    register_exception_handlers(app)
+    install_openapi(app)
+    if settings.app.docs_enabled:
+        mount_docs(app)
 
-    api_prefix = f"/{settings.app.api_prefix}"
-    include_routes(app, users.router, api_prefix)
+    include_routes(app, users.router, API_PREFIX)
     for files_router in files.routers_for(settings.file.driver):
-        include_routes(app, files_router, api_prefix)
-    include_routes(app, auth.router, api_prefix)
-    include_routes(app, health.router, api_prefix)
+        include_routes(app, files_router, API_PREFIX)
+    include_routes(app, auth.router, API_PREFIX)
+    include_routes(app, health.router, API_PREFIX)
     include_routes(app, metrics.build_router(settings.metrics.path))
     for router, prefix in extra_routers:
         include_routes(app, router, prefix)
     finalize_routes(app)
 
-    app.add_middleware(CatchAllMiddleware, translator=translator)
-    app.add_middleware(RawPathMiddleware)
-    app.add_middleware(JsonBodyMiddleware, translator=translator)
+    app.add_middleware(CatchAllMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitHeadersMiddleware)
     if settings.metrics.enabled:
         app.add_middleware(MetricsMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
-    if settings.app.is_production and settings.app.frontend_domain:
-        app.add_middleware(
-            CorsMiddleware,
-            origins=[o.strip() for o in settings.app.frontend_domain.split(",")],
-            methods=PRODUCTION_CORS_METHODS,
-            allowed_headers=PRODUCTION_CORS_HEADERS,
-        )
-    else:
-        app.add_middleware(CorsMiddleware, origins=None)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.app.cors_origins if settings.app.is_production else ["*"],
+        allow_methods=list(CORS_METHODS),
+        allow_headers=list(CORS_ALLOWED_HEADERS),
+        expose_headers=list(CORS_EXPOSED_HEADERS),
+        allow_credentials=False,
+    )
     app.add_middleware(RequestContextMiddleware, i18n=i18n)
     setup_otel(app, settings, app.state.context.database.engine)
     return app

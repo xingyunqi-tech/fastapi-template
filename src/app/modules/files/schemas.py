@@ -1,25 +1,20 @@
-"""文件上传 DTO（类名与 nestjs 一致，FileType 来自基线生成的契约模型）。"""
+"""文件上传请求与响应模型。"""
 
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
-from app.contract.schemas import ContractModel, FileType
-
-
-class UploadFileQueryDto(ContractModel):
-    purpose: str | None = Field(default=None, alias="purpose")
+from app.common.types import ApiModel
+from app.core.users.schemas import FileInfo
 
 
-class FileResponseDto(ContractModel):
-    file: FileType = Field(alias="file")
+class UploadedFile(ApiModel):
+    file: FileInfo
 
 
-class FileUploadDto(ContractModel):
-    file_name: str = Field(alias="fileName")
-    file_size: int | float = Field(alias="fileSize")
+class PresignedUploadRequest(ApiModel):
+    file_name: str = Field(min_length=1)
+    file_size: int = Field(ge=0)
 
 
-class PresignedFileResponseDto(ContractModel):
-    model_config = ConfigDict(populate_by_name=True, extra="ignore", title="FileResponseDto")
-
-    file: FileType = Field(alias="file")
-    upload_signed_url: str = Field(alias="uploadSignedUrl")
+class PresignedUpload(ApiModel):
+    file: FileInfo
+    upload_signed_url: str

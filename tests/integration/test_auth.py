@@ -7,6 +7,7 @@ lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
 
 from app.integrations.mail import LoggingMailer
+from tests.integration.conftest import error_of, rules_of
 
 
 def md5(text: str) -> str:
@@ -48,11 +49,11 @@ class TestEmailFlows:
                 "lastName": "U",
             },
         )
-        assert response.json() == {"code": 200, "message": "success"}
+        assert response.json() == {"code": 0, "message": "ok", "data": None}
 
         data = await login(client, "new.user@example.com")
-        assert data["user"]["status"] == {"id": 2, "name": "Inactive", "__entity": "StatusEntity"}
-        assert list(data) == ["refreshToken", "token", "tokenExpires", "user"]
+        assert data["user"]["status"] == {"id": 2, "name": "Inactive"}
+        assert list(data) == ["token", "refreshToken", "tokenExpires", "user"]
 
         [mail] = sent_mail(app).sent
         assert mail.template == "activation"
@@ -60,11 +61,7 @@ class TestEmailFlows:
         assert confirm.status_code == 200
 
         again = await client.post("/api/v1/auth/email/confirm", json={"hash": mail.data["hash"]})
-        assert again.json() == {
-            "code": 422,
-            "message": "Validation failed",
-            "data": {"hash": "Email is already confirmed"},
-        }
+        assert rules_of(again) == {"hash": "alreadyConfirmed"}
 
     async def test_register_duplicate_email(self, client: httpx.AsyncClient) -> None:
         response = await client.post(
@@ -76,14 +73,13 @@ class TestEmailFlows:
                 "lastName": "D",
             },
         )
-        assert response.status_code == 422
-        assert response.json()["data"] == {"email": "Email already exists"}
+        assert rules_of(response) == {"email": "emailAlreadyExists"}
 
     @pytest.mark.parametrize(
         ("email", "password", "expected"),
         [
-            ("nobody@example.com", PASSWORD, {"email": "Not found"}),
-            ("john.doe@example.com", md5("wrong"), {"password": "Incorrect password"}),
+            ("nobody@example.com", PASSWORD, {"email": "notFound"}),
+            ("john.doe@example.com", md5("wrong"), {"password": "incorrectPassword"}),
         ],
     )
     async def test_login_errors(
@@ -92,8 +88,7 @@ class TestEmailFlows:
         response = await client.post(
             "/api/v1/auth/email/login", json={"email": email, "password": password}
         )
-        assert response.status_code == 422
-        assert response.json()["data"] == expected
+        assert rules_of(response) == expected
 
     async def test_login_accepts_uppercase_md5(self, client: httpx.AsyncClient) -> None:
         await login(client, "john.doe@example.com", PASSWORD.upper())
@@ -117,7 +112,7 @@ class TestEmailFlows:
             "/api/v1/auth/reset/password",
             json={"hash": mail.data["hash"], "password": new_password},
         )
-        assert reused.json()["data"] == {"hash": "Invalid verification link"}
+        assert error_of(reused) == (422, "auth.verificationTokenInvalid")
 
         me = await client.get("/api/v1/auth/me", headers=bearer(tokens["token"]))
         assert me.status_code == 401
@@ -136,7 +131,7 @@ class TestEmailFlows:
             )
         [mail] = sent_mail(app).sent
         response = await client.post("/api/v1/auth/email/confirm", json={"hash": mail.data["hash"]})
-        assert response.json()["data"] == {"hash": "Verification link has expired"}
+        assert error_of(response) == (422, "auth.verificationTokenInvalid")
 
 
 class TestSessions:
@@ -154,20 +149,20 @@ class TestSessions:
         revoke = await client.delete(
             f"/api/v1/auth/sessions/{other['id']}", headers=bearer(first["token"])
         )
-        assert revoke.json() == {"code": 200, "message": "success"}
+        assert revoke.json() == {"code": 0, "message": "ok", "data": None}
         assert (
             await client.get("/api/v1/auth/me", headers=bearer(second["token"]))
         ).status_code == 401
         missing = await client.delete(
             f"/api/v1/auth/sessions/{other['id']}", headers=bearer(first["token"])
         )
-        assert missing.json() == {"code": 404, "message": "Session not found", "data": None}
+        assert error_of(missing) == (404, "auth.sessionNotFound")
 
         assert (
             await client.post("/api/v1/auth/logout", headers=bearer(first["token"]))
         ).status_code == 200
         expired = await client.get("/api/v1/auth/me", headers=bearer(first["token"]))
-        assert expired.json() == {"code": 401, "message": "Session expired", "data": None}
+        assert error_of(expired) == (401, "common.unauthorized")
 
     async def test_refresh_rotation_and_replay(self, client: httpx.AsyncClient) -> None:
         tokens = await login(client, "john.doe@example.com")
@@ -184,6 +179,7 @@ class TestSessions:
 
         replay = await client.post("/api/v1/auth/refresh", headers=bearer(first_refresh))
         assert replay.status_code == 401
+        assert replay.headers["www-authenticate"] == 'Bearer error="invalid_token"'
         revoked = await client.post(
             "/api/v1/auth/refresh", headers=bearer(still_valid.json()["data"]["refreshToken"])
         )
@@ -220,7 +216,7 @@ class TestProfile:
         missing = await client.request(
             "DELETE", "/api/v1/auth/me", json={}, headers=bearer(tokens["token"])
         )
-        assert missing.json()["data"] == {"oldPassword": "Old password is required"}
+        assert rules_of(missing) == {"oldPassword": "missingOldPassword"}
         deleted = await client.request(
             "DELETE",
             "/api/v1/auth/me",
@@ -231,18 +227,14 @@ class TestProfile:
         gone = await client.post(
             "/api/v1/auth/email/login", json={"email": "john.doe@example.com", "password": PASSWORD}
         )
-        assert gone.json()["data"] == {"email": "Not found"}
+        assert rules_of(gone) == {"email": "notFound"}
 
 
 class TestUsersAdmin:
     async def test_permissions(self, client: httpx.AsyncClient) -> None:
         john = await login(client, "john.doe@example.com")
         response = await client.get("/api/v1/users", headers=bearer(john["token"]))
-        assert response.json() == {
-            "code": 403,
-            "message": "Missing permissions: user:list",
-            "data": None,
-        }
+        assert error_of(response) == (403, "common.forbidden")
         assert (await client.get("/api/v1/users")).status_code == 401
 
     async def test_crud(self, client: httpx.AsyncClient) -> None:
@@ -259,14 +251,13 @@ class TestUsersAdmin:
             },
             headers=headers,
         )
+        assert created.status_code == 201
         user = created.json()["data"]
-        assert user["role"] == {"id": 2}
+        assert user["role"] == {"id": 2, "name": "User"}
         assert "password" not in user
 
-        listed = await client.get(
-            '/api/v1/users?limit=100&filters={"roles":[{"id":2}]}', headers=headers
-        )
-        assert {u["email"] for u in listed.json()["data"]["data"]} == {
+        listed = await client.get("/api/v1/users?pageSize=100&roleId=2", headers=headers)
+        assert {u["email"] for u in listed.json()["data"]["items"]} == {
             "john.doe@example.com",
             "made@example.com",
         }
@@ -274,23 +265,18 @@ class TestUsersAdmin:
         updated = await client.put(
             f"/api/v1/users/{user['id']}", json={"nickname": "n"}, headers=headers
         )
-        assert updated.json()["data"]["role"] == {"id": 2, "name": "User", "__entity": "RoleEntity"}
+        assert updated.json()["data"]["role"] == {"id": 2, "name": "User"}
 
         assert (
             await client.delete(f"/api/v1/users/{user['id']}", headers=headers)
         ).status_code == 200
-        assert (await client.get(f"/api/v1/users/{user['id']}", headers=headers)).json()[
-            "data"
-        ] is None
+        gone = await client.get(f"/api/v1/users/{user['id']}", headers=headers)
+        assert error_of(gone) == (404, "user.notFound")
 
     async def test_invalid_id_after_auth(self, client: httpx.AsyncClient) -> None:
         admin = await login(client, "admin@example.com")
         response = await client.get("/api/v1/users/abc", headers=bearer(admin["token"]))
-        assert response.json() == {
-            "code": 400,
-            "message": "Bad request",
-            "data": {"id": "Invalid id"},
-        }
+        assert rules_of(response) == {"path.id": "type"}
 
 
 @pytest.mark.committed

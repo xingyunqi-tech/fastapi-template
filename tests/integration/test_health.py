@@ -7,7 +7,7 @@ from redis.asyncio import Redis
 from app.config import Settings
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import indicators
-from tests.integration.conftest import _build_app, client_for
+from tests.integration.conftest import _build_app, client_for, error_of
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -17,8 +17,7 @@ if TYPE_CHECKING:
 
 TOKEN = "monitoring-token-0123456789"
 NO_CACHE = "no-cache, no-store, must-revalidate"
-UNAVAILABLE = {"code": 503, "message": "SERVICE_UNAVAILABLE", "data": None}
-FORBIDDEN = {"code": 403, "message": "Forbidden resource", "data": None}
+UNAVAILABLE = {"status": "error"}
 
 type AppFactory = Callable[..., FastAPI]
 
@@ -70,21 +69,17 @@ class TestProbes:
         assert response.status_code == 200
         assert response.headers["cache-control"] == NO_CACHE
         assert response.json() == {
-            "code": 200,
-            "message": "success",
-            "data": {
-                "status": "ok",
-                "info": {"memory_heap": {"status": "up"}},
-                "error": {},
-                "details": {"memory_heap": {"status": "up"}},
-            },
+            "status": "ok",
+            "info": {"memory_heap": {"status": "up"}},
+            "error": {},
+            "details": {"memory_heap": {"status": "up"}},
         }
 
     async def test_readiness(self, make_app: AppFactory) -> None:
         async with client_for(make_app()) as client:
             response = await client.get("/api/v1/health/ready")
 
-        data = response.json()["data"]
+        data = response.json()
         assert response.status_code == 200
         assert data["status"] == "ok"
         assert list(data["info"]["database"]) == ["responseTime", "status"]
@@ -99,7 +94,7 @@ class TestProbes:
 
         assert response.status_code == 503
         assert response.json() == UNAVAILABLE
-        assert "cache-control" not in response.headers
+        assert response.headers["cache-control"] == NO_CACHE
 
 
 class TestFullCheck:
@@ -107,7 +102,7 @@ class TestFullCheck:
         async with client_for(make_app()) as client:
             response = await client.get("/api/v1/health")
 
-        data = response.json()["data"]
+        data = response.json()
         assert response.status_code == 200
         assert response.headers["cache-control"] == NO_CACHE
         assert list(data["details"]) == [
@@ -141,7 +136,7 @@ class TestFullCheck:
         finally:
             await redis.aclose()
 
-        details = response.json()["data"]["details"]
+        details = response.json()["details"]
         assert details["redis"] == {"status": "up"}
         assert list(details).index("redis") == 4
 
@@ -169,7 +164,7 @@ class TestFullCheck:
         async with client_for(app) as client:
             response = await client.get("/api/v1/health")
 
-        details = response.json()["data"]["details"]
+        details = response.json()["details"]
         assert response.status_code == 200
         assert details["wechat_api"] == {"responseTime": "OK", "status": "up"}
         assert details["alipay_api"] == {"responseTime": "OK", "status": "up"}
@@ -216,7 +211,7 @@ class TestMonitoringToken:
 
         for response in (missing, wrong, scheme):
             assert response.status_code == 403
-            assert response.json() == FORBIDDEN
+            assert error_of(response) == (403, "common.forbidden")
         assert ok.status_code == 200
         assert lower.status_code == 200
 

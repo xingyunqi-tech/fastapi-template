@@ -182,3 +182,15 @@ def client_for(app: FastAPI) -> httpx.AsyncClient:
 async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     async with client_for(app) as http:
         yield http
+
+
+def error_of(response: httpx.Response) -> tuple[int, str]:
+    """错误响应的 `(HTTP 状态, errorKey)`。"""
+    return response.status_code, response.json()["errorKey"]
+
+
+def rules_of(response: httpx.Response) -> dict[str, str]:
+    """422 响应 `data.errors` 的 `{field: rule}`。"""
+    assert response.status_code == 422, response.text
+    assert response.json()["errorKey"] == "common.validationFailed"
+    return {item["field"]: item["rule"] for item in response.json()["data"]["errors"]}

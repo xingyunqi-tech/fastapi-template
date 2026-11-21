@@ -32,7 +32,6 @@ lint: ## ruff check、ruff format --check、typos
 	$(RUN) ruff check
 	$(RUN) ruff format --check
 	$(RUN) typos
-	$(RUN) python scripts/gen_schemas.py --check
 
 .PHONY: typecheck
 typecheck: ## mypy（门禁）+ ty（试运行，不阻塞）
@@ -47,8 +46,16 @@ test-unit: ## 单元测试
 check: lint typecheck test-unit ## lint + 类型检查 + 单元测试
 
 .PHONY: test
-test: ## 单元 + 集成测试（含覆盖率）
-	$(PYTEST) -m "unit or integration" -n auto --cov --cov-report=term --cov-report=xml
+test: ## 单元 + 约定 + 集成测试（含覆盖率）
+	$(PYTEST) -m "unit or conventions or integration" -n auto --cov --cov-report=term --cov-report=xml
+
+.PHONY: test-conventions
+test-conventions: ## 约定测试（tests/conventions，探针路由）
+	$(PYTEST) -m conventions -n auto
+
+.PHONY: openapi
+openapi: ## 按代码导出 openapi/openapi.json
+	$(RUN) app openapi export
 
 .PHONY: test-e2e
 test-e2e: ## e2e 测试：ci 组合以生产镜像起完整服务栈，结束后 down -v（E2E_KEEP_STACK=1 保留）

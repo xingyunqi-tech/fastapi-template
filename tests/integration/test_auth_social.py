@@ -120,10 +120,12 @@ def wechat_app(make_app: AppFactory, wechat: FakeWechat) -> FastAPI:
     return make_app(wechat, **WECHAT_ENV)
 
 
-def error(response: httpx2.Response) -> tuple[int, str, Any]:
+def error(response: httpx2.Response) -> tuple[int, Any]:
+    """校验失败返回 `(422, {field: rule})`，其余返回 `(status, errorKey)`。"""
     body = response.json()
-    assert body["code"] == response.status_code
-    return response.status_code, body["message"], body["data"]
+    if body["errorKey"] == "common.validationFailed":
+        return response.status_code, {e["field"]: e["rule"] for e in body["data"]["errors"]}
+    return response.status_code, body["errorKey"]
 
 
 class TestWechatLogin:
@@ -144,11 +146,11 @@ class TestWechatLogin:
         assert user["nickname"] == "微信用户"
         assert user["provider"] == "wechat"
         assert user["gender"] == 0
-        assert user["role"] == {"id": 2}
-        assert user["status"] == {"id": 1}
+        assert user["role"] == {"id": 2, "name": "User"}
+        assert user["status"] == {"id": 1, "name": "Active"}
         again = second.json()["data"]["user"]
         assert again["id"] == user["id"]
-        assert again["role"] == {"id": 2, "name": "User", "__entity": "RoleEntity"}
+        assert again["role"] == {"id": 2, "name": "User"}
         request = wechat.requests[0]
         assert dict(request.url.params) == {
             "appid": "wx-mini",
@@ -175,26 +177,19 @@ class TestWechatLogin:
     @pytest.mark.parametrize(
         ("code", "data"),
         [
-            (
-                "bad",
-                {"code": "Invalid verification code", "wechatError": "invalid code"},
-            ),
-            ("http500", {"wechat": "Request to the third-party service failed"}),
+            ("bad", "auth.providerCodeInvalid"),
+            ("http500", {"wechat": "requestFailed"}),
         ],
     )
     async def test_wechat_errors(self, wechat_app: FastAPI, code: str, data: Any) -> None:
         async with client_for(wechat_app) as client:
             response = await client.post(WECHAT_LOGIN, json={"code": code, "type": "mini_app"})
-        assert error(response) == (422, "Validation failed", data)
+        assert error(response) == (422, data)
 
     async def test_not_configured(self, make_app: AppFactory, wechat: FakeWechat) -> None:
         async with client_for(make_app(wechat)) as client:
             response = await client.post(WECHAT_LOGIN, json={"code": "x", "type": "app"})
-        assert error(response) == (
-            422,
-            "Validation failed",
-            {"wechat": "Service is not configured"},
-        )
+        assert error(response) == (422, {"wechat": "notConfigured"})
         assert wechat.requests == []
 
     async def test_blocked_user(self, wechat_app: FastAPI, connection: AsyncConnection) -> None:
@@ -205,7 +200,7 @@ class TestWechatLogin:
                 {"id": first.json()["data"]["user"]["id"]},
             )
             response = await client.post(WECHAT_LOGIN, json={"code": "blocked", "type": "mini_app"})
-        assert error(response) == (422, "Validation failed", {"wechat": "User is not active"})
+        assert error(response) == (422, {"wechat": "userNotActive"})
 
 
 class TestWechatPhoneLogin:
@@ -256,7 +251,7 @@ class TestWechatPhoneLogin:
         user = response.json()["data"]["user"]
         assert user["id"] == created.json()["data"]["user"]["id"]
         assert user["phone"] == "13800138002"
-        assert user["role"]["__entity"] == "RoleEntity"
+        assert user["role"] == {"id": 2, "name": "User"}
 
     async def test_binds_wechat_to_existing_phone_user(
         self, wechat_app: FastAPI, connection: AsyncConnection
@@ -305,33 +300,23 @@ class TestWechatPhoneLogin:
                 json={"loginCode": "o-b", "phoneCode": "86-13800138004"},
                 headers={"Accept-Language": "zh"},
             )
-        assert error(response) == (
-            422,
-            "该手机号已绑定其他微信账号，请使用验证码登录",
-            {"phone": "该手机号已绑定其他微信账号"},
-        )
+        assert error(response) == (422, {"phone": "boundToOtherWechat"})
+        [item] = response.json()["data"]["errors"]
+        assert item["message"] == "该手机号已绑定其他微信账号"
 
     async def test_rejects_non_mainland_phone(self, wechat_app: FastAPI) -> None:
         async with client_for(wechat_app) as client:
             response = await client.post(
                 WECHAT_PHONE_LOGIN, json={"loginCode": "o-x", "phoneCode": "1-2025550100"}
             )
-        assert error(response) == (
-            422,
-            "Only mainland China phone numbers are supported",
-            {"phone": "Only mainland China phone numbers are supported"},
-        )
+        assert error(response) == (422, {"phone": "unsupportedRegion"})
 
     async def test_invalid_phone_code(self, wechat_app: FastAPI) -> None:
         async with client_for(wechat_app) as client:
             response = await client.post(
                 WECHAT_PHONE_LOGIN, json={"loginCode": "o-x", "phoneCode": "used"}
             )
-        assert error(response) == (
-            422,
-            "Phone number authorization expired, please try again",
-            {"phoneCode": "Invalid verification code"},
-        )
+        assert error(response) == (422, "auth.providerCodeInvalid")
 
     async def test_passwordless_user_needs_sms_code_to_delete(self, wechat_app: FastAPI) -> None:
         async with client_for(wechat_app) as client:
@@ -342,11 +327,7 @@ class TestWechatPhoneLogin:
             response = await client.request(
                 "DELETE", "/api/v1/auth/me", headers=bearer(token), json={}
             )
-        assert error(response) == (
-            422,
-            "Validation failed",
-            {"smsCode": "SMS verification code is required"},
-        )
+        assert error(response) == (422, {"smsCode": "missingSmsCode"})
 
 
 def _rsa_key() -> rsa.RSAPrivateKey:
@@ -431,7 +412,7 @@ class TestAlipayLogin:
             "支付宝用户",
             "alipay",
         )
-        assert user["status"] == {"id": 1}
+        assert user["status"] == {"id": 1, "name": "Active"}
         assert second.json()["data"]["user"]["id"] == user["id"]
         params = alipay.params[0]
         assert {k: params[k] for k in ("app_id", "method", "format", "charset", "sign_type")} == {
@@ -446,43 +427,23 @@ class TestAlipayLogin:
         assert len(params["timestamp"]) == 19
 
     @pytest.mark.parametrize(
-        ("code", "message", "data"),
+        ("code", "expected"),
         [
-            (
-                "isv_code-invalid",
-                "Alipay authorization expired, please try again",
-                {"authCode": "Invalid verification code"},
-            ),
-            (
-                "isp_unknown-error",
-                "Validation failed",
-                {"alipay": "Request to the third-party service failed"},
-            ),
-            (
-                "http500",
-                "Validation failed",
-                {"alipay": "Request to the third-party service failed"},
-            ),
-            (
-                "no-openid",
-                "Validation failed",
-                {"alipay": "Request to the third-party service failed"},
-            ),
+            ("isv_code-invalid", "auth.providerCodeInvalid"),
+            ("isp_unknown-error", {"alipay": "requestFailed"}),
+            ("http500", {"alipay": "requestFailed"}),
+            ("no-openid", {"alipay": "requestFailed"}),
         ],
     )
-    async def test_errors(self, alipay_app: FastAPI, code: str, message: str, data: Any) -> None:
+    async def test_errors(self, alipay_app: FastAPI, code: str, expected: Any) -> None:
         async with client_for(alipay_app) as client:
             response = await client.post(ALIPAY_LOGIN, json={"authCode": code})
-        assert error(response) == (422, message, data)
+        assert error(response) == (422, expected)
 
     async def test_not_configured(self, make_app: AppFactory, alipay: FakeAlipay) -> None:
         async with client_for(make_app(alipay)) as client:
             response = await client.post(ALIPAY_LOGIN, json={"authCode": "x"})
-        assert error(response) == (
-            422,
-            "Validation failed",
-            {"alipay": "Service is not configured"},
-        )
+        assert error(response) == (422, {"alipay": "notConfigured"})
         assert alipay.params == []
 
 

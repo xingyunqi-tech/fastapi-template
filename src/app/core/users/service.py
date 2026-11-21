@@ -7,11 +7,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.common.exceptions import HttpError, validation_error
+from app.common.errors import AppError, field_error
 from app.core.permissions.service import RoleId, StatusId
-from app.core.users.repository import UNSET, Sort, UserRepository, parse_birthday
-from app.core.users.serializers import CreatedRelations
+from app.core.users.repository import UNSET, UserRepository, parse_birthday
 from app.modules.files.models import FileModel
+lazy from app.common.pagination import SortField
 lazy from app.common.security import Passwords
 lazy from app.core.session.service import SessionService
 lazy from app.core.users.models import UserModel
@@ -71,7 +71,7 @@ def user_input_from(model: Any) -> UserInput:
     }
     for key in ("photo", "role", "status"):
         if isinstance(values.get(key), BaseModel):
-            values[key] = values[key].model_dump(by_alias=True)
+            values[key] = values[key].model_dump(mode="json", by_alias=True)
     return UserInput(**values)
 
 
@@ -109,7 +109,7 @@ class UsersService:
         if not role_id:
             return None
         if not _valid_enum_id(role_id, {int(r) for r in RoleId}):
-            raise validation_error("role", "roleNotExists")
+            raise field_error("role", "roleNotExists")
         return int(role_id)
 
     def _status(self, value: Any) -> int | None:
@@ -117,7 +117,7 @@ class UsersService:
         if not status_id:
             return None
         if not _valid_enum_id(status_id, {int(s) for s in StatusId}):
-            raise validation_error("status", "statusNotExists")
+            raise field_error("status", "statusNotExists")
         return int(status_id)
 
     async def _photo(self, value: Any, owner: int | None) -> FileModel | object | None:
@@ -128,23 +128,23 @@ class UsersService:
             return UNSET
         try:
             [file] = await self.files.assert_referenceable([UUID(str(photo_id))], owner)
-        except HttpError as exc:
-            if exc.status == 404:
-                raise validation_error("photo", "imageNotExists") from None
+        except AppError as exc:
+            if exc.error_key == "common.notFound":
+                raise field_error("photo", "imageNotExists") from None
             raise
         return file
 
     async def _ensure_email_free(self, email: str, current: int | None = None) -> None:
         existing = await self.repository.find_by_email(email)
         if existing is not None and not (current and existing.id == current):
-            raise validation_error("email", "emailAlreadyExists")
+            raise field_error("email", "emailAlreadyExists")
 
     async def _ensure_phone_free(self, phone: str, current: int | None = None) -> None:
         existing = await self.repository.find_by_phone(phone)
         if existing is not None and not (current and existing.id == current):
-            raise validation_error("phone", "phoneAlreadyExists")
+            raise field_error("phone", "phoneAlreadyExists")
 
-    async def create(self, data: UserInput) -> tuple[UserModel, CreatedRelations]:
+    async def create(self, data: UserInput) -> UserModel:
         password = (
             await self.passwords.hash_async(data.password)
             if _given(data.password) and data.password
@@ -184,11 +184,10 @@ class UsersService:
             role_id=role_id,
             status_id=status_id,
         )
-        return user, CreatedRelations(
-            role_id=role_id,
-            status_id=status_id,
-            photo=photo if isinstance(photo, FileModel) else None,
-        )
+        created = await self.repository.find_by_id(user.id)
+        if created is None:
+            raise AppError("user.notFound")
+        return created
 
     async def find_by_id(self, user_id: int) -> UserModel | None:
         return await self.repository.find_by_id(user_id)
@@ -213,10 +212,13 @@ class UsersService:
     ) -> bool:
         return await self.repository.bind_wechat_if_empty(user_id, open_id, union_id)
 
-    async def find_many(
-        self, *, role_ids: list[int] | None, sort: list[Sort] | None, page: int, limit: int
-    ) -> list[UserModel]:
-        return await self.repository.find_many(role_ids=role_ids, sort=sort, page=page, limit=limit)
+    async def find_page(
+        self, *, role_ids: list[int] | None, sort: list[SortField], offset: int, limit: int
+    ) -> tuple[list[UserModel], int]:
+        users = await self.repository.find_many(
+            role_ids=role_ids, sort=sort, offset=offset, limit=limit
+        )
+        return users, await self.repository.count(role_ids=role_ids)
 
     async def update(self, user_id: int, data: UserInput) -> UserModel:
         password: Any = UNSET

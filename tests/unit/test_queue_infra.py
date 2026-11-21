@@ -186,7 +186,7 @@ class TestRedisSettings:
 
 class TestMailComposer:
     def test_unknown_language_falls_back(self) -> None:
-        app = AppSettings.model_validate({"FRONTEND_DOMAIN": "http://x"})
+        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
         mail = MailComposer(app, get_i18n("en")).compose(
             MailMessage("activation", "a@b.c", {"hash": "h"}), None
         )
@@ -194,7 +194,7 @@ class TestMailComposer:
         assert mail.text == "http://x/confirm-email?hash=h Confirm email"
 
     def test_url_params_use_form_encoding(self) -> None:
-        app = AppSettings.model_validate({"FRONTEND_DOMAIN": "http://x"})
+        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
         mail = MailComposer(app, get_i18n("en")).compose(
             MailMessage("activation", "a@b.c", {"hash": "a b~c+d"}), "en"
         )
@@ -208,7 +208,7 @@ class TestMailComposer:
         settings = MailSettings.model_validate(
             {"MAIL_DEFAULT_NAME": "Api", "MAIL_DEFAULT_EMAIL": "noreply@example.com"}
         )
-        app = AppSettings.model_validate({"FRONTEND_DOMAIN": "http://x"})
+        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
         mail = MailComposer(app, get_i18n("en")).compose(
             MailMessage("activation", "to@example.com", {"hash": "h"}), "zh"
         )
@@ -267,7 +267,7 @@ class TestAudit:
         assert _param_id({"id": "7"}, "id") == "7"
         assert _param_id({"id": "7", "date": "2026-01-01"}, ("id", "date")) == "7:2026-01-01"
         assert _param_id({"id": ""}, "id") is None
-        assert _response_id({"code": 200, "message": "success", "data": {"id": 9}}) == "9"
+        assert _response_id({"code": 0, "message": "ok", "data": {"id": 9}}) == "9"
         assert _response_id({"id": True}) is None
         assert Auditable(AuditAction.UPDATE, "User").entity_id_from == "param"
 

@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from datetime import date
 from typing import Any, Final
 lazy from collections.abc import Sequence
@@ -8,10 +7,10 @@ from sqlalchemy import ColumnElement, Integer, Select, String, func, select, upd
 from sqlalchemy.orm import joinedload
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.exceptions import not_found
-from app.common.validation.js import to_string
+from app.common.errors import AppError
 from app.core.users.models import UserModel
 from app.infrastructure.database.session import affected_rows
+lazy from app.common.pagination import SortField
 
 _UPDATABLE: Final = {
     "email": UserModel.email,
@@ -27,29 +26,24 @@ _UPDATABLE: Final = {
     "wechatUnionId": UserModel.wechat_union_id,
     "alipayOpenId": UserModel.alipay_open_id,
 }
-_SORTABLE: Final = {
-    **_UPDATABLE,
+SORTABLE: Final = {
     "id": UserModel.id,
+    "email": UserModel.email,
+    "firstName": UserModel.first_name,
+    "lastName": UserModel.last_name,
     "createdAt": UserModel.created_at,
     "updatedAt": UserModel.updated_at,
-    "deletedAt": UserModel.deleted_at,
 }
 UNSET: Final = object()
 
 
-@dataclass(frozen=True, slots=True)
-class Sort:
-    order_by: str
-    order: str
-
-
 def _coerce(attribute: Any, value: Any) -> Any:
-    """与 pg 驱动一致：数字 / 布尔写入字符串列时转为 JS 字符串，数字字符串写入整数列时转为整数。"""
+    """非字符串写入字符串列时转为字符串，数字字符串写入整数列时转为整数。"""
     if value is None or value is UNSET:
         return value
     column_type = attribute.property.columns[0].type
     if isinstance(column_type, String) and not isinstance(value, str):
-        return to_string(value)
+        return str(value).lower() if isinstance(value, bool) else str(value)
     if isinstance(column_type, Integer) and isinstance(value, str):
         return int(value)
     return value
@@ -123,24 +117,28 @@ class UserRepository:
         self,
         *,
         role_ids: Sequence[int] | None,
-        sort: Sequence[Sort] | None,
-        page: int,
+        sort: Sequence[SortField],
+        offset: int,
         limit: int,
     ) -> list[UserModel]:
         statement = select(UserModel).where(_active())
         if role_ids:
             statement = statement.where(UserModel.role_id.in_(role_ids))
         ordered_by_id = False
-        for item in sort or ():
-            column = _SORTABLE.get(item.order_by)
-            if column is None:
-                raise LookupError(f'Property "{item.order_by}" was not found in "UserEntity"')
+        for item in sort:
+            column = SORTABLE[item.field]
             ordered_by_id = ordered_by_id or column is UserModel.id
-            statement = statement.order_by(column.desc() if item.order == "DESC" else column.asc())
+            statement = statement.order_by(column.desc() if item.descending else column.asc())
         if not ordered_by_id:
             statement = statement.order_by(UserModel.id.asc())
-        statement = _with_relations(statement.offset((page - 1) * limit).limit(limit))
+        statement = _with_relations(statement.offset(offset).limit(limit))
         return list((await self.session.scalars(statement)).unique())
+
+    async def count(self, *, role_ids: Sequence[int] | None) -> int:
+        statement = select(func.count()).select_from(UserModel).where(_active())
+        if role_ids:
+            statement = statement.where(UserModel.role_id.in_(role_ids))
+        return int(await self.session.scalar(statement) or 0)
 
     async def create(
         self,
@@ -192,11 +190,11 @@ class UserRepository:
                 .execution_options(synchronize_session=False)
             )
             if affected_rows(result) == 0:
-                raise not_found("User not found")
+                raise AppError("user.notFound")
         self.session.expire_all()
         user = await self._one(UserModel.id == user_id)
         if user is None:
-            raise not_found("User not found")
+            raise AppError("user.notFound")
         return user
 
     async def find_deleted_by_id(self, user_id: int) -> UserModel | None:

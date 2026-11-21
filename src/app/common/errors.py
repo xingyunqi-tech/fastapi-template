@@ -1,156 +1,125 @@
-"""nestjs AllExceptionsFilter 的移植：把异常转换为 `{code, message, data}`。"""
+"""约定 §2.4 错误码登记表与 AppError。"""
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from app.common.exceptions import (
-    NEST_HTTP_STATUS,
-    STATUS_TO_I18N_KEY,
-    BusinessException,
-    HttpError,
-    TooManyRequests,
-    find_unique_violation,
-    unique_violation_response,
-)
-lazy from app.common.i18n import I18n
-
-DEFAULT_EXCEPTION_MESSAGES: Final = {
-    "TOO_MANY_REQUESTS": "Too many requests, please try again later",
-    "INTERNAL_SERVER_ERROR": "Internal server error",
-}
-
-_DEFAULT_EXCEPTION_SUFFIXES: Final = (
-    "Bad Request Exception",
-    "Unauthorized Exception",
-    "Forbidden Exception",
-    "Not Found Exception",
-    "Unprocessable Entity Exception",
-    "Internal Server Error Exception",
-)
-_DEFAULT_DESCRIPTION_VALUES: Final = frozenset(
-    {
-        "Bad Request",
-        "Unauthorized",
-        "Forbidden",
-        "Not Found",
-        "Conflict",
-        "Gone",
-        "Unprocessable Entity",
-        "Too Many Requests",
-        "Internal Server Error",
-    }
-)
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
-class ErrorBody:
+class ErrorSpec:
     status: int
-    message: str | list[str]
-    data: Any
-    headers: Mapping[str, str]
-    log_error: str
-
-    def payload(self) -> dict[str, Any]:
-        return {"code": self.status, "message": self.message, "data": self.data}
+    code: int
 
 
-class ErrorTranslator:
-    def __init__(self, i18n: I18n) -> None:
-        self.i18n = i18n
+ERRORS: Final[Mapping[str, ErrorSpec]] = {
+    "common.badRequest": ErrorSpec(400, 40000),
+    "common.malformedJson": ErrorSpec(400, 40001),
+    "common.unauthorized": ErrorSpec(401, 40100),
+    "auth.tokenExpired": ErrorSpec(401, 40101),
+    "auth.invalidCredentials": ErrorSpec(401, 40102),
+    "auth.refreshTokenReused": ErrorSpec(401, 40103),
+    "auth.refreshTokenInvalid": ErrorSpec(401, 40104),
+    "common.forbidden": ErrorSpec(403, 40300),
+    "auth.accountDisabled": ErrorSpec(403, 40301),
+    "auth.emailNotVerified": ErrorSpec(403, 40302),
+    "auth.reauthRequired": ErrorSpec(403, 40303),
+    "common.notFound": ErrorSpec(404, 40400),
+    "auth.providerDisabled": ErrorSpec(404, 40401),
+    "auth.sessionNotFound": ErrorSpec(404, 40402),
+    "user.notFound": ErrorSpec(404, 40403),
+    "common.methodNotAllowed": ErrorSpec(405, 40500),
+    "common.conflict": ErrorSpec(409, 40900),
+    "user.emailTaken": ErrorSpec(409, 40901),
+    "user.phoneTaken": ErrorSpec(409, 40902),
+    "common.idempotencyInProgress": ErrorSpec(409, 40903),
+    "role.lastAdmin": ErrorSpec(409, 40904),
+    "common.payloadTooLarge": ErrorSpec(413, 41300),
+    "file.tooLarge": ErrorSpec(413, 41301),
+    "common.unsupportedMediaType": ErrorSpec(415, 41500),
+    "common.validationFailed": ErrorSpec(422, 42200),
+    "auth.verificationCodeInvalid": ErrorSpec(422, 42201),
+    "auth.verificationTokenInvalid": ErrorSpec(422, 42202),
+    "auth.passwordIncorrect": ErrorSpec(422, 42203),
+    "file.typeNotAllowed": ErrorSpec(422, 42204),
+    "common.idempotencyKeyMismatch": ErrorSpec(422, 42205),
+    "auth.providerCodeInvalid": ErrorSpec(422, 42206),
+    "common.tooManyRequests": ErrorSpec(429, 42900),
+    "auth.sendTooFrequent": ErrorSpec(429, 42901),
+    "auth.verificationLocked": ErrorSpec(429, 42902),
+    "common.internalError": ErrorSpec(500, 50000),
+    "common.badGateway": ErrorSpec(502, 50200),
+    "common.serviceUnavailable": ErrorSpec(503, 50300),
+}
 
-    def _translate(self, key: str) -> str | None:
-        return self.i18n.translate(f"common.{key}")
+STATUS_ERROR_KEYS: Final[Mapping[int, str]] = {
+    400: "common.badRequest",
+    401: "common.unauthorized",
+    403: "common.forbidden",
+    404: "common.notFound",
+    405: "common.methodNotAllowed",
+    409: "common.conflict",
+    413: "common.payloadTooLarge",
+    415: "common.unsupportedMediaType",
+    422: "common.validationFailed",
+    429: "common.tooManyRequests",
+    502: "common.badGateway",
+    503: "common.serviceUnavailable",
+}
 
-    def _default_message(self, status: int) -> str:
-        key = STATUS_TO_I18N_KEY.get(status)
-        if key:
-            translated = self._translate(key)
-            if translated:
-                return translated
-        return NEST_HTTP_STATUS.get(status, "Error")
 
-    @staticmethod
-    def _is_default_message(message: Any) -> bool:
-        if not isinstance(message, str):
-            return False
-        return message in _DEFAULT_DESCRIPTION_VALUES or any(
-            suffix in message for suffix in _DEFAULT_EXCEPTION_SUFFIXES
-        )
+def error_key_for_status(status: int) -> str:
+    """HTTP 状态对应的通用 errorKey；未登记的 4xx 为 `badRequest`，其余为 `internalError`。"""
+    if status in STATUS_ERROR_KEYS:
+        return STATUS_ERROR_KEYS[status]
+    return "common.badRequest" if 400 <= status < 500 else "common.internalError"
 
-    def _translated_message(self, raw: Any, status: int, error_code: str | None) -> str | list[str]:
-        if not raw or self._is_default_message(raw):
-            if error_code:
-                return self._translate(error_code) or error_code
-            return self._default_message(status)
-        if isinstance(raw, str):
-            return self._translate(raw) or raw
-        if isinstance(raw, list):
-            return [self._translate(m) or m if isinstance(m, str) else m for m in raw]
-        return raw  # type: ignore[no-any-return]
 
-    def _translate_errors(self, errors: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            key: (self._translate(value) or value) if isinstance(value, str) else value
-            for key, value in errors.items()
-        }
+@dataclass(frozen=True, slots=True)
+class FieldError:
+    """约定 §2.3 `data.errors` 的一项；`message` 为空时按 `rule` 翻译。"""
 
-    def build(self, exc: BaseException) -> ErrorBody:
-        if isinstance(exc, TooManyRequests):
-            return ErrorBody(
-                429,
-                self._translate("tooManyRequests")
-                or DEFAULT_EXCEPTION_MESSAGES["TOO_MANY_REQUESTS"],
-                None,
-                exc.headers,
-                "Too Many Requests",
-            )
-        violation = find_unique_violation(exc)
-        if violation is not None:
-            mapped = unique_violation_response(violation.constraint)
-            message = (
-                self._translate(mapped.error) or mapped.error
-                if mapped.error
-                else self._default_message(mapped.status)
-            )
-            data = self._translate_errors(mapped.errors) if mapped.errors else None
-            return ErrorBody(
-                mapped.status,
-                message,
-                data,
-                {},
-                f"Unique constraint violation {violation.constraint or 'unknown'}",
-            )
-        if isinstance(exc, HttpError):
-            return self._http_error(exc)
-        return ErrorBody(
-            500,
-            self._translate("internalServerError")
-            or DEFAULT_EXCEPTION_MESSAGES["INTERNAL_SERVER_ERROR"],
-            None,
-            {},
-            "Internal Server Error",
-        )
+    field: str
+    rule: str
+    params: Mapping[str, Any] | None = None
+    message: str | None = None
 
-    def _http_error(self, exc: HttpError) -> ErrorBody:
-        status = exc.status
-        response = exc.response
-        errors: Any = None
-        if isinstance(response, str):
-            message: str | list[str] = self._translate(response) or response
-            error = type(exc).__name__
-        elif isinstance(response, Mapping):
-            errors = response.get("errors")
-            raw_message = response.get("message")
-            raw_error = response.get("error") if isinstance(response.get("error"), str) else None
-            error_code = (
-                raw_error if raw_error and raw_error not in _DEFAULT_DESCRIPTION_VALUES else None
-            )
-            message = self._translated_message(raw_message, status, error_code)
-            error = raw_error or type(exc).__name__
-            if isinstance(errors, Mapping) and not isinstance(exc, BusinessException):
-                errors = self._translate_errors(errors)
-        else:
-            message = self._default_message(status)
-            error = type(exc).__name__
-        return ErrorBody(status, message, errors, exc.headers, error)
+
+class AppError(Exception):
+    """按 `error_key` 查登记表得到 HTTP 状态与 `code`；未登记的键在构造时抛 KeyError。"""
+
+    def __init__(
+        self,
+        error_key: str,
+        *,
+        data: Any = None,
+        headers: Mapping[str, str] | None = None,
+        message: str | None = None,
+    ) -> None:
+        self.spec = ERRORS[error_key]
+        self.error_key = error_key
+        self.data = data
+        self.headers = dict(headers or {})
+        self.message = message
+        super().__init__(message or error_key)
+
+    @property
+    def status(self) -> int:
+        return self.spec.status
+
+    @property
+    def code(self) -> int:
+        return self.spec.code
+
+
+class ValidationFailed(AppError):
+    """422 `common.validationFailed`，`data.errors` 由 `errors` 生成。"""
+
+    def __init__(self, errors: Sequence[FieldError]) -> None:
+        super().__init__("common.validationFailed")
+        self.errors = list(errors)
+
+
+def field_error(field: str, rule: str, **params: Any) -> ValidationFailed:
+    return ValidationFailed([FieldError(field, rule, params or None)])

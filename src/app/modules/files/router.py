@@ -1,7 +1,6 @@
 """files 路由：按 FILE_DRIVER 注册上传接口（local / s3 / s3-presigned），以及私有文件读取。"""
 
 import mimetypes
-import re
 from pathlib import Path as FsPath
 from typing import TYPE_CHECKING, Annotated, Any, Final
 from uuid import UUID
@@ -10,13 +9,12 @@ from fastapi import Depends, Path, Request
 from starlette.responses import Response
 
 from app.common.context import AppContext, Context
-from app.common.exceptions import bad_request, forbidden, not_found
-from app.common.params import Body, Query, parse_query_string
-from app.common.routing import ApiRoute, ApiRouter, Auth
+from app.common.errors import AppError
+from app.common.routing import ApiRouter, Auth
 from app.config import FileDriver
 from app.core.auth.deps import CurrentUser
 from app.core.permissions.service import PermissionsService
-from app.core.users.serializers import serialize_file
+from app.core.users.schemas import FileInfo
 from app.infrastructure.database.session import DbSession
 from app.modules.files.purposes import (
     FILE_PURPOSE_RULES,
@@ -30,15 +28,11 @@ from app.modules.files.purposes import (
     parse_file_purpose,
     select_file_error,
 )
-from app.modules.files.schemas import (
-    FileResponseDto,
-    FileUploadDto,
-    PresignedFileResponseDto,
-    UploadFileQueryDto,
-)
+from app.modules.files.schemas import PresignedUpload, PresignedUploadRequest, UploadedFile
 from app.modules.files.send import file_response
 from app.modules.files.service import FilesService
 from app.modules.files.storage import (
+    API_PREFIX,
     LOCAL_FILES_ROOT,
     FileStorage,
     local_disk_path,
@@ -67,15 +61,17 @@ MULTIPART_REQUEST_BODY: Final = {
             "schema": {
                 "type": "object",
                 "properties": {"file": {"type": "string", "format": "binary"}},
+                "required": ["file"],
             }
         }
     },
 }
-_UUID_RE: Final = re.compile(
-    r"(?:[0-9A-F]{8}-[0-9A-F]{4}-[1-8][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}"
-    r"|00000000-0000-0000-0000-000000000000|FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF)",
-    re.IGNORECASE,
-)
+PURPOSE_PARAMETER: Final = {
+    "name": "purpose",
+    "in": "query",
+    "required": False,
+    "schema": {"type": "string", "enum": [purpose.value for purpose in FilePurpose]},
+}
 _CONTENT_TYPES: Final = {
     extension: mime
     for rule in FILE_PURPOSE_RULES.values()
@@ -89,20 +85,13 @@ s3_presigned_router = ApiRouter(prefix="/v1/files", tags=["Files"])
 
 
 def routers_for(driver: FileDriver) -> list[ApiRouter]:
-    """与 nestjs FilesModule 一致：先注册驱动对应的上传 controller，再注册私有文件读取。"""
+    """先注册驱动对应的上传接口，再注册私有文件读取。"""
     uploader = {
         FileDriver.LOCAL: local_router,
         FileDriver.S3: s3_router,
         FileDriver.S3_PRESIGNED: s3_presigned_router,
     }[driver]
     return [uploader, files_router]
-
-
-def _with_request_body(router: ApiRouter, body: dict[str, Any]) -> None:
-    route = router.routes[-1]
-    if not isinstance(route, ApiRoute):
-        raise TypeError(f"{route} 不是 ApiRoute")
-    route.openapi_extra = {**(route.openapi_extra or {}), "requestBody": body}
 
 
 def _content_length(request: Request) -> float | None:
@@ -118,9 +107,11 @@ def _content_length(request: Request) -> float | None:
 async def upload_purpose_guard(
     request: Request, user: CurrentUser, context: Context, session: DbSession
 ) -> FilePurpose:
-    """nestjs FileUploadPurposeGuard：用途合法、具备用途所需权限、Content-Length 未明显超限。"""
-    query = parse_query_string(request.scope.get("query_string", b"").decode("latin-1"))
-    purpose = parse_file_purpose(query.get("purpose"))
+    """用途合法、具备用途所需权限、Content-Length 未明显超限。"""
+    values = request.query_params.getlist("purpose")
+    purpose = parse_file_purpose(values[0]) if len(values) == 1 and values[0] else None
+    if purpose is None and not values:
+        purpose = FilePurpose.IMAGE
     if purpose is None:
         raise invalid_purpose_error()
     permission = FILE_PURPOSE_RULES[purpose].permission
@@ -131,7 +122,7 @@ async def upload_purpose_guard(
             else []
         )
         if permission not in granted:
-            raise forbidden(f"Missing permissions: {permission}")
+            raise AppError("common.forbidden")
     length = _content_length(request)
     max_size = context.settings.file.max_sizes[purpose]
     if length is not None and length > max_size + MULTIPART_OVERHEAD_BYTES:
@@ -156,7 +147,7 @@ def _sink_factory(storage: FileStorage, purpose: FilePurpose) -> Any:
 async def received_file(
     request: Request, purpose: UploadPurpose, context: Context
 ) -> AsyncIterator[ReceivedFile | None]:
-    """multer 接收 `file` 字段；后续校验或处理失败时删除已存储的文件。"""
+    """接收 `file` 字段；后续校验或处理失败时删除已存储的文件。"""
     settings = context.settings.file
 
     def file_filter(file_name: str) -> None:
@@ -178,7 +169,6 @@ async def received_file(
 
 
 ReceivedUpload = Annotated[ReceivedFile | None, Depends(received_file, scope="function")]
-PurposeQuery = Annotated[UploadFileQueryDto, Query(UploadFileQueryDto)]
 
 
 async def _store_received(
@@ -187,18 +177,14 @@ async def _store_received(
     user_id: int,
     context: AppContext,
     session: DbSession,
-) -> dict[str, Any]:
+) -> UploadedFile:
     if received is None:
         raise select_file_error()
     settings = context.settings
     if received.size > settings.file.max_sizes[purpose]:
         raise file_too_large_error()
     key = received.sink.key
-    path = (
-        local_file_url_path(settings.app.api_prefix, key)
-        if settings.file.driver is FileDriver.LOCAL
-        else key
-    )
+    path = local_file_url_path(API_PREFIX, key) if settings.file.driver is FileDriver.LOCAL else key
     file = await FilesService(session).create(
         path=path,
         owner_user_id=file_owner_for(purpose, user_id),
@@ -206,7 +192,7 @@ async def _store_received(
         mime_type=mime_type_for(purpose, received.original_name),
         size=received.size,
     )
-    return {"file": serialize_file(file, context.file_urls)}
+    return UploadedFile(file=FileInfo.from_model(file, context.file_urls))
 
 
 @local_router.endpoint(
@@ -214,22 +200,20 @@ async def _store_received(
     "/upload",
     operation_id="uploadFile",
     auth=Auth.JWT,
-    status_code=201,
-    response_model=FileResponseDto,
+    status=201,
+    upload=True,
+    request_body=MULTIPART_REQUEST_BODY,
+    parameters=[PURPOSE_PARAMETER],
     summary="上传文件",
 )
 async def upload_local_file(
     purpose: UploadPurpose,
     received: ReceivedUpload,
-    query: PurposeQuery,
     user: CurrentUser,
     context: Context,
     session: DbSession,
-) -> dict[str, Any]:
+) -> UploadedFile:
     return await _store_received(received, purpose, user.id, context, session)
-
-
-_with_request_body(local_router, MULTIPART_REQUEST_BODY)
 
 
 @s3_router.endpoint(
@@ -237,22 +221,20 @@ _with_request_body(local_router, MULTIPART_REQUEST_BODY)
     "/upload",
     operation_id="uploadFile",
     auth=Auth.JWT,
-    status_code=201,
-    response_model=FileResponseDto,
+    status=201,
+    upload=True,
+    request_body=MULTIPART_REQUEST_BODY,
+    parameters=[PURPOSE_PARAMETER],
     summary="上传文件",
 )
 async def upload_s3_file(
     purpose: UploadPurpose,
     received: ReceivedUpload,
-    query: PurposeQuery,
     user: CurrentUser,
     context: Context,
     session: DbSession,
-) -> dict[str, Any]:
+) -> UploadedFile:
     return await _store_received(received, purpose, user.id, context, session)
-
-
-_with_request_body(s3_router, MULTIPART_REQUEST_BODY)
 
 
 @s3_presigned_router.endpoint(
@@ -260,18 +242,17 @@ _with_request_body(s3_router, MULTIPART_REQUEST_BODY)
     "/upload",
     operation_id="uploadFile",
     auth=Auth.JWT,
-    status_code=201,
-    response_model=PresignedFileResponseDto,
+    status=201,
+    parameters=[PURPOSE_PARAMETER],
     summary="上传文件",
 )
 async def upload_presigned_file(
     purpose: UploadPurpose,
-    body: Annotated[FileUploadDto, Body(FileUploadDto)],
-    query: PurposeQuery,
+    body: PresignedUploadRequest,
     user: CurrentUser,
     context: Context,
     session: DbSession,
-) -> dict[str, Any]:
+) -> PresignedUpload:
     mime_type = mime_type_for(purpose, body.file_name)
     if mime_type is None:
         raise file_type_not_allowed_error()
@@ -285,9 +266,11 @@ async def upload_presigned_file(
         owner_user_id=file_owner_for(purpose, user.id),
         visibility=FILE_PURPOSE_RULES[purpose].visibility,
         mime_type=mime_type,
-        size=int(body.file_size),
+        size=body.file_size,
     )
-    return {"file": serialize_file(file, context.file_urls), "uploadSignedUrl": signed_url}
+    return PresignedUpload(
+        file=FileInfo.from_model(file, context.file_urls), upload_signed_url=signed_url
+    )
 
 
 def _content_type(path: FsPath) -> str:
@@ -303,12 +286,12 @@ def send_file(request: Request, path: FsPath) -> Response:
     try:
         stat = path.stat()
     except OSError:
-        raise not_found({"error": "fileNotFound"}) from None
+        raise AppError("common.notFound") from None
     return file_response(request.headers, path, stat, _content_type(path))
 
 
 def redirect(request: Request, url: str) -> Response:
-    """Express `res.redirect`：302，正文随 Accept 选择 text / html。"""
+    """302，正文随 Accept 选择 text / html。"""
     accept = request.headers.get("accept") or ""
     if "text/html" in accept and "text/plain" not in accept:
         escaped = (
@@ -331,13 +314,6 @@ def redirect(request: Request, url: str) -> Response:
     )
 
 
-def parse_uuid(value: str) -> UUID:
-    """nestjs ParseUUIDPipe（version all）。"""
-    if not _UUID_RE.fullmatch(value):
-        raise bad_request("Validation failed (uuid is expected)")
-    return UUID(value)
-
-
 @files_router.endpoint(
     "GET",
     "/private/{id}",
@@ -347,12 +323,12 @@ def parse_uuid(value: str) -> UUID:
 )
 async def read_private_file(
     request: Request,
-    id: Annotated[str, Path()],
+    id: Annotated[UUID, Path()],
     user: CurrentUser,
     context: Context,
     session: DbSession,
 ) -> Response:
-    file = await FilesService(session).find_accessible(parse_uuid(id), user.id)
+    file = await FilesService(session).find_accessible(id, user.id)
     if context.settings.file.driver is FileDriver.LOCAL:
         return send_file(request, local_disk_path(file.path))
     return redirect(request, context.file_urls.build(file))
@@ -376,7 +352,7 @@ async def download_file(
     request: Request, path: Annotated[str, Path()], context: Context, session: DbSession
 ) -> Response:
     name = FsPath(path).name
-    file = await _find_public_by_file_name(session, context.settings.app.api_prefix, name)
+    file = await _find_public_by_file_name(session, API_PREFIX, name)
     if file is None or name != path:
-        raise not_found({"error": "fileNotFound"})
+        raise AppError("common.notFound")
     return send_file(request, LOCAL_FILES_ROOT / name)

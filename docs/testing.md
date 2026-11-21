@@ -8,11 +8,12 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 
 | 目录 / marker | 依赖 | 运行 | 内容 |
 |---|---|---|---|
-| `unit` | 无 | `make test-unit` | 纯函数、配置、路由与信封、校验引擎、生成器、提交信息检查等 |
+| `unit` | 无 | `make test-unit` | 纯函数、配置、路由、OpenAPI 导出、生成器、提交信息检查等 |
+| `conventions` | 无 | `make test-conventions` | 探针路由逐条断言约定 §2–§4、§6：信封、错误码登记表、校验规则、400 / 404 / 405 / 413 / 415、请求头、分页、类型序列化 |
 | `integration` | Docker（testcontainers） | `make test` | 每个模块的 HTTP 行为、数据层、限流、健康检查、指标、文件、队列与定时任务 |
 | `e2e` | Docker Compose | `make test-e2e` | 生产镜像完整服务栈黑盒测试 |
 
-`make test` = unit + integration（`-n auto`，输出 `coverage.xml`）；`make check` 只跑 unit。
+`make test` = unit + conventions + integration（`-n auto`，输出 `coverage.xml`）；`make check` 只跑 unit。
 
 ## 环境隔离
 
@@ -42,7 +43,7 @@ uv run --frozen pytest -m committed
 
 `make test-e2e` 以 base + postgres + redis + ci 组合（项目名 `E2E_PROJECT`，默认 `fastapi-e2e`）`up --build --wait` 起完整服务栈，宿主端口随机分配，结束后 `down --volumes`；启动或用例失败时输出最近 200 行日志。`E2E_KEEP_STACK=1` 保留服务栈；设置 `CI` 时失败的服务栈不 down，由 workflow 收集容器日志。
 
-覆盖：`/health/ready`、邮箱注册全流程（Mailpit 收信）、公开 / 私有文件往返、限流头与 429、`/metrics` 同时包含 api 与 worker 的样本、`/docs-json` 逐字节一致。
+覆盖：`/health/ready`、邮箱注册全流程（Mailpit 收信）、公开 / 私有文件往返、限流头与 429、`/metrics` 同时包含 api 与 worker 的样本、`/openapi.json` 可访问。
 
 ## 编写约定
 

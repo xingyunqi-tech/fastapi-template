@@ -23,7 +23,7 @@ from app.config import (
 from app.config.base import env_names
 
 TESTS_ROOT = Path(__file__).parent
-DIRECTORY_MARKERS = {"unit", "integration", "e2e"}
+DIRECTORY_MARKERS = {"unit", "conventions", "integration", "e2e"}
 SETTINGS_ENV_VARS = set().union(
     *(
         env_names(group)

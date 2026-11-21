@@ -11,14 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
 
-from app.common.exceptions import HttpError, find_unique_violation, not_found
+from app.common.errors import AppError
 from app.config import Settings
 from app.core.auth.router import _service
 from app.core.session.repository import SessionRepository
 from app.core.users.repository import UserRepository
+from app.infrastructure.database.errors import find_unique_violation
 from app.infrastructure.database.schema_check import ensure_external_schema, missing_columns
 from app.infrastructure.database.session import Database, after_commit
-from tests.integration.conftest import PgServer, _build_app, client_for, clone_database_async
+from tests.integration.conftest import (
+    PgServer,
+    _build_app,
+    client_for,
+    clone_database_async,
+    rules_of,
+)
 from tests.integration.test_auth import PASSWORD, bearer, login
 
 
@@ -53,9 +60,7 @@ async def test_refresh_rejects_blocked_user(
         {"email": "john.doe@example.com"},
     )
     response = await client.post("/api/v1/auth/refresh", headers=bearer(tokens["refreshToken"]))
-    body = response.json()
-    assert response.status_code == 422
-    assert (body["code"], body["data"]) == (422, {"refresh": "User is not active"})
+    assert rules_of(response) == {"refresh": "userNotActive"}
 
 
 async def test_login_upgrades_bcrypt_hash(
@@ -115,9 +120,9 @@ class TestAfterCommit:
         async def fail() -> None:
             async with Database.bound_to(connection).transaction() as session:
                 after_commit(session, record)
-                raise not_found()
+                raise AppError("common.notFound")
 
-        with pytest.raises(HttpError):
+        with pytest.raises(AppError):
             await fail()
         assert calls == []
 
@@ -165,9 +170,9 @@ async def test_user_list_orders_by_id_after_requested_sort(
         text("UPDATE \"user\" SET \"firstName\" = 'Same' WHERE email = 'john.doe@example.com'")
     )
     token = (await login(client, "admin@example.com"))["token"]
-    for query in ("", '&sort=[{"orderBy":"firstName","order":"asc"}]'):
-        response = await client.get(f"/api/v1/users?limit=10{query}", headers=bearer(token))
-        users = response.json()["data"]["data"]
+    for query in ("", "&sort=firstName"):
+        response = await client.get(f"/api/v1/users?pageSize=10{query}", headers=bearer(token))
+        users = response.json()["data"]["items"]
         same = [user["id"] for user in users if user["firstName"] == "Same"]
         assert len(same) == 4
         assert same == sorted(same)

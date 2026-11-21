@@ -1,39 +1,61 @@
-from pydantic import BaseModel
+import pytest
+from fastapi.exceptions import RequestValidationError
 
 from app.common.pagination import (
-    infinity_pagination,
-    infinity_pagination_response,
-    pagination,
-    pagination_response,
+    CursorParams,
+    Page,
+    PageParams,
+    SortField,
+    encode_cursor,
+    parse_sort,
 )
 
 
-class UserDto(BaseModel):
-    id: int
+def test_page_params_offset() -> None:
+    params = PageParams(page=3, page_size=20)
+
+    assert params.offset == 40
 
 
-def test_pagination_shape() -> None:
-    assert pagination([1, 2], total=21, page=2, limit=10) == {
-        "list": [1, 2],
-        "total": 21,
-        "page": 2,
-        "limit": 10,
-        "totalPages": 3,
-    }
+def test_page_of_dumps_camel_case() -> None:
+    page = Page[int].of([1, 2], 42, PageParams(page=2, page_size=2))
+
+    assert page.model_dump(mode="json") == {"items": [1, 2], "total": 42, "page": 2, "pageSize": 2}
 
 
-def test_infinity_pagination_has_next_page_when_full() -> None:
-    assert infinity_pagination([1, 2], limit=2) == {"data": [1, 2], "hasNextPage": True}
-    assert infinity_pagination([1], limit=2) == {"data": [1], "hasNextPage": False}
+def test_cursor_round_trip() -> None:
+    cursor = encode_cursor("2026-11-17T08:00:00.000Z", "019a8f3c-6b1e-7d2a-9c4f-1e2d3c4b5a69")
+
+    assert "=" not in cursor
+    assert CursorParams(cursor=cursor).decoded() == (
+        "2026-11-17T08:00:00.000Z",
+        "019a8f3c-6b1e-7d2a-9c4f-1e2d3c4b5a69",
+    )
+    assert CursorParams().decoded() is None
 
 
-def test_response_model_names_match_nestjs() -> None:
-    assert pagination_response(UserDto).__name__ == "PaginationUserDtoResponseDto"
-    assert infinity_pagination_response(UserDto).__name__ == "InfinityPaginationUserDtoResponseDto"
-    assert set(pagination_response(UserDto).model_fields) == {
-        "list",
-        "total",
-        "page",
-        "limit",
-        "totalPages",
-    }
+@pytest.mark.parametrize("cursor", ["%%%", "bm90LWpzb24", "WzFd"])
+def test_invalid_cursor_is_query_validation_error(cursor: str) -> None:
+    with pytest.raises(RequestValidationError) as caught:
+        CursorParams(cursor=cursor).decoded()
+
+    [error] = caught.value.errors()
+    assert error["loc"] == ("query", "cursor")
+    assert error["type"] == "format"
+
+
+def test_parse_sort_reads_direction() -> None:
+    assert parse_sort("createdAt,-email", ["createdAt", "email"]) == [
+        SortField("createdAt", descending=False),
+        SortField("email", descending=True),
+    ]
+
+
+@pytest.mark.parametrize("value", ["password", "email,email", "-", "email,"])
+def test_parse_sort_rejects_unknown_or_duplicate(value: str) -> None:
+    with pytest.raises(RequestValidationError) as caught:
+        parse_sort(value, ["createdAt", "email"])
+
+    [error] = caught.value.errors()
+    assert error["loc"] == ("query", "sort")
+    assert error["type"] == "enum"

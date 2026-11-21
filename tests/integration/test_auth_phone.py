@@ -78,7 +78,7 @@ async def register(
     **extra: Any,
 ) -> dict[str, Any]:
     sent = await client.post(SEND, json={"phone": phone, "type": "register"})
-    assert sent.json() == {"code": 200, "message": "success"}
+    assert sent.json() == {"code": 0, "message": "ok", "data": None}
     response = await client.post(
         REGISTER,
         json={
@@ -94,9 +94,11 @@ async def register(
 
 
 def error(response: httpx2.Response) -> tuple[int, Any]:
+    """校验失败返回 `(422, {field: rule})`，其余返回 `(status, errorKey)`。"""
     body = response.json()
-    assert body["code"] == response.status_code
-    return response.status_code, body["data"]
+    if body["errorKey"] == "common.validationFailed":
+        return response.status_code, {e["field"]: e["rule"] for e in body["data"]["errors"]}
+    return response.status_code, body["errorKey"]
 
 
 class TestSendCode:
@@ -104,11 +106,7 @@ class TestSendCode:
         self, app: FastAPI, client: httpx2.AsyncClient
     ) -> None:
         response = await client.post(SEND, json={"phone": PHONE})
-        assert response.json() == {
-            "code": 422,
-            "message": "Validation failed",
-            "data": {"phone": "Phone number is not registered"},
-        }
+        assert error(response) == (422, {"phone": "phoneNotFound"})
 
     async def test_change_phone_is_unsupported(
         self, app: FastAPI, client: httpx2.AsyncClient
@@ -116,18 +114,16 @@ class TestSendCode:
         response = await client.post(
             SEND, json={"phone": PHONE, "type": "change_phone"}, headers={"Accept-Language": "zh"}
         )
-        assert response.json() == {
-            "code": 422,
-            "message": "数据验证失败",
-            "data": {"type": "不支持的验证码类型"},
-        }
+        assert error(response) == (422, {"type": "unsupportedCodeType"})
+        [item] = response.json()["data"]["errors"]
+        assert item["message"] == "不支持的验证码类型"
 
     async def test_register_requires_unused_phone(
         self, app: FastAPI, client: httpx2.AsyncClient
     ) -> None:
         await register(app, client)
         response = await client.post(SEND, json={"phone": PHONE, "type": "register"})
-        assert error(response) == (422, {"phone": "Phone number already exists"})
+        assert error(response) == (422, {"phone": "phoneAlreadyExists"})
 
     async def test_resend_within_interval_is_rate_limited(
         self, app: FastAPI, client: httpx2.AsyncClient
@@ -135,11 +131,10 @@ class TestSendCode:
         await register(app, client)
         assert (await client.post(SEND, json={"phone": PHONE})).status_code == 200
         response = await client.post(SEND, json={"phone": PHONE})
-        status, data = error(response)
-        assert status == 422
-        assert data["phone"] == "Requests are too frequent, please try again later"
-        assert isinstance(data["retryAfter"], int)
-        assert 1 <= data["retryAfter"] <= 60
+        assert error(response) == (422, {"phone": "rateLimited"})
+        [item] = response.json()["data"]["errors"]
+        assert isinstance(item["params"]["retryAfter"], int)
+        assert 1 <= item["params"]["retryAfter"] <= 60
 
     async def test_code_has_configured_length(self, make_app: AppFactory) -> None:
         app = make_app(SMS_CODE_LENGTH="4")
@@ -153,7 +148,7 @@ class TestSendCode:
     async def test_send_failure_without_credentials(self, make_app: AppFactory) -> None:
         async with client_for(make_app(SMS_MOCK_MODE="false")) as client:
             response = await client.post(SEND, json={"phone": PHONE, "type": "register"})
-        assert error(response) == (422, {"phone": "Failed to send verification code"})
+        assert error(response) == (422, {"phone": "sendFailed"})
 
     async def test_validation_errors(self, app: FastAPI, client: httpx2.AsyncClient) -> None:
         response = await client.post(SEND, json={"phone": "123", "type": "nope"})
@@ -192,18 +187,14 @@ class TestRegisterAndLogin:
         self, app: FastAPI, client: httpx2.AsyncClient
     ) -> None:
         data = await register(app, client, nickname="  Johnny  ")
-        assert list(data) == ["refreshToken", "token", "tokenExpires", "user"]
+        assert list(data) == ["token", "refreshToken", "tokenExpires", "user"]
         user = data["user"]
         assert user["phone"] == PHONE
         assert user["provider"] == "phone"
-        assert user["role"] == {"id": 2}
-        assert user["status"] == {"id": 1}
+        assert user["role"] == {"id": 2, "name": "User"}
+        assert user["status"] == {"id": 1, "name": "Active"}
         me = await client.get("/api/v1/auth/me", headers=bearer(data["token"]))
-        assert me.json()["data"]["status"] == {
-            "id": 1,
-            "name": "Active",
-            "__entity": "StatusEntity",
-        }
+        assert me.json()["data"]["status"] == {"id": 1, "name": "Active"}
 
     async def test_register_with_wrong_code(self, app: FastAPI, client: httpx2.AsyncClient) -> None:
         await client.post(SEND, json={"phone": PHONE, "type": "register"})
@@ -211,26 +202,19 @@ class TestRegisterAndLogin:
         response = await client.post(
             REGISTER, json={"phone": PHONE, "code": wrong, "password": PASSWORD}
         )
-        assert error(response) == (422, {"code": "Invalid verification code"})
+        assert error(response) == (422, "auth.verificationCodeInvalid")
 
     async def test_phone_password_login(self, app: FastAPI, client: httpx2.AsyncClient) -> None:
         await register(app, client)
         ok = await client.post(PHONE_LOGIN, json={"phone": PHONE, "password": PASSWORD.upper()})
         assert ok.status_code == 200
-        assert ok.json()["data"]["user"]["role"] == {
-            "id": 2,
-            "name": "User",
-            "__entity": "RoleEntity",
-        }
+        assert ok.json()["data"]["user"]["role"] == {"id": 2, "name": "User"}
         for body in (
             {"phone": PHONE, "password": md5("wrong")},
             {"phone": "13700000000", "password": PASSWORD},
         ):
             response = await client.post(PHONE_LOGIN, json=body)
-            assert error(response) == (
-                422,
-                {"credentials": "Incorrect phone number or password"},
-            )
+            assert error(response) == (422, {"credentials": "incorrectPhoneOrPassword"})
 
     async def test_sms_login(self, app: FastAPI, client: httpx2.AsyncClient) -> None:
         await register(app, client)
@@ -239,7 +223,7 @@ class TestRegisterAndLogin:
         response = await client.post(SMS_LOGIN, json={"phone": PHONE, "code": code})
         assert response.status_code == 200
         again = await client.post(SMS_LOGIN, json={"phone": PHONE, "code": code})
-        assert error(again) == (422, {"code": "Invalid verification code"})
+        assert error(again) == (422, "auth.verificationCodeInvalid")
 
     async def test_sms_login_attempts_are_limited(
         self, app: FastAPI, client: httpx2.AsyncClient
@@ -250,10 +234,10 @@ class TestRegisterAndLogin:
         wrong = other_code(code)
         for _ in range(5):
             response = await client.post(SMS_LOGIN, json={"phone": PHONE, "code": wrong})
-            assert error(response) == (422, {"code": "Invalid verification code"})
+            assert error(response) == (422, "auth.verificationCodeInvalid")
         assert (await stored(app, PHONE))["attempts"] == 5
         response = await client.post(SMS_LOGIN, json={"phone": PHONE, "code": code})
-        assert error(response) == (422, {"code": "Invalid verification code"})
+        assert error(response) == (422, "auth.verificationCodeInvalid")
         assert await stored(app, PHONE) is None
 
     async def test_sms_login_unknown_phone(self, app: FastAPI, client: httpx2.AsyncClient) -> None:
@@ -263,7 +247,7 @@ class TestRegisterAndLogin:
             60_000,
         )
         response = await client.post(SMS_LOGIN, json={"phone": "13700000000", "code": "123456"})
-        assert error(response) == (422, {"phone": "Not found"})
+        assert error(response) == (422, {"phone": "notFound"})
 
     async def test_blocked_user_cannot_log_in(
         self, app: FastAPI, client: httpx2.AsyncClient, connection: AsyncConnection
@@ -273,7 +257,7 @@ class TestRegisterAndLogin:
             text('UPDATE "user" SET "statusId" = NULL WHERE id = :id'), {"id": data["user"]["id"]}
         )
         response = await client.post(PHONE_LOGIN, json={"phone": PHONE, "password": PASSWORD})
-        assert error(response) == (422, {"phone": "User is not active"})
+        assert error(response) == (422, {"phone": "userNotActive"})
 
 
 class TestResetPassword:
@@ -285,7 +269,7 @@ class TestResetPassword:
         response = await client.post(
             RESET, json={"phone": PHONE, "code": code, "password": new_password}
         )
-        assert response.json() == {"code": 200, "message": "success"}
+        assert response.json() == {"code": 0, "message": "ok", "data": None}
         me = await client.get("/api/v1/auth/me", headers=bearer(data["token"]))
         assert me.status_code == 401
         old = await client.post(PHONE_LOGIN, json={"phone": PHONE, "password": PASSWORD})
@@ -297,7 +281,7 @@ class TestResetPassword:
         response = await client.post(
             RESET, json={"phone": PHONE, "code": "123456", "password": PASSWORD}
         )
-        assert error(response) == (422, {"code": "Invalid verification code"})
+        assert error(response) == (422, "auth.verificationCodeInvalid")
 
 
 class TestVerifyIdentity:
@@ -315,11 +299,11 @@ class TestVerifyIdentity:
     ) -> None:
         token = await self.passwordless_user(app, client, connection)
         missing = await client.request("DELETE", "/api/v1/auth/me", headers=bearer(token), json={})
-        assert error(missing) == (422, {"smsCode": "SMS verification code is required"})
+        assert error(missing) == (422, {"smsCode": "missingSmsCode"})
         wrong = await client.request(
             "DELETE", "/api/v1/auth/me", headers=bearer(token), json={"smsCode": "123456"}
         )
-        assert error(wrong) == (422, {"code": "Invalid verification code"})
+        assert error(wrong) == (422, "auth.verificationCodeInvalid")
 
         sent = await client.post(SEND, json={"phone": PHONE, "type": "verify_identity"})
         assert sent.status_code == 200
@@ -327,7 +311,7 @@ class TestVerifyIdentity:
         response = await client.request(
             "DELETE", "/api/v1/auth/me", headers=bearer(token), json={"smsCode": code}
         )
-        assert response.json() == {"code": 200, "message": "success"}
+        assert response.json() == {"code": 0, "message": "ok", "data": None}
         assert (
             await client.post(PHONE_LOGIN, json={"phone": PHONE, "password": PASSWORD})
         ).status_code == 422
@@ -406,5 +390,5 @@ class TestAliyunProvider:
         async with client_for(app) as client:
             first = await client.post(SEND, json={"phone": PHONE, "type": "register"})
             second = await client.post(SEND, json={"phone": PHONE, "type": "register"})
-        assert error(first) == (422, {"phone": "Failed to send verification code"})
-        assert error(second) == (422, {"phone": "Failed to send verification code"})
+        assert error(first) == (422, {"phone": "sendFailed"})
+        assert error(second) == (422, {"phone": "sendFailed"})

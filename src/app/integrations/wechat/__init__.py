@@ -1,4 +1,4 @@
-"""微信：小程序 code2session、APP OAuth、小程序手机号（nestjs WechatService）。"""
+"""微信：小程序 code2session、APP OAuth、小程序手机号。"""
 
 import asyncio
 import logging
@@ -7,7 +7,7 @@ from typing import Any, Final
 
 import httpx
 
-from app.common.exceptions import HttpError, unprocessable
+from app.common.errors import AppError, ValidationFailed, field_error
 lazy from app.config import WechatSettings
 lazy from app.infrastructure.cache import Cache
 
@@ -50,19 +50,16 @@ class WechatPhoneInfo:
     country_code: str
 
 
-def _wechat_error(field: str, error: str, wechat_error: Any = None) -> HttpError:
-    errors: dict[str, Any] = {field: error}
-    if wechat_error is not None:
-        errors["wechatError"] = wechat_error
-    return unprocessable({"status": 422, "errors": errors})
+def _code_invalid() -> AppError:
+    return AppError("auth.providerCodeInvalid")
 
 
-def _not_configured() -> HttpError:
-    return _wechat_error("wechat", "notConfigured")
+def _not_configured() -> ValidationFailed:
+    return field_error("wechat", "notConfigured")
 
 
-def _request_failed() -> HttpError:
-    return _wechat_error("wechat", "requestFailed")
+def _request_failed() -> ValidationFailed:
+    return field_error("wechat", "requestFailed")
 
 
 class WechatService:
@@ -126,8 +123,8 @@ class WechatService:
             )
             if data.get("errcode"):
                 logger.error("%s login failed: %s - %s", label, data["errcode"], data.get("errmsg"))
-                raise _wechat_error("code", "invalidCode", data.get("errmsg"))
-        except HttpError:
+                raise _code_invalid()
+        except AppError:
             raise
         except Exception:
             logger.exception("%s login request failed", label)
@@ -161,7 +158,7 @@ class WechatService:
                     token["errcode"],
                     token.get("errmsg"),
                 )
-                raise _wechat_error("code", "invalidCode", token.get("errmsg"))
+                raise _code_invalid()
             info = await self._fetch(
                 f"{API_BASE}/sns/userinfo",
                 "WeChat App user info",
@@ -171,8 +168,8 @@ class WechatService:
                 logger.error(
                     "WeChat App user info failed: %s - %s", info["errcode"], info.get("errmsg")
                 )
-                raise _wechat_error("wechat", "userInfoFailed", info.get("errmsg"))
-        except HttpError:
+                raise field_error("wechat", "userInfoFailed")
+        except AppError:
             raise
         except Exception:
             logger.exception("WeChat App login request failed")
@@ -252,7 +249,7 @@ class WechatService:
             phone_info = data.get("phone_info") or {}
             if not phone_info.get("purePhoneNumber"):
                 raise WechatApiError(-1, "phone_info missing")
-        except HttpError:
+        except AppError:
             raise
         except Exception as error:
             logger.error("Get phone number failed: %s", error)
@@ -260,13 +257,7 @@ class WechatService:
                 isinstance(error, WechatApiError)
                 and error.errcode in PHONE_CODE_INVALID_ERROR_CODES
             ):
-                raise unprocessable(
-                    {
-                        "status": 422,
-                        "error": "invalidPhoneCode",
-                        "errors": {"phoneCode": "invalidCode"},
-                    }
-                ) from None
+                raise _code_invalid() from None
             raise _request_failed() from None
         return WechatPhoneInfo(
             pure_phone_number=phone_info["purePhoneNumber"],

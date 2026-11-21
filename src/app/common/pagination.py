@@ -1,66 +1,120 @@
-"""nestjs `pagination` / `infinityPagination` 与对应响应模型（schema 名与 nestjs 一致）。"""
+"""约定 §3 分页与排序。"""
 
-import math
-from decimal import ROUND_HALF_UP, Decimal
-from functools import cache
-from typing import Any
+import base64
+import binascii
+import json
+from dataclasses import dataclass
+from typing import Annotated, Any, Final, Self
+lazy from collections.abc import Callable, Sequence
 
-from pydantic import BaseModel, create_model
+from fastapi import Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
+from app.common.types import INT32_MAX, ApiModel
 
-def _pg_bigint(value: float) -> int:
-    return int(Decimal(repr(value)).to_integral_value(ROUND_HALF_UP))
-
-
-def offset_limit(page: float, limit: float) -> tuple[int, int]:
-    """TypeORM skip / take 原样写入 SQL 后 PostgreSQL 实际使用的 OFFSET、LIMIT（四舍五入）。"""
-    return _pg_bigint((page - 1) * limit), _pg_bigint(limit)
-
-
-def lazy_total(found: int, page: float, limit: float) -> float | None:
-    """TypeORM findAndCount 免计数查询的总数（skip + 本页条数）；须执行计数查询时返回 None。"""
-    skip = (page - 1) * limit
-    if found == limit or (found == 0 and skip > 0):
-        return None
-    return found + (skip if skip > 0 else 0)
+MAX_PAGE_SIZE: Final = 100
+DEFAULT_PAGE_SIZE: Final = 20
 
 
-def pagination[T](data: list[T], total: float, page: float, limit: float) -> dict[str, Any]:
-    return {
-        "list": data,
-        "total": total,
-        "page": page,
-        "limit": limit,
-        "totalPages": math.ceil(total / limit),
-    }
+class PageParams(ApiModel):
+    strict_scalars = False
+
+    page: int = Field(default=1, ge=1, le=INT32_MAX)
+    page_size: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
 
 
-def infinity_pagination[T](data: list[T], limit: int) -> dict[str, Any]:
-    return {"data": data, "hasNextPage": len(data) == limit}
+class Page[T](ApiModel):
+    """接口返回值用具名子类（`class UserPage(Page[User])`），OpenAPI 组件名即类名。"""
+
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+
+    @classmethod
+    def of(cls, items: Sequence[T], total: int, params: PageParams) -> Self:
+        return cls(items=list(items), total=total, page=params.page, page_size=params.page_size)
 
 
-def _list_of(item: type[BaseModel]) -> Any:
-    return list.__class_getitem__(item)
-
-
-@cache
-def pagination_response(item: type[BaseModel]) -> type[BaseModel]:
-    """`PaginationResponse(Item)`：schema 名为 `Pagination{Item}ResponseDto`。"""
-    return create_model(
-        f"Pagination{item.__name__}ResponseDto",
-        list=(_list_of(item), ...),
-        total=(int, ...),
-        page=(int, ...),
-        limit=(int, ...),
-        totalPages=(int, ...),
+def _invalid(field: str, error_type: str, message: str, **ctx: Any) -> RequestValidationError:
+    return RequestValidationError(
+        [{"type": error_type, "loc": ("query", field), "msg": message, "ctx": ctx}]
     )
 
 
-@cache
-def infinity_pagination_response(item: type[BaseModel]) -> type[BaseModel]:
-    """`InfinityPaginationResponse(Item)`：schema 名为 `InfinityPagination{Item}ResponseDto`。"""
-    return create_model(
-        f"InfinityPagination{item.__name__}ResponseDto",
-        data=(_list_of(item), ...),
-        hasNextPage=(bool, ...),
-    )
+def encode_cursor(sort_key: Any, row_id: Any) -> str:
+    raw = json.dumps([sort_key, row_id], default=str, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+class CursorParams(ApiModel):
+    strict_scalars = False
+
+    cursor: str | None = None
+    limit: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
+
+    def decoded(self, key_type: Any = Any, id_type: Any = Any) -> tuple[Any, Any] | None:
+        """`(sort_key, id)` 按给定类型校验；首页为 None，非法游标抛 `query.cursor` 校验错误。"""
+        if self.cursor is None:
+            return None
+        try:
+            padded = self.cursor + "=" * (-len(self.cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        except binascii.Error, ValueError, UnicodeDecodeError:
+            raise _invalid("cursor", "format", "invalid cursor") from None
+        if not isinstance(value, list) or len(value) != 2:
+            raise _invalid("cursor", "format", "invalid cursor")
+        try:
+            key = TypeAdapter(key_type).validate_python(value[0], strict=True)
+            id_ = TypeAdapter(id_type).validate_python(value[1], strict=True)
+        except ValidationError:
+            raise _invalid("cursor", "format", "invalid cursor") from None
+        return key, id_
+
+
+class CursorPage[T](ApiModel):
+    items: list[T]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SortField:
+    field: str
+    descending: bool
+
+
+def parse_sort(value: str, allowed: Sequence[str]) -> list[SortField]:
+    """`field,-field2`；字段不在白名单或重复时抛 `query.sort` 的 enum 错误。"""
+    fields: list[SortField] = []
+    seen: set[str] = set()
+    expected = " or ".join(repr(name) for name in allowed)
+    for raw in value.split(","):
+        item = raw.strip()
+        descending = item.startswith("-")
+        name = item.removeprefix("-")
+        if name not in allowed or name in seen:
+            raise _invalid("sort", "enum", f"Input should be {expected}", expected=expected)
+        seen.add(name)
+        fields.append(SortField(name, descending))
+    return fields
+
+
+def sort_param(
+    allowed: Sequence[str], default: str | None = None
+) -> Callable[..., list[SortField]]:
+    """`sort` 查询参数依赖，用法 `Annotated[list[SortField], Depends(sort_param(...))]`。"""
+    allowed = tuple(allowed)
+    description = "排序字段，逗号分隔，`-` 前缀为降序；可选 " + "、".join(allowed)
+
+    def dependency(
+        sort: Annotated[str | None, Query(description=description)] = default,
+    ) -> list[SortField]:
+        value = sort or default
+        return parse_sort(value, allowed) if value else []
+
+    return dependency

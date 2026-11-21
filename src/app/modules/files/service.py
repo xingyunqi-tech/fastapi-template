@@ -4,7 +4,7 @@ lazy from uuid import UUID
 from sqlalchemy import select
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.exceptions import forbidden, not_found
+from app.common.errors import AppError
 from app.modules.files.models import FileModel
 from app.modules.files.purposes import FileVisibility
 
@@ -62,22 +62,22 @@ class FilesService:
         return file
 
     async def find_accessible(self, file_id: UUID, user_id: int | None) -> FileModel:
-        """不存在时 404 `fileNotFound`，无权访问时 403 `fileNotAccessible`。"""
+        """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
         file = await self.find_by_id(file_id)
         if file is None:
-            raise not_found({"error": "fileNotFound"})
+            raise AppError("common.notFound")
         if not can_access(file, user_id):
-            raise forbidden({"error": "fileNotAccessible"})
+            raise AppError("common.forbidden")
         return file
 
     async def assert_referenceable(
         self, ids: Sequence[UUID], user_id: int | None
     ) -> list[FileModel]:
-        """不存在时 404 `fileNotFound`，无权访问时 403 `fileNotAccessible`。"""
+        """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
         unique = list(dict.fromkeys(ids))
         files = await self.find_by_ids(unique)
         if len(files) != len(unique):
-            raise not_found({"error": "fileNotFound"})
+            raise AppError("common.notFound")
         if any(not can_access(file, user_id) for file in files):
-            raise forbidden({"error": "fileNotAccessible"})
+            raise AppError("common.forbidden")
         return files

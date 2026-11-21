@@ -9,7 +9,7 @@ import anyio
 from python_multipart.exceptions import MultipartParseError
 from python_multipart.multipart import MultipartParser, parse_options_header
 
-from app.common.exceptions import HttpError, bad_request
+from app.common.errors import AppError
 from app.modules.files.purposes import file_too_large_error
 from app.modules.files.storage import LOCAL_FILES_ROOT
 
@@ -31,6 +31,10 @@ _BRACKET_PATH: Final = re.compile(r"[^\[]+(?:\[[^\]]+\])*(?:\[\])?")
 _ARRAY_INDEX: Final = re.compile(r"\[(\d+)\]", re.ASCII)
 _FORM_DATA_ESCAPES: Final = re.compile(r"%0A|%0D|%22", re.IGNORECASE)
 _FORM_DATA_UNESCAPED: Final = {"%0A": "\n", "%0D": "\r", "%22": '"'}
+
+
+def _bad_request(reason: str) -> AppError:
+    return AppError("common.badRequest", data={"reason": reason})
 
 
 class FileSink(Protocol):
@@ -120,11 +124,11 @@ def _basename(file_name: str) -> str:
 def check_field_name(name: str) -> None:
     """@nestjs/platform-express 默认 limits 下 multer 对文本字段名的检查。"""
     if name.count("[") > FIELD_NESTING_DEPTH:
-        raise bad_request(f"Field name nesting too deep - {name}")
+        raise _bad_request(f"Field name nesting too deep - {name}")
     if _BRACKET_PATH.fullmatch(name) and any(
         int(index) > FIELD_ARRAY_INDEX_LIMIT for index in _ARRAY_INDEX.findall(name)
     ):
-        raise bad_request(f"Field name array index too large - {name}")
+        raise _bad_request(f"Field name array index too large - {name}")
 
 
 def is_multipart(content_type: str | None) -> bool:
@@ -192,7 +196,7 @@ class _Receiver:
             return
         raw_name = params.get(b"name")
         if raw_name is None:
-            raise bad_request("Field name missing")
+            raise _bad_request("Field name missing")
         part.name = _decode_param(raw_name)
         raw_filename = params.get(b"filename")
         if raw_filename is None:
@@ -202,7 +206,7 @@ class _Receiver:
         if not filename:
             return
         if part.name != FILE_FIELD or self.file is not None:
-            raise bad_request(f"Unexpected file field - {part.name}")
+            raise _bad_request(f"Unexpected file field - {part.name}")
         self.file_filter(filename)
         received = ReceivedFile(filename, 0, self.open_sink(filename))
         self.open_files.append(received)
@@ -228,7 +232,7 @@ class _Receiver:
         elif event == "on_part_data":
             part.size += len(data)
             if part.kind == "field" and part.size > FIELD_SIZE_LIMIT:
-                raise bad_request(f"Field value too long - {part.name}")
+                raise _bad_request(f"Field value too long - {part.name}")
             if part.kind == "file" and part.received is not None:
                 if part.size > self.max_file_size:
                     raise file_too_large_error()
@@ -270,10 +274,10 @@ class _Preamble:
         return data
 
 
-def _parse_error(error: MultipartParseError) -> HttpError:
+def _parse_error(error: MultipartParseError) -> AppError:
     if "header" in str(error).lower():
-        return bad_request("Multipart: Malformed part header")
-    return bad_request("Multipart: Unexpected end of form")
+        return _bad_request("Multipart: Malformed part header")
+    return _bad_request("Multipart: Unexpected end of form")
 
 
 async def receive_single_file(
@@ -289,10 +293,10 @@ async def receive_single_file(
         return None
     media_type, params = parse_options_header(content_type)
     if media_type != b"multipart/form-data":
-        raise HttpError.build(415, "Unsupported content type")
+        raise AppError("common.unsupportedMediaType")
     boundary = params.get(b"boundary")
     if not boundary:
-        raise bad_request("Multipart: Boundary not found")
+        raise _bad_request("Multipart: Boundary not found")
     events = _Events()
     callbacks = events.callbacks()
     parser = MultipartParser(boundary, cast("MultipartCallbacks", callbacks))
@@ -313,7 +317,7 @@ async def receive_single_file(
                 await receiver.handle(event, data)
             events.queue.clear()
         if not events.ended:
-            raise bad_request("Multipart: Unexpected end of form")
+            raise _bad_request("Multipart: Unexpected end of form")
     except BaseException:
         await receiver.discard()
         raise

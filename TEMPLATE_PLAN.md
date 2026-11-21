@@ -137,11 +137,11 @@ openapi/openapi.json                   # 导出产物，入库
 | §1 路由 | `redirect_slashes=False`；Starlette 的 405 包成 `common.methodNotAllowed` 信封并保留 `Allow` 头 |
 | §2.1 成功 | 响应模型统一 `ApiResponse[T]`；状态码由 `endpoint(status=...)` 按约定 §11 逐接口声明（如 `registerWithEmail` 201、`deleteMe` / `deleteUser` 202）；无返回值时 `data: null` |
 | §2.2 / §2.4 错误 | `AppError(error_key)` 查登记表得到状态与 `code`，登记表只收录约定 §2.4 的条目，单元测试逐条比对；`message` 用 `i18n/<lang>/errors.json` 按 `errorKey` 翻译；401 按约定写 `WWW-Authenticate`；未捕获异常 500 `common.internalError`，响应不含异常信息，上报 Sentry |
-| §2.3 校验 | Pydantic 每个失败字段只取第一条错误（约定允许）。类型映射见下表；`loc` 转 `field`（body 去前缀，query / path 加前缀；整个请求体缺失时 `loc` 为 `('body',)`，输出 `field: "body"`、`rule: required`）；字符串长度为 Python `len`，即按 Unicode 码点计数；`json_invalid` → 400 `common.malformedJson`；非 JSON / multipart 的 `Content-Type` → 415；`extra="ignore"`；body 上限由 ASGI 中间件按 `BODY_LIMIT` 计数，超出 413 `common.payloadTooLarge`，`endpoint(upload=True)` 的路由豁免（见 §9「文件」） |
-| §3 分页 | `PageParams`、`CursorParams`（游标为 base64url 编码的 `(sort_key, id)`）、`SortParam(allowed=...)`；非法 `sort` / `cursor` 抛 `RequestValidationError`，`field` 为 `query.sort` / `query.cursor`；`Page[T]`、`CursorPage[T]` 响应模型 |
+| §2.3 校验 | Pydantic 每个失败字段只取第一条错误（约定允许）。类型映射见下表；`loc` 转 `field`（body 去前缀，query / path 加前缀；整个请求体缺失时 `loc` 为 `('body',)`，输出 `field: "body"`、`rule: required`）；字符串长度为 Python `len`，即按 Unicode 码点计数；`json_invalid`、非 UTF-8 与 `NaN` / `Infinity` → 400 `common.malformedJson`（路由内先按 UTF-8 + 严格 JSON 解析一次请求体）；非 JSON / multipart 的 `Content-Type` → 415；`extra="ignore"`；`ApiModel` 对 `int` / `float` / `bool` 不做类型转换（`"18"`、`true` 传给 int 为 `type`），查询参数模型关闭；联合类型的分支标签从 `loc` 中去掉；`gt` / `lt` 对整数折算为 `min` / `max` 参数；时间输入须带时区偏移；数字只认 ASCII；路径整数 id 用 `SerialId`（1–2³¹−1）；方法不符时 405 先于 413；body 上限由 `ApiRoute.handle` 包装 `receive` 按 `BODY_LIMIT` 计数（先比对 `Content-Length`），超出 413 `common.payloadTooLarge`，`endpoint(upload=True)` 的路由豁免（见 §9「文件」） |
+| §3 分页 | `PageParams`、`CursorParams`（游标为 base64url 编码的 `(sort_key, id)`）、`sort_param(allowed, default)` 依赖工厂，用法 `Annotated[list[SortField], Depends(sort_param(...))]`；非法 `sort` / `cursor` 抛 `RequestValidationError`，`field` 为 `query.sort` / `query.cursor`；`Page[T]`、`CursorPage[T]` 响应模型 |
 | §4 数据类型 | 主键 `uuid.uuid7()`（应用侧）+ `DEFAULT uuidv7()`（库侧）；`UtcDatetime` 输出毫秒 `Z`、输入接受任意偏移；列一律 `timestamptz`；`Email` 类型去空白转小写；`Phone` 类型规范化为 E.164；枚举 `StrEnum`；金额 `int` |
 | §5 认证 | 见 §7 |
-| §6 请求头 | Request ID、`Accept-Language`、CORS（不发 `Allow-Credentials`）在 `common/middleware.py`；`endpoint(idempotent=True)` 开启幂等键：作用域与行为按约定 §6，Redis 键 `{service}:idem:{scope_hash}`，值含请求体 SHA-256、状态码与响应体，处理中占位用 `SET NX`；只保存 2xx / 4xx，5xx 删除占位 |
+| §6 请求头 | Request ID、`Accept-Language`、CORS（不发 `Allow-Credentials`）在 `common/middleware.py`；`endpoint(idempotent=True)` 开启幂等键：作用域与行为按约定 §6，Redis 键 `{service}:idem:{scope_hash}`，值含请求体 SHA-256、状态码与响应体，处理中占位用 `SET NX`，占位 TTL 5 分钟，请求被取消时删除；只保存 2xx / 4xx，5xx 删除占位；回放时响应体 `requestId` 改为本次请求的值（约定 §2.2 优先），其余字节与首次相同 |
 | §7 限流 | 见 §9「限流」 |
 | §8 日志与可观测性 | 见 §9「日志」「指标」 |
 | §9 环境变量 | 见 §10 |
@@ -393,9 +393,13 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `src/app/common/{errors,handlers,routing,middleware,pagination,openapi,docs,context}.py`、`common/i18n/` | 按 §6；新增 `envelope.py`、`validation.py`、`types.py`、`idempotency.py`；i18n 改为 errorKey 与 rule 键 |
+| `src/app/common/{errors,handlers,routing,middleware,pagination,openapi,docs,context}.py`、`common/i18n/` | 按 §6；新增 `envelope.py`、`validation.py`、`types.py`、`idempotency.py`；i18n 改为 errorKey 与 rule 键；旧包 `common/validation/` 与新模块 `common/validation.py` 同名，在迁移开始时先删除 |
+| `src/app/core/users/router.py` | `getUsers` 改名 `listUsers`，查询参数改为 `page`、`pageSize`、`sort`、`roleId`，响应为 `Page`；查不到用户时 404 `user.notFound` |
+| `src/app/infrastructure/database/errors.py`、`core/auth/service.py` | 唯一约束冲突统一为 409 `user.emailTaken` / `user.phoneTaken` 留到 B4：B2 中服务层预检仍为 422 `emailAlreadyExists` / `phoneAlreadyExists`，并发写入命中约束时为 409 |
+| `src/app/infrastructure/health/router.py` | 不包信封、不进入 OpenAPI；失败 503 只返回 `{"status":"error"}`，明细写日志；路径调整在 B6 |
+| `src/app/cli/openapi.py` | `app openapi export [--check]`，导出时固定标题与文件驱动，结果不随本地环境变化 |
 | `src/app/core/users/{repository,schemas,service,router}.py`、`core/auth/{router,service}.py`、`modules/files/{router,schemas,service,uploads,purposes,send}.py`、`infrastructure/{throttler/guard,metrics/guard,audit/__init__,queue/mail,health/router}.py`、`infrastructure/logging/`、`integrations/*`、`cli/templates/resource/*`、`tests/integration/test_background_jobs.py` | 全部改用 `AppError`、新 routing、`ApiResponse` 与 Pydantic 模型（路径与业务逻辑暂不变），之后才删除旧的 common 模块与 `contract/` |
-| `src/app/config/app.py` | `SWAGGER_ENABLED` → `DOCS_ENABLED`；`APP_FALLBACK_LANGUAGE`（默认 en）→ `APP_DEFAULT_LOCALE`（默认 zh）；`FRONTEND_DOMAIN` → `CORS_ORIGINS`；删除 `API_PREFIX`、`OPENAPI_BASELINE_PATH`；新增 `BODY_LIMIT` |
+| `src/app/config/app.py` | `SWAGGER_ENABLED` → `DOCS_ENABLED`；`APP_FALLBACK_LANGUAGE`（默认 en）→ `APP_DEFAULT_LOCALE`（默认 zh）；`FRONTEND_DOMAIN` → `CORS_ORIGINS`；删除 `API_PREFIX`、`OPENAPI_BASELINE_PATH`；新增 `BODY_LIMIT`；`FRONTEND_DOMAIN` 的邮件链接用途改由 `APP_FRONTEND_URL` 承担（自 B4 提前） |
 | `pyproject.toml` | ruff `per-file-ignores` 与 `runtime-evaluated-base-classes` 去掉 `common/params.py`、`app.contract.schemas`；markers 增加 `conventions`；dev 依赖增加 `polyfactory` |
 | `Makefile`、`.pre-commit-config.yaml` | `lint` 去掉 `gen_schemas.py --check`，新增 `openapi`、`test-conventions`；pre-commit `exclude` 去掉 `openapi/` |
 
@@ -417,7 +421,7 @@ REDIS_URL=redis://redis:6379/0
 | `src/app/integrations/mail/` | 迁到 `infrastructure/mail/`，模板 `verify-email`、`reset-password`；单元测试断言两个模板中英文的主题、正文与链接 |
 | `src/app/infrastructure/throttler/guard.py`、`infrastructure/audit/__init__.py`、`infrastructure/logging/middleware.py`、`modules/files/{router,purposes}.py`、`infrastructure/queue/{mail,worker}.py`、`common/context.py`、`factory.py` | 导入改为 `identity/`、`security/`、`infrastructure/mail/` |
 | `src/app/config/auth.py` | `AUTH_JWT_SECRET`、`AUTH_REFRESH_SECRET`、`AUTH_FORGOT_SECRET`、`AUTH_CONFIRM_EMAIL_SECRET`、`AUTH_*_EXPIRES_IN`、`PASSWORD_HASHER` → 约定 §9 的 `AUTH_*` 与 `PASSWORD_HASH_CONCURRENCY` |
-| `src/app/config/mail.py`、`config/app.py` | `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` → `MAIL_FROM`；`MAIL_SECURE` / `MAIL_IGNORE_TLS` / `MAIL_REQUIRE_TLS` → `MAIL_TLS`；新增 `APP_FRONTEND_URL` |
+| `src/app/config/mail.py`、`config/app.py` | `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` → `MAIL_FROM`；`MAIL_SECURE` / `MAIL_IGNORE_TLS` / `MAIL_REQUIRE_TLS` → `MAIL_TLS`（`APP_FRONTEND_URL` 已在 B2 引入） |
 | `src/app/cli/{__init__,seed}.py`、`seed_data/seed.json` | `keys generate`、`users cleanup`；seed 只建管理员账号（角色为代码常量） |
 | `pyproject.toml` | `pwdlib[argon2,bcrypt]` → `pwdlib[argon2]`；dev 依赖删 `aiosmtpd`（集成测试改用 Mailpit 容器） |
 | `.gitleaks.toml` | 去掉 MD5 固定值白名单，改为 Ed25519 测试密钥白名单 |

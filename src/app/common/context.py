@@ -9,11 +9,11 @@ lazy from redis.asyncio import Redis
 
 from app.common.security import Passwords
 from app.config import Settings
-from app.core.users.serializers import FileUrls
 from app.infrastructure.cache import Cache
 from app.infrastructure.database.session import Database
 from app.infrastructure.redis import LockService
 from app.integrations.mail import Mailer
+from app.modules.files.urls import FileUrls
 lazy from app.infrastructure.queue import TaskQueue
 
 

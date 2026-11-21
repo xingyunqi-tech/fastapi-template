@@ -1,27 +1,26 @@
-"""{{ class_name }} 的 CRUD 接口（不在 nestjs 基线中，不进入 OpenAPI 文档）。"""
+"""{{ class_name }} 的 CRUD 接口。"""
 
-from typing import Annotated, Any, Final
+from typing import Annotated
 
-from app.common.model_params import ModelBody, ModelQuery
-from app.common.pagination import pagination
-from app.common.params import IdParam
+from fastapi import Path, Query
+
+from app.common.pagination import PageParams
 from app.common.routing import ApiRouter, Auth
+from app.common.types import SerialId
 from app.infrastructure.database.session import DbSession
 from app.modules.{{ package }}.repository import {{ class_name }}Repository
 from app.modules.{{ package }}.schemas import (
-    Create{{ class_name }}Dto,
-    FindAll{{ class_plural }}Dto,
+    Create{{ class_name }}Request,
     {{ class_name }},
-    Pagination{{ class_name }}ResponseDto,
-    Update{{ class_name }}Dto,
-    serialize_{{ snake }},
+    {{ class_name }}Page,
+    Update{{ class_name }}Request,
 )
 from app.modules.{{ package }}.service import {{ class_plural }}Service
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-MAX_LIMIT: Final = 50
-
 router = ApiRouter(prefix="/v1/{{ url }}", tags=["{{ tag }}"])
+
+EntityId = Annotated[SerialId, Path()]
 
 
 def build_service(session: AsyncSession) -> {{ class_plural }}Service:
@@ -33,34 +32,27 @@ def build_service(session: AsyncSession) -> {{ class_plural }}Service:
     "",
     operation_id="create{{ class_name }}",
     auth=Auth.JWT,
-    response_model={{ class_name }},
+    status=201,
     summary="Create {{ class_name }}",
-    include_in_schema=False,
 )
 async def create_{{ snake }}(
-    body: Annotated[Create{{ class_name }}Dto, ModelBody(Create{{ class_name }}Dto)],
-    session: DbSession,
-) -> dict[str, Any]:
-    return serialize_{{ snake }}(await build_service(session).create(body))
+    body: Create{{ class_name }}Request, session: DbSession
+) -> {{ class_name }}:
+    return {{ class_name }}.model_validate(await build_service(session).create(body))
 
 
 @router.endpoint(
     "GET",
     "",
-    operation_id="get{{ class_plural }}",
+    operation_id="list{{ class_plural }}",
     auth=Auth.JWT,
-    response_model=Pagination{{ class_name }}ResponseDto,
     summary="List {{ class_plural }}",
-    include_in_schema=False,
 )
-async def get_{{ package }}(
-    query: Annotated[FindAll{{ class_plural }}Dto, ModelQuery(FindAll{{ class_plural }}Dto)],
-    session: DbSession,
-) -> dict[str, Any]:
-    limit = min(query.limit, MAX_LIMIT)
-    data, total = await build_service(session).find_page(page=query.page, limit=limit)
-    items = [serialize_{{ snake }}(entity) for entity in data]
-    return pagination(items, total, query.page, limit)
+async def list_{{ package }}(
+    page: Annotated[PageParams, Query()], session: DbSession
+) -> {{ class_name }}Page:
+    data, total = await build_service(session).find_page(page=page.page, limit=page.page_size)
+    return {{ class_name }}Page.of([{{ class_name }}.model_validate(e) for e in data], total, page)
 
 
 @router.endpoint(
@@ -68,12 +60,10 @@ async def get_{{ package }}(
     "/{id}",
     operation_id="get{{ class_name }}",
     auth=Auth.JWT,
-    response_model={{ class_name }},
     summary="Get {{ class_name }}",
-    include_in_schema=False,
 )
-async def get_{{ snake }}(id: IdParam, session: DbSession) -> dict[str, Any]:
-    return serialize_{{ snake }}(await build_service(session).find_one(id))
+async def get_{{ snake }}(id: EntityId, session: DbSession) -> {{ class_name }}:
+    return {{ class_name }}.model_validate(await build_service(session).find_one(id))
 
 
 @router.endpoint(
@@ -81,16 +71,12 @@ async def get_{{ snake }}(id: IdParam, session: DbSession) -> dict[str, Any]:
     "/{id}",
     operation_id="update{{ class_name }}",
     auth=Auth.JWT,
-    response_model={{ class_name }},
     summary="Update {{ class_name }}",
-    include_in_schema=False,
 )
 async def update_{{ snake }}(
-    id: IdParam,
-    body: Annotated[Update{{ class_name }}Dto, ModelBody(Update{{ class_name }}Dto)],
-    session: DbSession,
-) -> dict[str, Any]:
-    return serialize_{{ snake }}(await build_service(session).update(id, body))
+    id: EntityId, body: Update{{ class_name }}Request, session: DbSession
+) -> {{ class_name }}:
+    return {{ class_name }}.model_validate(await build_service(session).update(id, body))
 
 
 @router.endpoint(
@@ -99,7 +85,6 @@ async def update_{{ snake }}(
     operation_id="delete{{ class_name }}",
     auth=Auth.JWT,
     summary="Delete {{ class_name }}",
-    include_in_schema=False,
 )
-async def delete_{{ snake }}(id: IdParam, session: DbSession) -> None:
+async def delete_{{ snake }}(id: EntityId, session: DbSession) -> None:
     await build_service(session).remove(id)

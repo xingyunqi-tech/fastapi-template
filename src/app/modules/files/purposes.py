@@ -1,10 +1,10 @@
-"""上传用途规则（nestjs file-purposes.ts）。"""
+"""上传用途规则。"""
 
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from app.common.exceptions import HttpError, unprocessable
+from app.common.errors import AppError, ValidationFailed, field_error
 from app.core.permissions.service import Permission
 
 
@@ -91,17 +91,17 @@ def mime_type_for(purpose: FilePurpose, file_name: str) -> str | None:
     return FILE_PURPOSE_RULES[purpose].mime_types.get(file_extension(file_name))
 
 
-def invalid_purpose_error() -> HttpError:
-    return unprocessable({"status": 422, "errors": {"purpose": "invalidFilePurpose"}})
+def invalid_purpose_error() -> ValidationFailed:
+    return field_error("query.purpose", "enum", values=[purpose.value for purpose in FilePurpose])
 
 
-def file_type_not_allowed_error() -> HttpError:
-    return unprocessable({"status": 422, "errors": {"file": "cantUploadFileType"}})
+def file_type_not_allowed_error() -> AppError:
+    return AppError("file.typeNotAllowed")
 
 
-def select_file_error() -> HttpError:
-    return unprocessable({"status": 422, "errors": {"file": "selectFile"}})
+def select_file_error() -> ValidationFailed:
+    return field_error("file", "required")
 
 
-def file_too_large_error() -> HttpError:
-    return HttpError.build(413, {"status": 413, "errors": {"file": "fileTooLarge"}})
+def file_too_large_error() -> AppError:
+    return AppError("file.tooLarge")

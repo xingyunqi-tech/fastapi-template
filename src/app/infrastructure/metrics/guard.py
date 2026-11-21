@@ -1,4 +1,4 @@
-"""nestjs MonitoringTokenGuard：配置 METRICS_TOKEN 时校验 Bearer 令牌，未配置时仅非生产放行。"""
+"""监控令牌：配置 METRICS_TOKEN 时校验 Bearer 令牌，未配置时仅非生产放行。"""
 
 import hmac
 import re
@@ -6,11 +6,10 @@ from typing import Final
 
 lazy from fastapi import Request
 
-from app.common.exceptions import forbidden
+from app.common.errors import AppError
 from app.common.routing import AUTH_DEPENDENCIES, Auth
 lazy from app.common.context import AppContext
 
-FORBIDDEN_MESSAGE: Final = "Forbidden resource"
 _WHITESPACE: Final = re.compile(r"\s+")
 
 
@@ -30,7 +29,7 @@ async def monitoring_token(request: Request) -> None:
     else:
         allowed = token_matches(request.headers.get("authorization"), token.get_secret_value())
     if not allowed:
-        raise forbidden(FORBIDDEN_MESSAGE)
+        raise AppError("common.forbidden")
 
 
 AUTH_DEPENDENCIES[Auth.MONITORING] = monitoring_token

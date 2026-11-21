@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("app.files")
 
 LOCAL_FILES_ROOT: Final = Path("files")
+API_PREFIX: Final = "api"
 SIGNED_URL_EXPIRES_IN: Final = 3600
 
 

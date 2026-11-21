@@ -5,7 +5,6 @@ lazy import httpx2 as httpx
 
 from tests.e2e.conftest import (
     METRICS_TOKEN,
-    ROOT,
     SEED_USER,
     bearer,
     confirm_hash,
@@ -132,8 +131,8 @@ def test_metrics_include_api_and_worker_samples(api: httpx.Client, mailpit: http
     assert WORKER_MAIL_SAMPLE.search(response.text), response.text
 
 
-def test_docs_json_is_baseline_bytes(api: httpx.Client) -> None:
-    response = api.get("/docs-json")
+def test_openapi_json_is_served(api: httpx.Client) -> None:
+    response = api.get("/openapi.json")
 
     assert response.status_code == 200
-    assert response.content == (ROOT / "openapi" / "nestjs-baseline.json").read_bytes()
+    assert response.json()["openapi"] == "3.1.0"

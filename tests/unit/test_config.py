@@ -1,27 +1,41 @@
-from pathlib import Path
+lazy from pathlib import Path
 
 import pytest
 
 from app.config import Environment, Settings, SettingsError
 from tests.conftest import use_production
 
-REPO_BASELINE = Path(__file__).resolve().parents[2] / "openapi" / "nestjs-baseline.json"
 
-
-def test_defaults_match_nestjs() -> None:
+def test_app_defaults() -> None:
     app = Settings.load().app
 
     assert app.env is Environment.DEVELOPMENT
     assert app.port == 3000
-    assert app.api_prefix == "api"
     assert app.name == "app"
-    assert app.frontend_domain is None
+    assert app.frontend_url is None
+    assert app.cors_origins == []
     assert app.backend_domain == "http://localhost"
-    assert app.fallback_language == "en"
+    assert app.default_locale == "zh"
     assert app.trust_proxy == 0
-    assert app.swagger_enabled is True
+    assert app.docs_enabled is True
+    assert int(app.body_limit) == 1024 * 1024
     assert app.web_concurrency == 1
-    assert app.openapi_baseline_path == REPO_BASELINE
+
+
+def test_cors_origins_and_body_limit_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", "https://a.example, https://b.example,")
+    monkeypatch.setenv("BODY_LIMIT", "2MiB")
+    app = Settings.load().app
+
+    assert app.cors_origins == ["https://a.example", "https://b.example"]
+    assert int(app.body_limit) == 2 * 1024 * 1024
+
+
+def test_rejects_unsupported_default_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_DEFAULT_LOCALE", "fr")
+
+    with pytest.raises(SettingsError, match="APP_DEFAULT_LOCALE"):
+        Settings.load()
 
 
 def test_port_falls_back_to_port_variable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -43,7 +57,7 @@ def test_port_falls_back_to_port_variable(monkeypatch: pytest.MonkeyPatch) -> No
         ("development", "", True),
     ],
 )
-def test_swagger_enabled(
+def test_docs_enabled(
     monkeypatch: pytest.MonkeyPatch, env: str, flag: str | None, expected: bool
 ) -> None:
     if env == "production":
@@ -51,16 +65,16 @@ def test_swagger_enabled(
     else:
         monkeypatch.setenv("APP_ENV", env)
     if flag is not None:
-        monkeypatch.setenv("SWAGGER_ENABLED", flag)
+        monkeypatch.setenv("DOCS_ENABLED", flag)
 
-    assert Settings.load().app.swagger_enabled is expected
+    assert Settings.load().app.docs_enabled is expected
 
 
 @pytest.mark.parametrize("flag", ["1", "TRUE", "yes", "False"])
 def test_rejects_non_boolean_flag(monkeypatch: pytest.MonkeyPatch, flag: str) -> None:
-    monkeypatch.setenv("SWAGGER_ENABLED", flag)
+    monkeypatch.setenv("DOCS_ENABLED", flag)
 
-    with pytest.raises(SettingsError, match="SWAGGER_ENABLED"):
+    with pytest.raises(SettingsError, match="DOCS_ENABLED"):
         Settings.load()
 
 

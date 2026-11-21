@@ -27,7 +27,7 @@ ENQUEUE_TIMEOUT_S: Final = 2.0
 async def deliver_mail(job: dict[str, Any], settings: Settings) -> None:
     """渲染模板并经 SMTP 发送，失败按 DEFAULT_RETRY 重试。"""
     message = MailMessage(job["template"], job["to"], job.get("data") or {})
-    composer = MailComposer(settings.app, get_i18n(settings.app.fallback_language))
+    composer = MailComposer(settings.app, get_i18n(settings.app.default_locale))
     transport = SmtpTransport(settings.mail)
 
     async def deliver() -> None:

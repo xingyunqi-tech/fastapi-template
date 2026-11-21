@@ -14,6 +14,7 @@ uv run --frozen app --help
 | `app scheduler` | 启动 Taskiq scheduler，按 cron 投递定时任务 | – |
 | `app permissions clear-cache` | 删除角色权限缓存 `permissions:v2:role-map` | – |
 | `app generate resource <Name>` | 生成 CRUD 模块骨架 | `make generate-resource name=<Name>` |
+| `app openapi export [--check]` | 按代码导出 `openapi/openapi.json`；`--check` 不一致时退出码 1 | `make openapi` |
 
 `python -m app` 启动 API（Granian），对应 `make serve`。
 
@@ -62,7 +63,6 @@ uv run --frozen app generate resource product-category --plural product-categori
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/gen_schemas.py` | 由基线生成 `src/app/contract/schemas.py`；`--check` 比较（`make lint` 执行） |
 | `scripts/gen_nest_handlers.py` | 生成 operationId → nestjs `Controller-handler` 映射（限流键） |
 | `scripts/check_commit_msg.py` | commit-msg 钩子 |
 | `scripts/audit_severity.py` | 过滤 pip-audit 结果（`make security`） |

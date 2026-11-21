@@ -11,7 +11,7 @@ from starlette.datastructures import MutableHeaders
 lazy from fastapi import Request
 
 from app.common.client import client_ip
-from app.common.exceptions import TooManyRequests
+from app.common.errors import AppError
 from app.common.routing import ApiRoute, Auth, register_throttle_guard
 from app.common.security import InvalidTokenError, Jwt, TokenExpiredError
 from app.config import FileDriver
@@ -91,7 +91,9 @@ async def throttle_guard(request: Request) -> None:
     key = throttle_key(route, tracker, context.settings.file.driver)
     decision = await storage.consume(context.redis, key, ttl_ms, limit)
     if not decision.allowed:
-        raise TooManyRequests({"Retry-After": str(decision.retry_after_seconds)})
+        raise AppError(
+            "common.tooManyRequests", headers={"Retry-After": str(decision.retry_after_seconds)}
+        )
     pending = request.scope.get("state", {}).get(HEADERS_STATE_KEY)
     if pending is not None:
         pending["X-RateLimit-Limit"] = str(limit)

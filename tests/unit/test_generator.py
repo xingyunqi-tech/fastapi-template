@@ -174,9 +174,11 @@ def test_generated_module_passes_lint_types_and_registers_routes(tmp_path: Path)
             for method in route.methods
         )
         print("routes:", routes)
-        assert not any("product" in path for path in build_openapi(app)["paths"])
+        paths = build_openapi(app)["paths"]
+        assert paths["/api/v1/product-categories"]["get"]["operationId"] == "listProductCategories"
         response = TestClient(app).get("/api/v1/product-categories")
-        assert response.json() == {"code": 401, "message": "Unauthorized", "data": None}
+        assert response.status_code == 401
+        assert response.json()["errorKey"] == "common.unauthorized"
         """
     )
     output = _run(

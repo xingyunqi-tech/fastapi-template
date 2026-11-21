@@ -12,7 +12,7 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from app.common.exceptions import HttpError, unprocessable
+from app.common.errors import AppError, ValidationFailed, field_error
 from app.config.alipay import AlipaySignType
 lazy from app.config import AlipaySettings
 
@@ -24,8 +24,8 @@ TIMEOUT_S: Final = 30.0
 BEIJING: Final = timedelta(hours=8)
 
 
-def _error(field: str, error: str) -> HttpError:
-    return unprocessable({"status": 422, "errors": {field: error}})
+def _error(field: str, error: str) -> ValidationFailed:
+    return field_error(field, error)
 
 
 def to_beijing_time(moment: datetime) -> str:
@@ -108,13 +108,7 @@ class AlipayService:
                 "Alipay oauth token failed: %s %s", error_response.get("code"), sub_code or ""
             )
             if isinstance(sub_code, str) and sub_code.startswith("isv.code-"):
-                raise unprocessable(
-                    {
-                        "status": 422,
-                        "error": "invalidAlipayAuthCode",
-                        "errors": {"authCode": "invalidCode"},
-                    }
-                )
+                raise AppError("auth.providerCodeInvalid")
             raise _error("alipay", "requestFailed")
 
         token = response.get("alipay_system_oauth_token_response") or {}

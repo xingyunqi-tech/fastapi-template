@@ -165,7 +165,7 @@ def resource(
         "\n后续步骤：\n"
         f"  1. src/app/factory.py：from app.modules.{names.package} import router as "
         f"{names.package}，并在 create_app 中 include_routes(app, {names.package}.router, "
-        "api_prefix)\n"
+        "API_PREFIX)\n"
         f"  2. src/app/infrastructure/database/models.py：导入 {names.class_name}Model\n"
         f'  3. uv run alembic revision --autogenerate -m "add {names.table}"，'
         "检查生成的迁移后 make migrate\n"
