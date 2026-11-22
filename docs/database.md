@@ -1,47 +1,64 @@
 # 数据库
 
-PostgreSQL 18（与 nestjs 共库时为 17.11）、SQLAlchemy 2.1 async + asyncpg、Alembic。
+PostgreSQL 18、SQLAlchemy 2.1 async + asyncpg、Alembic。
 
 ## 连接配置
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | 空 | 设置时优先，驱动统一替换为 `postgresql+asyncpg` |
-| `DATABASE_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `NAME` | `localhost` / `5432` / `root` / `secret` / `api` | 未设置 `DATABASE_URL` 时使用 |
-| `DATABASE_MAX_CONNECTIONS` | `80` | 全部 API 进程合计上限，每进程 `N // WEB_CONCURRENCY`：`pool_size = min(该值, 20)`，其余为 overflow |
-| `WORKER_DATABASE_MAX_CONNECTIONS` | `10` | worker、scheduler 每个进程的连接上限，不按 `WEB_CONCURRENCY` 均分 |
-| `DATABASE_CONNECTION_TIMEOUT_MS` | `10000` | 从连接池获取连接的超时（毫秒），包括新建连接；须为正整数，超时后该次请求返回 500 |
-| `DATABASE_SSL_ENABLED` / `DATABASE_REJECT_UNAUTHORIZED` / `DATABASE_CA` / `DATABASE_KEY` / `DATABASE_CERT` | `false` / `true` / 空 | 语义同 node-postgres ssl 选项，CA / KEY / CERT 为 PEM 文本 |
-| `DB_SCHEMA_OWNER` | `alembic` | `external` 表示表结构由 nestjs 迁移管理，见下文 |
+| `DATABASE_URL` | 必填 | libpq URI，如 `postgresql://user:pass@host:5432/db?sslmode=disable`；转换为 `postgresql+asyncpg` 驱动 URL |
+| `DATABASE_SCHEMA` | `public` | 本服务独占的 schema，匹配 `[a-z_][a-z0-9_]{0,62}`，不能为 `pg_` 前缀或 `information_schema`；连接的 `search_path` 设为该值，迁移时不存在则创建 |
+| `DATABASE_POOL_SIZE` | `10` | 每进程连接池大小，无溢出连接 |
+| `DATABASE_POOL_TIMEOUT` | `10s` | 获取连接与新建连接的超时，须大于 0，格式同约定 §9 时长（`500ms`、`10s`、`1m30s`）；超时后该次请求返回 500 |
 
-连接会话时区固定为 UTC。
+`DATABASE_URL` 支持的查询参数：
+
+| 参数 | 说明 |
+|---|---|
+| `sslmode` | `disable` / `allow` / `prefer`（默认）/ `require` / `verify-ca` / `verify-full` |
+| `sslrootcert` / `sslcert` / `sslkey` | 证书文件路径，须存在；只能与 `require` / `verify-ca` / `verify-full` 同用，`sslkey` 须与 `sslcert` 同用 |
+| `application_name` | 写入连接的 `application_name` |
+
+证书校验：
+
+| `sslmode` | 行为 |
+|---|---|
+| `require` | 无 `sslrootcert` 时不校验证书；有则校验证书链 |
+| `verify-ca` | 须给出 `sslrootcert`，校验证书链 |
+| `verify-full` | 须给出 `sslrootcert`，校验证书链与主机名 |
+
+其它参数、重复参数与多主机在启动时报错。连接会话时区固定为 UTC。
 
 各进程的连接上限：
 
 | 进程 | 上限 |
 |---|---|
-| API（Granian 各 worker 合计） | `DATABASE_MAX_CONNECTIONS` |
-| worker、scheduler | 各 `WORKER_DATABASE_MAX_CONNECTIONS`；`app worker --workers N` 时为 N 倍 |
-| `app migrate`、`app seed`、`app permissions clear-cache` | 1，部署时一次性运行 |
+| API（每个 Granian worker） | `DATABASE_POOL_SIZE` |
+| worker、scheduler（每个进程） | `DATABASE_POOL_SIZE` |
+| `app seed`、`app permissions clear-cache` | 1，部署时一次性运行 |
 
-部署时须满足 API + worker + scheduler ≤ Postgres `max_connections`，默认值为 80 + 10 + 10 ≤ 100。
+部署时须满足各进程连接池之和 ≤ Postgres `max_connections`。
 
 ## 模型
 
-- 表名、列名、约束名、索引与 nestjs 一致；列名 camelCase，ORM 属性 snake_case：`first_name: Mapped[str] = mapped_column("firstName", ...)`
-- 时间列为 `timestamp without time zone`，约定存 UTC（`base.timestamp()`、`created_at()`、`updated_at()`）；API 输出为 `toISOString` 格式（毫秒、`Z`）
-- 软删除列 `deletedAt`；已删除用户的唯一字段由部分索引释放
-- uuid 主键（`file`）默认值 `uuid_generate_v4()`，初始迁移创建 `uuid-ossp` 扩展
-- 新约束遵循 `Base.metadata` 的 `naming_convention`（`IDX_` / `UQ_` / `CK_` / `FK_` / `PK_` 前缀）
+- 列名与约束名 snake_case；约束与索引由 `Base.metadata` 的 `naming_convention` 命名：`pk_<表>`、`uq_<表>_<列>`、`ix_<表>_<列>`、`fk_<表>_<列>_<被引用表>`、`ck_<表>_<名>`
+- 主键为 UUIDv7（`base.uuid_pk()`）：应用侧 `uuid.uuid7()` 生成，库侧默认 `uuidv7()`；`role`、`status`、`permission` 为代码常量表，主键保持整数 / 字符串
+- 时间列为 `timestamptz`（`base.timestamp()`、`created_at()`、`updated_at()`）；API 输出为 `toISOString` 格式（毫秒、`Z`）
+- 软删除列 `deleted_at`；注销用户时清空其唯一字段
+- 每个模型声明 `__branch__`（`Branch.PLATFORM` / `IDENTITY` / `MODULES`），写入表的 `info["branch"]`，未声明时导入失败
 - 全部模型在 `infrastructure/database/models.py` 汇总导入，Alembic 与测试从这里取 metadata
 
-表：`user`、`role`、`status`、`session`、`permission`、`role_permission`、`file`、`audit_logs`、`account_cleanup`。
+| 分支 | 表 |
+|---|---|
+| `platform` | `file`、`audit_logs` |
+| `identity` | `user`、`role`、`status`、`session`、`permission`、`role_permission`、`account_cleanup` |
+| `modules` | 生成器产出的业务模块 |
 
 ## 事务
 
 | 用法 | 行为 |
 |---|---|
-| 路由参数 `session: DbSession` | 每请求一个 `AsyncSession`；正常返回提交，`HttpError` 提交已写入的数据后抛出，其它异常回滚 |
+| 路由参数 `session: DbSession` | 每请求一个 `AsyncSession`；正常返回提交，`AppError` 提交已写入的数据后抛出，其它异常回滚 |
 | `after_commit(session, callback)` | 登记提交成功后执行的副作用（发邮件、投递任务）；失败只记日志 |
 | `context.database.transaction()` | 路由外（CLI、worker、独立短事务）手动开启事务，语义同上 |
 | `Database.bound_to(connection)` | 测试用：绑定到外层连接，提交只释放 SAVEPOINT |
@@ -49,26 +66,20 @@ PostgreSQL 18（与 nestjs 共库时为 17.11）、SQLAlchemy 2.1 async + asyncp
 ## 迁移
 
 ```bash
-make migrate                                          # = uv run --frozen app migrate（alembic upgrade head）
-uv run --frozen alembic revision --autogenerate -m "add product"
-uv run --frozen alembic check                         # 模型与迁移是否一致
+make migrate                     # = uv run --frozen app migrate（alembic upgrade heads）
+uv run --frozen alembic revision --autogenerate -m "add product" --head modules@head
+uv run --frozen alembic check    # 全部分支已升级时，模型与迁移是否一致
+uv run --frozen alembic upgrade platform@head
 uv run --frozen alembic downgrade base
 ```
 
-- 迁移文件在 `migrations/versions/`，命名 `<rev>_<slug>.py`；当前为 `0001_initial_schema.py`、`0002_drop_business_tables.py`
-- `migrations/env.py` 使用 async 引擎，开启 `compare_type`、`compare_server_default`，连接参数取自 `DatabaseSettings`
-- 自动生成的迁移需人工检查后再执行；已合并的迁移不修改，变更通过新迁移完成
+- 三个 Alembic 分支，目录 `migrations/versions/{platform,identity,modules}/`：`platform_0001` 为基础；`identity_0001`、`modules_0001` 声明 `depends_on` `platform_0001`（`user.photo_id` 引用 `file`），`modules_0001` 不含操作
+- `alembic.ini` 的 `version_locations` 按行列出三个目录（`path_separator = newline`），`recursive_version_locations = true`
+- `migrations/env.py`：`DATABASE_SCHEMA` 不存在时先创建（已存在时迁移账号无需库级 CREATE 权限），版本表在该 schema 中；`--sql` 离线输出以 `CREATE SCHEMA IF NOT EXISTS` 与 `SET search_path` 开头；只比较 ORM 中的表，`-x branches=platform,modules` 进一步限定比较的分支（`autogenerate` 与 `check`）
+- `alembic check` 要求全部分支已升级；只升级部分分支时用 `infrastructure/database/branches.py` 的 `schema_diff(connection, branches)` 比较
+- 新迁移用 `--head <分支>@head`；自动生成的迁移需人工检查后再执行
 - CI `migrations` job：`make migrate` → `alembic check` → `alembic downgrade base` → `make migrate`
 - compose 中由一次性 `migrate` 服务执行 `app migrate && app permissions clear-cache`（`RUN_SEEDS=true` 时再执行 `app seed`），api 依赖其成功完成，多副本不会并发迁移
-
-## 与 nestjs 共用数据库
-
-| 部署方式 | 表结构归属 | 设置 |
-|---|---|---|
-| 独立部署（默认） | Alembic | `DB_SCHEMA_OWNER=alembic`、`PASSWORD_HASHER=argon2id` |
-| 与 nestjs 共库 | nestjs（TypeORM 迁移） | `DB_SCHEMA_OWNER=external`、`PASSWORD_HASHER=bcrypt` |
-
-`external` 时 `app migrate` 直接跳过；API 启动时检查当前 schema 是否包含全部 ORM 模型的表和列，缺失时启动失败并列出缺失项。
 
 ## Seed
 
@@ -80,4 +91,4 @@ uv run --frozen alembic downgrade base
 | 管理员 | 无 admin 用户时创建：非生产为 `admin@example.com` / `Secret00`；生产取 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`，未设置则不创建 |
 | 示例用户 | 非生产且无 user 角色用户时创建 `john.doe@example.com` / `Secret00` |
 
-完成后清除角色权限缓存。账号与 nestjs seed 一致，前端模板可直接登录。
+完成后清除角色权限缓存。

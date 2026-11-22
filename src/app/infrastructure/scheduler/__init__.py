@@ -50,8 +50,8 @@ async def cleanup_old_sessions(context: AppContext) -> int:
     async with context.database.transaction() as session:
         result = await session.execute(
             text(
-                'DELETE FROM session WHERE "deletedAt" IS NOT NULL '
-                "AND \"deletedAt\" < NOW() - INTERVAL '7 days'"
+                "DELETE FROM session WHERE deleted_at IS NOT NULL "
+                "AND deleted_at < now() - INTERVAL '7 days'"
             )
         )
     return affected_rows(result)

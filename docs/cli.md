@@ -8,7 +8,7 @@ uv run --frozen app --help
 
 | 命令 | 说明 | Make |
 |---|---|---|
-| `app migrate` | `alembic upgrade head`；`DB_SCHEMA_OWNER=external` 时跳过 | `make migrate` |
+| `app migrate` | 在 `DATABASE_SCHEMA` 中执行 `alembic upgrade heads` | `make migrate` |
 | `app seed` | 写入角色、状态、权限与初始账号，已存在的不覆盖，见 [database.md](database.md#seed) | `make seed` |
 | `app worker [--workers N]` | 启动 Taskiq worker（默认 1 个进程）；`REDIS_ENABLED=false` 或 Redis 不可达时退出码 1 | – |
 | `app scheduler` | 启动 Taskiq scheduler，按 cron 投递定时任务 | – |
@@ -46,7 +46,7 @@ uv run --frozen app generate resource product-category --plural product-categori
 | 文件 | 内容 |
 |---|---|
 | `src/app/modules/<复数>/__init__.py` | 包 |
-| `models.py` | ORM：`id`、`name`、`createdAt`、`updatedAt`、`deletedAt`（软删除） |
+| `models.py` | ORM（`modules` 分支）：UUIDv7 `id`、`name`、`created_at`、`updated_at`、`deleted_at`（软删除） |
 | `repository.py` / `service.py` | 数据访问与业务层 |
 | `schemas.py` | 请求与响应模型（按 Pydantic 约束校验） |
 | `router.py` | `POST` / `GET` 列表 / `GET :id` / `PUT :id` / `DELETE :id`，`auth=Auth.JWT` |
@@ -56,7 +56,7 @@ uv run --frozen app generate resource product-category --plural product-categori
 
 1. `src/app/factory.py` 中导入路由并 `include_routes(app, <module>.router, api_prefix)`
 2. `src/app/infrastructure/database/models.py` 中导入新模型
-3. `uv run --frozen alembic revision --autogenerate -m "add <table>"`，检查迁移后 `make migrate`
+3. `uv run --frozen alembic revision --autogenerate -m "add <table>" --head modules@head`，检查迁移后 `make migrate`
 4. `uv run --frozen pytest tests/integration/test_<复数>.py`
 
 ## 脚本

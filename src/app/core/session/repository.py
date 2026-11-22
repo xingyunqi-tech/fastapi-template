@@ -1,4 +1,5 @@
 lazy from datetime import datetime
+lazy from uuid import UUID
 
 from sqlalchemy import ColumnElement, func, or_, select, update
 lazy from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ class SessionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def find_by_id(self, session_id: int) -> SessionModel | None:
+    async def find_by_id(self, session_id: UUID) -> SessionModel | None:
         return await self.session.scalar(
             select(SessionModel).where(SessionModel.id == session_id, _active())
         )
@@ -23,7 +24,7 @@ class SessionRepository:
     async def create(
         self,
         *,
-        user_id: int,
+        user_id: UUID,
         hash_: str,
         user_agent: str | None,
         ip: str | None,
@@ -36,7 +37,7 @@ class SessionRepository:
         await self.session.flush()
         return model
 
-    async def rotate_hash(self, session_id: int, current: str, next_: str) -> bool:
+    async def rotate_hash(self, session_id: UUID, current: str, next_: str) -> bool:
         result = await self.session.execute(
             update(SessionModel)
             .where(SessionModel.id == session_id, SessionModel.hash == current, _active())
@@ -44,7 +45,7 @@ class SessionRepository:
         )
         return affected_rows(result) > 0
 
-    async def find_active_by_user(self, user_id: int) -> list[SessionModel]:
+    async def find_active_by_user(self, user_id: UUID) -> list[SessionModel]:
         statement = (
             select(SessionModel)
             .where(SessionModel.user_id == user_id, _active())
@@ -52,7 +53,7 @@ class SessionRepository:
         )
         return list(await self.session.scalars(statement))
 
-    async def touch(self, session_id: int, at: datetime, stale_before: datetime) -> None:
+    async def touch(self, session_id: UUID, at: datetime, stale_before: datetime) -> None:
         await self.session.execute(
             update(SessionModel)
             .where(
@@ -65,7 +66,7 @@ class SessionRepository:
             .values(last_active_at=at, updated_at=func.now())
         )
 
-    async def soft_delete_for_user(self, session_id: int, user_id: int) -> bool:
+    async def soft_delete_for_user(self, session_id: UUID, user_id: UUID) -> bool:
         result = await self.session.execute(
             update(SessionModel)
             .where(SessionModel.id == session_id, SessionModel.user_id == user_id, _active())
@@ -73,14 +74,14 @@ class SessionRepository:
         )
         return affected_rows(result) > 0
 
-    async def soft_delete(self, session_id: int) -> None:
+    async def soft_delete(self, session_id: UUID) -> None:
         await self.session.execute(
             update(SessionModel)
             .where(SessionModel.id == session_id, _active())
             .values(deleted_at=func.now(), updated_at=func.now())
         )
 
-    async def soft_delete_by_user(self, user_id: int, exclude: int | None = None) -> list[int]:
+    async def soft_delete_by_user(self, user_id: UUID, exclude: UUID | None = None) -> list[UUID]:
         conditions: list[ColumnElement[bool]] = [SessionModel.user_id == user_id, _active()]
         if exclude is not None:
             conditions.append(SessionModel.id != exclude)

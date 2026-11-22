@@ -85,7 +85,7 @@ services:
     pid: service:pidns
     environment:
       <<: *redis-env
-      DATABASE_HOST: postgres
+      DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?sslmode=disable
       MAIL_HOST: mailpit
       MAIL_PORT: '1025'
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
@@ -115,7 +115,7 @@ services:
       start_interval: 2s
     environment:
       <<: *redis-env
-      DATABASE_HOST: postgres
+      DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?sslmode=disable
     depends_on:
       <<: *redis-depends
       migrate:

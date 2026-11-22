@@ -30,7 +30,7 @@ src/app/
 
 | 文件 | 职责 |
 |---|---|
-| `models.py` | SQLAlchemy ORM（表名、列名与 nestjs 一致，camelCase 列名经 `mapped_column("firstName")` 映射到 snake_case 属性） |
+| `models.py` | SQLAlchemy ORM：snake_case 列名、UUIDv7 主键、`timestamptz`，声明 `__branch__` |
 | `repository.py` | 数据访问 |
 | `service.py` | 业务逻辑，只依赖 repository |
 | `schemas.py` | 本地请求 / 查询模型（契约模型在 `app.contract.schemas`） |

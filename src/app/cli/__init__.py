@@ -13,12 +13,12 @@ lazy from taskiq.cli.worker.run import run_worker
 from app.cli.generate import generate_cli
 from app.cli.openapi import openapi_cli
 from app.cli.seed import seed as run_seed
-from app.config import SchemaOwner, Settings, get_settings
+from app.config import Settings, get_settings
 from app.core.permissions.service import ROLE_PERMISSIONS_CACHE_KEY
 from app.factory import build_context
 from app.infrastructure.logging import configure_logging
 
-CLI_DATABASE_MAX_CONNECTIONS: Final = 1
+CLI_DATABASE_POOL_SIZE: Final = 1
 
 cli = typer.Typer(no_args_is_help=True, add_completion=False)
 permissions_cli = typer.Typer(no_args_is_help=True)
@@ -29,12 +29,9 @@ cli.add_typer(openapi_cli, name="openapi", help="OpenAPI 文档")
 
 @cli.command()
 def migrate() -> None:
-    """执行 Alembic 迁移到最新版本；DB_SCHEMA_OWNER=external 时跳过。"""
-    settings = get_settings()
-    if settings.database.schema_owner is SchemaOwner.EXTERNAL:
-        typer.echo("DB_SCHEMA_OWNER=external，跳过迁移")
-        return
-    command.upgrade(Config("alembic.ini"), "head")
+    """在 `DATABASE_SCHEMA` 中执行全部 Alembic 分支到最新版本。"""
+    get_settings()
+    command.upgrade(Config("alembic.ini"), "heads")
 
 
 @cli.command()
@@ -42,7 +39,7 @@ def seed() -> None:
     """写入角色、状态、权限、行政区划、配置与初始账号（已存在的不覆盖）。"""
 
     async def run() -> None:
-        context = build_context(get_settings(), max_connections=CLI_DATABASE_MAX_CONNECTIONS)
+        context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
         async with context.database.transaction() as session:
             await run_seed(session, context.settings)
         await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
@@ -56,7 +53,7 @@ def clear_permission_cache() -> None:
     """清除角色权限缓存。"""
 
     async def run() -> None:
-        context = build_context(get_settings(), max_connections=CLI_DATABASE_MAX_CONNECTIONS)
+        context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
         await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
         await context.database.dispose()
 

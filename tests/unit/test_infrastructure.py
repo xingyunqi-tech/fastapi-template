@@ -1,8 +1,5 @@
-import ssl
-
 import pytest
 
-from app.config.database import DatabaseSettings
 from app.infrastructure import cache as cache_module
 from app.infrastructure.cache import MemoryCache
 from app.integrations.mail import RECENT_LIMIT, LoggingMailer, MailMessage, mask_email
@@ -37,18 +34,3 @@ async def test_memory_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
         "c",
         "d",
     ]
-
-
-def test_ssl_disabled_by_default() -> None:
-    assert DatabaseSettings.model_validate({}).ssl_context() is None
-
-
-def test_ssl_context_respects_reject_unauthorized() -> None:
-    strict = DatabaseSettings.model_validate({"DATABASE_SSL_ENABLED": "true"}).ssl_context()
-    assert strict is not None
-    assert strict.verify_mode is ssl.CERT_REQUIRED
-    loose = DatabaseSettings.model_validate(
-        {"DATABASE_SSL_ENABLED": "true", "DATABASE_REJECT_UNAUTHORIZED": "false"}
-    ).ssl_context()
-    assert loose is not None
-    assert (loose.verify_mode, loose.check_hostname) == (ssl.CERT_NONE, False)

@@ -12,6 +12,7 @@ from email.message import EmailMessage
 from email.policy import default as default_policy
 from typing import Any
 from urllib.parse import urlparse
+from uuid import UUID
 lazy from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -153,7 +154,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 @pytest.fixture
-def cleaners(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+def cleaners(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, UUID]]:
     monkeypatch.setattr(account_cleanup, "_CLEANERS", [])
     return []
 
@@ -190,13 +191,13 @@ def counter(metric: Any, **labels: str) -> float:
     return value
 
 
-async def _user_id(database: Database, email_address: str) -> int:
+async def _user_id(database: Database, email_address: str) -> UUID:
     async with database.transaction() as session:
         value = await session.scalar(
             text('SELECT id FROM "user" WHERE email = :email'), {"email": email_address}
         )
-    assert value is not None
-    return int(value)
+    assert isinstance(value, UUID)
+    return value
 
 
 class TestLockWithRedis:
@@ -514,7 +515,7 @@ class TestAudit:
         assert log.request_id == response.headers["x-request-id"]
         assert await _scalar(
             connection,
-            'SELECT "oldValue" IS NULL AND "userId" IS NULL FROM audit_logs WHERE id = :id',
+            "SELECT old_value IS NULL AND user_id IS NULL FROM audit_logs WHERE id = :id",
             id=log.id,
         )
 
@@ -538,7 +539,7 @@ class TestAudit:
         )
         assert await _scalar(
             connection,
-            'SELECT "oldValue" IS NULL AND "newValue" IS NULL FROM audit_logs WHERE id = :id',
+            "SELECT old_value IS NULL AND new_value IS NULL FROM audit_logs WHERE id = :id",
             id=log.id,
         )
 
@@ -573,7 +574,7 @@ class TestAudit:
 
 class TestAccountCleanup:
     async def test_delete_account_runs_cleaners_in_process(
-        self, committed_app: FastAPI, cleaners: list[tuple[str, int]]
+        self, committed_app: FastAPI, cleaners: list[tuple[str, UUID]]
     ) -> None:
         @account_cleanup.register_account_cleaner(10)
         class Probe:
@@ -582,7 +583,7 @@ class TestAccountCleanup:
             def __init__(self, context: AppContext) -> None:
                 self.context = context
 
-            async def clean(self, user_id: int) -> None:
+            async def clean(self, user_id: UUID) -> None:
                 cleaners.append(("probe", user_id))
 
         context: AppContext = committed_app.state.context
@@ -598,15 +599,15 @@ class TestAccountCleanup:
             )
         assert deleted.status_code == 200
         await context.queue.shutdown()
-        user_id = tokens["user"]["id"]
+        user_id = UUID(tokens["user"]["id"])
         assert cleaners == [("probe", user_id)]
         async with context.database.transaction() as session:
             completed = await session.scalar(
-                text('SELECT "completedAt" FROM account_cleanup WHERE "userId" = :id'),
+                text("SELECT completed_at FROM account_cleanup WHERE user_id = :id"),
                 {"id": user_id},
             )
             active_sessions = await session.scalar(
-                text('SELECT count(*) FROM session WHERE "userId" = :id AND "deletedAt" IS NULL'),
+                text("SELECT count(*) FROM session WHERE user_id = :id AND deleted_at IS NULL"),
                 {"id": user_id},
             )
         assert completed is not None
@@ -615,7 +616,7 @@ class TestAccountCleanup:
     async def test_final_failure_logs_error(
         self,
         committed_app: FastAPI,
-        cleaners: list[tuple[str, int]],
+        cleaners: list[tuple[str, UUID]],
         no_sleep: list[float],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -626,7 +627,7 @@ class TestAccountCleanup:
             def __init__(self, context: AppContext) -> None:
                 pass
 
-            async def clean(self, user_id: int) -> None:
+            async def clean(self, user_id: UUID) -> None:
                 raise RuntimeError("s3 down")
 
         context: AppContext = committed_app.state.context
@@ -639,7 +640,7 @@ class TestAccountCleanup:
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
         async with context.database.transaction() as session:
             completed = await session.scalar(
-                text('SELECT count(*) FROM account_cleanup WHERE "userId" = :id'), {"id": user_id}
+                text("SELECT count(*) FROM account_cleanup WHERE user_id = :id"), {"id": user_id}
             )
         assert completed == 0
         failures = [
@@ -650,7 +651,7 @@ class TestAccountCleanup:
         assert failures == [f"Account cleanup for user {user_id} failed: files (s3 down)"]
 
     async def test_redis_queue_deduplicates_pending_jobs(
-        self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, int]]
+        self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, UUID]]
     ) -> None:
         held: list[int] = []
 
@@ -661,7 +662,7 @@ class TestAccountCleanup:
             def __init__(self, context: AppContext) -> None:
                 pass
 
-            async def clean(self, user_id: int) -> None:
+            async def clean(self, user_id: UUID) -> None:
                 cleaners.append(("probe", user_id))
                 held.append(await redis.exists(f"lock:account-cleanup:user-{user_id}"))
 
@@ -687,7 +688,7 @@ class TestAccountCleanup:
         assert await redis.exists(f"lock:account-cleanup:user-{user_id}") == 0
 
     async def test_skips_user_locked_by_another_worker(
-        self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, int]]
+        self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, UUID]]
     ) -> None:
         @account_cleanup.register_account_cleaner(10)
         class Probe:
@@ -696,7 +697,7 @@ class TestAccountCleanup:
             def __init__(self, context: AppContext) -> None:
                 pass
 
-            async def clean(self, user_id: int) -> None:
+            async def clean(self, user_id: UUID) -> None:
                 cleaners.append(("probe", user_id))
 
         app_context: AppContext = committed_app.state.context
@@ -755,7 +756,7 @@ class TestScheduler:
         async with context.database.transaction() as session:
             await session.execute(
                 text(
-                    'INSERT INTO session (hash, "userId", "deletedAt") VALUES '
+                    "INSERT INTO session (hash, user_id, deleted_at) VALUES "
                     "('old', :u, NOW() - INTERVAL '8 days'), "
                     "('recent', :u, NOW() - INTERVAL '6 days'), ('active', :u, NULL)"
                 ),
@@ -784,7 +785,7 @@ class TestScheduler:
             assert sorted(hashes) == ["active", "recent"]
 
     async def test_compensation_enqueues_users_deleted_before_grace(
-        self, committed_app: FastAPI, cleaners: list[tuple[str, int]]
+        self, committed_app: FastAPI, cleaners: list[tuple[str, UUID]]
     ) -> None:
         @account_cleanup.register_account_cleaner(10)
         class Probe:
@@ -793,7 +794,7 @@ class TestScheduler:
             def __init__(self, context: AppContext) -> None:
                 pass
 
-            async def clean(self, user_id: int) -> None:
+            async def clean(self, user_id: UUID) -> None:
                 cleaners.append(("probe", user_id))
 
         context: AppContext = committed_app.state.context
@@ -804,13 +805,13 @@ class TestScheduler:
         async with context.database.transaction() as session:
             await session.execute(
                 text(
-                    'UPDATE "user" SET "deletedAt" = NOW() - INTERVAL \'31 minutes\' WHERE id = :id'
+                    "UPDATE \"user\" SET deleted_at = NOW() - INTERVAL '31 minutes' WHERE id = :id"
                 ),
                 {"id": old_id},
             )
             await session.execute(
                 text(
-                    'UPDATE "user" SET "deletedAt" = NOW() - INTERVAL \'10 minutes\' WHERE id = :id'
+                    "UPDATE \"user\" SET deleted_at = NOW() - INTERVAL '10 minutes' WHERE id = :id"
                 ),
                 {"id": new_id},
             )

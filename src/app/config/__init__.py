@@ -7,7 +7,7 @@ from app.config.alipay import AlipaySettings
 from app.config.app import AppSettings, Environment
 from app.config.auth import AuthSettings, PasswordHasher
 from app.config.base import SettingsGroup
-from app.config.database import DatabaseSettings, SchemaOwner
+from app.config.database import DatabaseSettings
 from app.config.file import FileDriver, FileSettings
 from app.config.log import LogLevel, LogSettings
 from app.config.mail import MailSettings
@@ -33,7 +33,6 @@ __all__ = [
     "ObservabilitySettings",
     "PasswordHasher",
     "RedisSettings",
-    "SchemaOwner",
     "Settings",
     "SettingsError",
     "SmsSettings",

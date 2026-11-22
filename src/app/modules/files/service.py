@@ -11,7 +11,7 @@ from app.modules.files.purposes import FileVisibility
 PRIVATE = FileVisibility.PRIVATE.value
 
 
-def can_access(file: FileModel, user_id: int | None) -> bool:
+def can_access(file: FileModel, user_id: UUID | None) -> bool:
     if file.visibility != PRIVATE:
         return True
     return user_id is not None and file.owner_user_id == user_id
@@ -33,7 +33,7 @@ class FilesService:
         return await self.session.scalar(select(FileModel).where(FileModel.path == path).limit(1))
 
     async def find_by_owner(
-        self, owner_user_id: int, after_id: UUID | None, limit: int
+        self, owner_user_id: UUID, after_id: UUID | None, limit: int
     ) -> list[FileModel]:
         """该用户上传的文件，按 id 升序取 after_id 之后的 limit 条。"""
         query = select(FileModel).where(FileModel.owner_user_id == owner_user_id)
@@ -45,7 +45,7 @@ class FilesService:
         self,
         *,
         path: str,
-        owner_user_id: int | None,
+        owner_user_id: UUID | None,
         visibility: FileVisibility,
         mime_type: str | None,
         size: int | None,
@@ -61,7 +61,7 @@ class FilesService:
         await self.session.flush()
         return file
 
-    async def find_accessible(self, file_id: UUID, user_id: int | None) -> FileModel:
+    async def find_accessible(self, file_id: UUID, user_id: UUID | None) -> FileModel:
         """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
         file = await self.find_by_id(file_id)
         if file is None:
@@ -71,7 +71,7 @@ class FilesService:
         return file
 
     async def assert_referenceable(
-        self, ids: Sequence[UUID], user_id: int | None
+        self, ids: Sequence[UUID], user_id: UUID | None
     ) -> list[FileModel]:
         """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
         unique = list(dict.fromkeys(ids))

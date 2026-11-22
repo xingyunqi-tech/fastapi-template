@@ -4,7 +4,7 @@ import httpx
 import pytest
 from redis.asyncio import Redis
 
-from app.config import Settings
+from app.config import DatabaseSettings
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import indicators
 from tests.integration.conftest import _build_app, client_for, error_of
@@ -44,8 +44,8 @@ def generous_thresholds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 async def broken_database() -> AsyncIterator[Database]:
-    settings = Settings.load().database.model_copy(
-        update={"url": "postgresql+asyncpg://root:secret@127.0.0.1:1/none"}
+    settings = DatabaseSettings.model_validate(
+        {"DATABASE_URL": "postgresql://root:secret@127.0.0.1:1/none?sslmode=disable"}
     )
     database = Database.from_settings(settings)
     yield database

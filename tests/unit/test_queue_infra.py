@@ -5,6 +5,7 @@ import socket
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
+from uuid import UUID
 
 import pytest
 from redis.asyncio import Redis
@@ -272,13 +273,16 @@ class TestAudit:
         assert Auditable(AuditAction.UPDATE, "User").entity_id_from == "param"
 
 
+USER_ID = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
+
+
 class _Cleaner:
     def __init__(self, name: str, calls: list[str], error: Exception | None = None) -> None:
         self.name = name
         self.calls = calls
         self.error = error
 
-    async def clean(self, user_id: int) -> None:
+    async def clean(self, user_id: UUID) -> None:
         self.calls.append(f"{self.name}:{user_id}")
         if self.error is not None:
             raise self.error
@@ -296,18 +300,20 @@ class TestAccountCleanupRunner:
             ],
         )
         with pytest.raises(AccountCleanupError) as caught:
-            await runner.run(7)
-        assert calls == ["practice:7", "papers:7", "files:7"]
+            await runner.run(USER_ID)
+        assert calls == [f"practice:{USER_ID}", f"papers:{USER_ID}", f"files:{USER_ID}"]
         assert caught.value.failed_cleaners == ["papers"]
         assert "papers (busy)" in str(caught.value)
 
     async def test_report_failure_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
         runner = AccountCleanupRunner(None, [])  # type: ignore[arg-type]
         with caplog.at_level(logging.ERROR, logger="app.account_cleanup"):
-            await runner.report_failure(7, AccountCleanupError(7, ["files"], [RuntimeError("s3")]))
+            await runner.report_failure(
+                USER_ID, AccountCleanupError(USER_ID, ["files"], [RuntimeError("s3")])
+            )
         [record] = caplog.records
         assert record.levelno == logging.ERROR
-        assert record.getMessage() == "Account cleanup for user 7 failed: files (s3)"
+        assert record.getMessage() == f"Account cleanup for user {USER_ID} failed: files (s3)"
 
     def test_registered_cleaners_run_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.infrastructure import account_cleanup

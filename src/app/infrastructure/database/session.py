@@ -1,7 +1,6 @@
 """异步引擎与每请求一个 AsyncSession：成功提交、异常回滚，提交后执行登记的副作用。"""
 
 import logging
-import ssl
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -35,23 +34,15 @@ class Database:
         self.sessionmaker = sessionmaker
 
     @classmethod
-    def from_settings(
-        cls,
-        settings: DatabaseSettings,
-        *,
-        max_connections: int | None = None,
-        processes: int = 1,
-    ) -> Database:
-        """`max_connections`（缺省取 `DATABASE_MAX_CONNECTIONS`）为合计上限，按进程数均分。"""
-        total = settings.max_connections if max_connections is None else max_connections
-        limit = max(total // processes, 1)
+    def from_settings(cls, settings: DatabaseSettings, *, pool_size: int | None = None) -> Database:
+        """每进程一个连接池，大小缺省取 `DATABASE_POOL_SIZE`，不额外溢出。"""
         engine = create_async_engine(
             settings.sqlalchemy_url(),
-            pool_size=min(limit, 20),
-            max_overflow=max(limit - 20, 0),
+            pool_size=pool_size or settings.pool_size,
+            max_overflow=0,
             pool_pre_ping=True,
-            pool_timeout=settings.connection_timeout_ms / 1000,
-            connect_args=_connect_args(settings),
+            pool_timeout=settings.pool_timeout.total_seconds(),
+            connect_args=settings.connect_args(),
         )
         return cls(engine, async_sessionmaker(engine, expire_on_commit=False))
 
@@ -90,17 +81,6 @@ class Database:
     async def dispose(self) -> None:
         if self.engine is not None:
             await self.engine.dispose()
-
-
-def _connect_args(settings: DatabaseSettings) -> dict[str, Any]:
-    args: dict[str, Any] = {
-        "server_settings": {"timezone": "UTC"},
-        "timeout": settings.connection_timeout_ms / 1000,
-    }
-    context: ssl.SSLContext | None = settings.ssl_context()
-    if context is not None:
-        args["ssl"] = context
-    return args
 
 
 def after_commit(session: AsyncSession, callback: AfterCommit) -> None:

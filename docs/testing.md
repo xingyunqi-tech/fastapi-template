@@ -25,7 +25,7 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 | fixture | 说明 |
 |---|---|
 | `pg_server` / `redis_url` | 会话级 testcontainers：`postgres:18.6-alpine`、`redis:8.10.3-alpine` |
-| `template_db` | 在模板库上执行 `alembic upgrade head` 与 seed |
+| `template_db` | 在模板库上执行 `alembic upgrade heads` 与 seed |
 | `worker_db` | 每个 xdist worker 用 `CREATE DATABASE … TEMPLATE` 克隆一份 |
 | `app` / `client` | 回滚模式：用例在外层事务内执行，`Database.bound_to(connection)` 让提交只释放 SAVEPOINT，结束后整体回滚 |
 | `committed_app` | 真实提交模式：克隆独立库并连接 Redis；用于 refresh CAS 并发、提交后副作用、队列投递等，用例标 `@pytest.mark.committed` |

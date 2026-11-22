@@ -109,7 +109,7 @@ class StatusInfo(ApiModel):
 
 
 class User(ApiModel):
-    id: int
+    id: UUID
     email: str | None
     provider: str
     first_name: str | None

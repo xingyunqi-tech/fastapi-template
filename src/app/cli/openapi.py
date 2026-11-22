@@ -1,5 +1,6 @@
 """`app openapi export`：按代码导出 OpenAPI 3.1 到 openapi/openapi.json。"""
 
+import os
 from dataclasses import replace
 from typing import Annotated, Final
 lazy from pathlib import Path
@@ -11,12 +12,14 @@ from app.config import FileDriver, Settings
 lazy from app.factory import create_app
 
 EXPORT_TITLE: Final = "fastapi-temp"
+EXPORT_DATABASE_URL: Final = "postgresql://export@localhost/export?sslmode=disable"
 
 openapi_cli = typer.Typer(no_args_is_help=True)
 
 
 def export_settings() -> Settings:
-    """导出结果不随本地环境变化：标题固定，文件驱动取 local。"""
+    """导出结果不随本地环境变化：标题固定，文件驱动取 local，未配置数据库时用占位地址（不连接）。"""
+    os.environ.setdefault("DATABASE_URL", EXPORT_DATABASE_URL)
     settings = Settings.load()
     return replace(
         settings,

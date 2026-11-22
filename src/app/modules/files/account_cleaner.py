@@ -2,6 +2,7 @@
 
 import logging
 from typing import TYPE_CHECKING, Final
+lazy from uuid import UUID
 
 from sqlalchemy import delete
 from sqlalchemy.exc import DBAPIError
@@ -47,7 +48,7 @@ class FilesAccountCleaner:
         self.database = database
         self.storage = FileStorage(settings)
 
-    async def clean(self, user_id: int) -> None:
+    async def clean(self, user_id: UUID) -> None:
         after_id: UUID | None = None
         while True:
             async with self.database.transaction() as session:

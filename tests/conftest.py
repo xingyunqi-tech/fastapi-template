@@ -54,6 +54,7 @@ TEST_ENV = {
     "AUTH_CONFIRM_EMAIL_SECRET": "test-confirm-secret-0123456789abcdef",
     "AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN": "1d",
     "THROTTLE_ENABLED": "false",
+    "DATABASE_URL": "postgresql://root:secret@localhost:5432/api?sslmode=disable",
 }
 
 

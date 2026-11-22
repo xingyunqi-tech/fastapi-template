@@ -2,6 +2,7 @@
 
 from enum import StrEnum
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import StringConstraints
 
@@ -129,7 +130,7 @@ class LoginData(TokenPair):
 
 
 class Session(ApiModel):
-    id: int
+    id: UUID
     user_agent: str | None
     ip: str | None
     created_at: UtcDatetime

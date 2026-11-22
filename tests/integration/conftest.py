@@ -20,7 +20,7 @@ lazy from fastapi import FastAPI
 
 from app.cli.seed import seed
 from app.common.context import AppContext
-from app.config import Settings, get_settings
+from app.config import DatabaseSettings, Settings, get_settings
 from app.factory import create_app
 from app.infrastructure.cache import MemoryCache, RedisCache
 from app.infrastructure.database.session import Database
@@ -50,7 +50,13 @@ class PgServer:
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{database}"
 
     def url(self, database: str) -> str:
-        return self.dsn(database).replace("postgresql://", "postgresql+asyncpg://", 1)
+        """`DATABASE_URL` 格式（libpq）。"""
+        return f"{self.dsn(database)}?sslmode=disable"
+
+    def settings(self, database: str, **update: object) -> DatabaseSettings:
+        return DatabaseSettings.model_validate({"DATABASE_URL": self.url(database)}).model_copy(
+            update=update
+        )
 
 
 async def _execute(dsn: str, statement: str) -> None:
@@ -94,7 +100,7 @@ def template_db(pg_server: PgServer) -> str:
     asyncio.run(_execute(pg_server.dsn("postgres"), f"CREATE DATABASE {TEMPLATE_DB}"))
     os.environ["DATABASE_URL"] = pg_server.url(TEMPLATE_DB)
     get_settings.cache_clear()
-    command.upgrade(Config(os.path.join(ROOT, "alembic.ini")), "head")
+    command.upgrade(Config(os.path.join(ROOT, "alembic.ini")), "heads")
 
     async def run_seed() -> None:
         settings = Settings.load()
@@ -114,7 +120,8 @@ def worker_db(pg_server: PgServer, template_db: str, worker_id: str) -> str:
 
 @pytest.fixture(scope="session")
 async def engine(pg_server: PgServer, worker_db: str) -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(pg_server.url(worker_db))
+    settings = pg_server.settings(worker_db)
+    engine = create_async_engine(settings.sqlalchemy_url(), connect_args=settings.connect_args())
     yield engine
     await engine.dispose()
 
@@ -161,9 +168,7 @@ async def committed_app(
 ) -> AsyncIterator[FastAPI]:
     """真实提交模式：从模板克隆独立库，并使用 Redis 缓存。"""
     name = await clone_database_async(pg_server, f"committed_{uuid.uuid4().hex[:12]}")
-    database = Database.from_settings(
-        Settings.load().database.model_copy(update={"url": pg_server.url(name)})
-    )
+    database = Database.from_settings(pg_server.settings(name))
     redis = Redis.from_url(redis_url)
     yield _build_app(database, redis=redis)
     await database.dispose()

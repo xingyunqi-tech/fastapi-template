@@ -7,17 +7,15 @@ import pytest
 from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
 
 from app.common.errors import AppError
-from app.config import Settings
 from app.core.auth.router import _service
 from app.core.session.repository import SessionRepository
 from app.core.users.repository import UserRepository
 from app.infrastructure.database.errors import find_unique_violation
-from app.infrastructure.database.schema_check import ensure_external_schema, missing_columns
 from app.infrastructure.database.session import Database, after_commit
 from tests.integration.conftest import (
     PgServer,
@@ -27,6 +25,8 @@ from tests.integration.conftest import (
     rules_of,
 )
 from tests.integration.test_auth import PASSWORD, bearer, login
+
+SESSION_ID = uuid.UUID("019a8f3c-6b1e-7d2a-8000-000000000042")
 
 
 def md5(value: str) -> str:
@@ -48,7 +48,7 @@ async def test_unique_violation_exposes_constraint_name(connection: AsyncConnect
             )
     violation = find_unique_violation(caught.value)
     assert violation is not None
-    assert violation.constraint == "UQ_e12875dfb3b1d92d7d7c5377e22"
+    assert violation.constraint == "uq_user_email"
 
 
 async def test_refresh_rejects_blocked_user(
@@ -56,7 +56,7 @@ async def test_refresh_rejects_blocked_user(
 ) -> None:
     tokens = await login(client, "john.doe@example.com")
     await connection.execute(
-        text('UPDATE "user" SET "statusId" = NULL WHERE email = :email'),
+        text('UPDATE "user" SET status_id = NULL WHERE email = :email'),
         {"email": "john.doe@example.com"},
     )
     response = await client.post("/api/v1/auth/refresh", headers=bearer(tokens["refreshToken"]))
@@ -142,19 +142,10 @@ class TestAfterCommit:
         context = app.state.context
         async with context.database.transaction() as session:
             sessions = _service(context, session).sessions
-            await sessions.forget([42])
-            await context.cache.set("jwt:session:42", {"statusId": 1})
+            await sessions.forget([SESSION_ID])
+            await context.cache.set(f"jwt:session:{SESSION_ID}", {"statusId": 1})
             assert isinstance(session, AsyncSession)
-        assert await context.cache.get("jwt:session:42") is None
-
-
-class TestExternalSchema:
-    async def test_complete_schema_passes(self, engine: AsyncEngine) -> None:
-        await ensure_external_schema(engine)
-
-    async def test_missing_column_is_reported(self, connection: AsyncConnection) -> None:
-        await connection.execute(text('ALTER TABLE "session" DROP COLUMN "lastActiveAt"'))
-        assert await missing_columns(connection) == ["session.lastActiveAt"]
+        assert await context.cache.get(f"jwt:session:{SESSION_ID}") is None
 
 
 async def test_user_list_orders_by_id_after_requested_sort(
@@ -162,12 +153,12 @@ async def test_user_list_orders_by_id_after_requested_sort(
 ) -> None:
     await connection.execute(
         text(
-            'INSERT INTO "user" (email, "firstName", "roleId", "statusId") '
+            'INSERT INTO "user" (email, first_name, role_id, status_id) '
             "SELECT 'order' || n || '@example.com', 'Same', 2, 1 FROM generate_series(1, 3) n"
         )
     )
     await connection.execute(
-        text("UPDATE \"user\" SET \"firstName\" = 'Same' WHERE email = 'john.doe@example.com'")
+        text("UPDATE \"user\" SET first_name = 'Same' WHERE email = 'john.doe@example.com'")
     )
     token = (await login(client, "admin@example.com"))["token"]
     for query in ("", "&sort=firstName"):
@@ -184,10 +175,7 @@ async def test_authenticated_request_needs_one_connection(
     pg_server: PgServer, template_db: str
 ) -> None:
     name = await clone_database_async(pg_server, f"single_{uuid.uuid4().hex[:12]}")
-    settings = Settings.load().database.model_copy(
-        update={"url": pg_server.url(name), "max_connections": 1}
-    )
-    database = Database.from_settings(settings)
+    database = Database.from_settings(pg_server.settings(name), pool_size=1)
     try:
         async with client_for(_build_app(database)) as http:
             tokens = await login(http, "john.doe@example.com")

@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
+lazy from uuid import UUID
 
 from sqlalchemy import update
 lazy from sqlalchemy.ext.asyncio import AsyncSession
@@ -110,14 +111,14 @@ class AuthService:
             )
         return result.valid
 
-    def _tokens(self, *, user_id: int, role: Any, session_id: int, hash_: str) -> dict[str, Any]:
+    def _tokens(self, *, user_id: UUID, role: Any, session_id: UUID, hash_: str) -> dict[str, Any]:
         token = Jwt.sign(
-            {"id": user_id, "role": role, "sessionId": session_id},
+            {"id": str(user_id), "role": role, "sessionId": str(session_id)},
             self.settings.secret.get_secret_value(),
             self.settings.expires,
         )
         refresh = Jwt.sign(
-            {"sessionId": session_id, "hash": hash_},
+            {"sessionId": str(session_id), "hash": hash_},
             self.settings.refresh_secret.get_secret_value(),
             self.settings.refresh_expires,
         )
@@ -156,7 +157,7 @@ class AuthService:
         data.status = {"id": StatusId.INACTIVE}
         user = await self.users.create(data)
         hash_ = Jwt.sign(
-            {"confirmEmailUserId": user.id},
+            {"confirmEmailUserId": str(user.id)},
             self.settings.confirm_email_secret.get_secret_value(),
             self.settings.confirm_email_expires,
         )
@@ -170,9 +171,16 @@ class AuthService:
         except InvalidTokenError:
             raise AppError("auth.verificationTokenInvalid") from None
 
+    async def _user_in(self, payload: dict[str, Any], claim: str) -> UserModel | None:
+        try:
+            user_id = UUID(str(payload.get(claim)))
+        except ValueError:
+            return None
+        return await self.users.find_by_id(user_id)
+
     async def confirm_email(self, hash_: str) -> None:
         payload = self._decode(hash_, self.settings.confirm_email_secret.get_secret_value())
-        user = await self.users.find_by_id(int(payload.get("confirmEmailUserId") or 0))
+        user = await self._user_in(payload, "confirmEmailUserId")
         if user is None:
             raise AppError("user.notFound")
         if user.status_id != StatusId.INACTIVE:
@@ -181,7 +189,7 @@ class AuthService:
 
     async def confirm_new_email(self, hash_: str) -> None:
         payload = self._decode(hash_, self.settings.confirm_email_secret.get_secret_value())
-        user = await self.users.find_by_id(int(payload.get("confirmEmailUserId") or 0))
+        user = await self._user_in(payload, "confirmEmailUserId")
         if user is None:
             raise AppError("user.notFound")
         data = UserInput(email=payload.get("newEmail"))
@@ -195,7 +203,7 @@ class AuthService:
             raise field_error("email", "emailNotExists")
         token_expires = now_ms() + int(ms(self.settings.forgot_expires))
         hash_ = Jwt.sign(
-            {"forgotUserId": user.id, "pwd": password_fingerprint(user.password)},
+            {"forgotUserId": str(user.id), "pwd": password_fingerprint(user.password)},
             self.settings.forgot_secret.get_secret_value(),
             self.settings.forgot_expires,
         )
@@ -205,7 +213,7 @@ class AuthService:
 
     async def reset_password(self, hash_: str, password: str) -> None:
         payload = self._decode(hash_, self.settings.forgot_secret.get_secret_value())
-        user = await self.users.find_by_id(int(payload.get("forgotUserId") or 0))
+        user = await self._user_in(payload, "forgotUserId")
         if user is None:
             raise AppError("auth.verificationTokenInvalid")
         if payload.get("pwd") != password_fingerprint(user.password):
@@ -259,7 +267,7 @@ class AuthService:
                 raise field_error("email", "emailExists")
             await self._verify_identity(user, old_password, sms_code)
             hash_ = Jwt.sign(
-                {"confirmEmailUserId": user.id, "newEmail": data.email},
+                {"confirmEmailUserId": str(user.id), "newEmail": data.email},
                 self.settings.confirm_email_secret.get_secret_value(),
                 self.settings.confirm_email_expires,
             )
@@ -312,7 +320,7 @@ class AuthService:
     async def list_sessions(self, current: JwtUser) -> list[SessionModel]:
         return await self.sessions.find_active_by_user(current.id)
 
-    async def revoke_session(self, current: JwtUser, session_id: int) -> None:
+    async def revoke_session(self, current: JwtUser, session_id: UUID) -> None:
         if not await self.sessions.revoke_for_user(session_id, current.id):
             raise AppError("auth.sessionNotFound")
 
@@ -458,7 +466,7 @@ class AuthService:
             )
         except Exception as error:
             violation = find_unique_violation(error)
-            if violation is None or violation.constraint != "user_wechatOpenId_key":
+            if violation is None or violation.constraint != "uq_user_wechat_open_id":
                 raise
             existing = await self.users.find_by_wechat_open_id(info.open_id)
             if existing is None:
@@ -569,7 +577,7 @@ class AuthService:
                 )
             except Exception as error:
                 violation = find_unique_violation(error)
-                if violation is None or violation.constraint != "user_alipayOpenId_key":
+                if violation is None or violation.constraint != "uq_user_alipay_open_id":
                     raise
                 user = await self.users.find_by_alipay_open_id(open_id)
                 if user is None:

@@ -174,7 +174,7 @@ ReceivedUpload = Annotated[ReceivedFile | None, Depends(received_file, scope="fu
 async def _store_received(
     received: ReceivedFile | None,
     purpose: FilePurpose,
-    user_id: int,
+    user_id: UUID,
     context: AppContext,
     session: DbSession,
 ) -> UploadedFile:

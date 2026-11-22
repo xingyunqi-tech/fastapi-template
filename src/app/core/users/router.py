@@ -1,4 +1,5 @@
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import Depends, Path, Query
 
@@ -19,7 +20,7 @@ from app.modules.files.service import FilesService
 
 router = ApiRouter(prefix="/v1/users", tags=["Users"], rbac=True)
 
-UserId = Annotated[SerialId, Path()]
+UserId = Annotated[UUID, Path()]
 UserSort = Annotated[list[SortField], Depends(sort_param(tuple(SORTABLE)))]
 
 

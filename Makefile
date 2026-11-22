@@ -62,7 +62,7 @@ test-e2e: ## e2e 测试：ci 组合以生产镜像起完整服务栈，结束后
 	$(PYTEST) -m e2e
 
 .PHONY: migrate
-migrate: ## 执行数据库迁移（DB_SCHEMA_OWNER=external 时跳过）
+migrate: ## 执行数据库迁移（全部分支）
 	$(RUN) app migrate
 
 .PHONY: seed

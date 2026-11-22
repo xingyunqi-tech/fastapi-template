@@ -67,7 +67,7 @@ class UserRepository:
         statement = _with_relations(select(UserModel).where(_active(), *conditions))
         return (await self.session.scalars(statement)).unique().one_or_none()
 
-    async def find_by_id(self, user_id: int) -> UserModel | None:
+    async def find_by_id(self, user_id: UUID) -> UserModel | None:
         return await self._one(UserModel.id == user_id)
 
     async def find_by_email(self, email: str | None) -> UserModel | None:
@@ -82,7 +82,7 @@ class UserRepository:
     async def find_by_alipay_open_id(self, open_id: str | None) -> UserModel | None:
         return await self._one(UserModel.alipay_open_id == open_id) if open_id else None
 
-    async def bind_phone_if_empty(self, user_id: int, phone: str) -> bool:
+    async def bind_phone_if_empty(self, user_id: UUID, phone: str) -> bool:
         result = await self.session.execute(
             update(UserModel)
             .where(UserModel.id == user_id, UserModel.phone.is_(None), _active())
@@ -93,7 +93,7 @@ class UserRepository:
         return affected_rows(result) > 0
 
     async def bind_wechat_if_empty(
-        self, user_id: int, open_id: str | None, union_id: str | None = None
+        self, user_id: UUID, open_id: str | None, union_id: str | None = None
     ) -> bool:
         values: dict[str, Any] = {}
         if open_id is not None:
@@ -109,7 +109,7 @@ class UserRepository:
         self.session.expire_all()
         return affected_rows(result) > 0
 
-    async def find_by_ids(self, ids: Sequence[int]) -> list[UserModel]:
+    async def find_by_ids(self, ids: Sequence[UUID]) -> list[UserModel]:
         statement = _with_relations(select(UserModel).where(_active(), UserModel.id.in_(ids)))
         return list((await self.session.scalars(statement)).unique())
 
@@ -164,7 +164,7 @@ class UserRepository:
 
     async def update(
         self,
-        user_id: int,
+        user_id: UUID,
         *,
         values: dict[str, Any],
         photo_id: UUID | object | None = UNSET,
@@ -197,19 +197,19 @@ class UserRepository:
             raise AppError("user.notFound")
         return user
 
-    async def find_deleted_by_id(self, user_id: int) -> UserModel | None:
+    async def find_deleted_by_id(self, user_id: UUID) -> UserModel | None:
         return await self.session.scalar(
             select(UserModel).where(UserModel.id == user_id, UserModel.deleted_at.is_not(None))
         )
 
-    async def detach_photo(self, user_id: int) -> None:
+    async def detach_photo(self, user_id: UUID) -> None:
         await self.session.execute(
             update(UserModel)
             .where(UserModel.id == user_id)
             .values(photo_id=None, updated_at=func.now())
         )
 
-    async def remove(self, user_id: int) -> None:
+    async def remove(self, user_id: UUID) -> None:
         await self.session.execute(
             update(UserModel)
             .where(UserModel.id == user_id)

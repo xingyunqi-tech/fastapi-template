@@ -17,7 +17,7 @@ lazy from app.core.session.service import SessionService
 lazy from app.core.users.models import UserModel
 lazy from app.modules.files.service import FilesService
 
-type AccountCleanup = Callable[[int], Awaitable[None]]
+type AccountCleanup = Callable[[UUID], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -120,7 +120,7 @@ class UsersService:
             raise field_error("status", "statusNotExists")
         return int(status_id)
 
-    async def _photo(self, value: Any, owner: int | None) -> FileModel | object | None:
+    async def _photo(self, value: Any, owner: UUID | None) -> FileModel | object | None:
         if value is None:
             return None
         photo_id = _id_of(value)
@@ -134,12 +134,12 @@ class UsersService:
             raise
         return file
 
-    async def _ensure_email_free(self, email: str, current: int | None = None) -> None:
+    async def _ensure_email_free(self, email: str, current: UUID | None = None) -> None:
         existing = await self.repository.find_by_email(email)
         if existing is not None and not (current and existing.id == current):
             raise field_error("email", "emailAlreadyExists")
 
-    async def _ensure_phone_free(self, phone: str, current: int | None = None) -> None:
+    async def _ensure_phone_free(self, phone: str, current: UUID | None = None) -> None:
         existing = await self.repository.find_by_phone(phone)
         if existing is not None and not (current and existing.id == current):
             raise field_error("phone", "phoneAlreadyExists")
@@ -189,7 +189,7 @@ class UsersService:
             raise AppError("user.notFound")
         return created
 
-    async def find_by_id(self, user_id: int) -> UserModel | None:
+    async def find_by_id(self, user_id: UUID) -> UserModel | None:
         return await self.repository.find_by_id(user_id)
 
     async def find_by_email(self, email: str | None) -> UserModel | None:
@@ -204,11 +204,11 @@ class UsersService:
     async def find_by_alipay_open_id(self, open_id: str | None) -> UserModel | None:
         return await self.repository.find_by_alipay_open_id(open_id)
 
-    async def bind_phone_if_empty(self, user_id: int, phone: str) -> bool:
+    async def bind_phone_if_empty(self, user_id: UUID, phone: str) -> bool:
         return await self.repository.bind_phone_if_empty(user_id, phone)
 
     async def bind_wechat_if_empty(
-        self, user_id: int, open_id: str | None, union_id: str | None = None
+        self, user_id: UUID, open_id: str | None, union_id: str | None = None
     ) -> bool:
         return await self.repository.bind_wechat_if_empty(user_id, open_id, union_id)
 
@@ -220,7 +220,7 @@ class UsersService:
         )
         return users, await self.repository.count(role_ids=role_ids)
 
-    async def update(self, user_id: int, data: UserInput) -> UserModel:
+    async def update(self, user_id: UUID, data: UserInput) -> UserModel:
         password: Any = UNSET
         if _given(data.password) and data.password:
             current = await self.repository.find_by_id(user_id)
@@ -264,13 +264,13 @@ class UsersService:
             status_id=status_id,
         )
 
-    async def update_by_admin(self, user_id: int, data: UserInput) -> UserModel:
+    async def update_by_admin(self, user_id: UUID, data: UserInput) -> UserModel:
         user = await self.update(user_id, data)
         if _given(data.password) and data.password:
             await self.sessions.delete_by_user(user_id)
         return user
 
-    async def remove(self, user_id: int) -> None:
+    async def remove(self, user_id: UUID) -> None:
         await self.sessions.delete_by_user(user_id)
         await self.repository.remove(user_id)
         await self.account_cleanup(user_id)

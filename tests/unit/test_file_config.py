@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid7
 
 import pytest
 
@@ -80,8 +81,9 @@ def test_mime_type_by_extension() -> None:
 
 
 def test_content_assets_have_no_owner() -> None:
-    assert file_owner_for(FilePurpose.CONTENT_IMAGE, 7) is None
-    assert file_owner_for(FilePurpose.IMPORT, 7) == 7
+    owner = uuid7()
+    assert file_owner_for(FilePurpose.CONTENT_IMAGE, owner) is None
+    assert file_owner_for(FilePurpose.IMPORT, owner) == owner
 
 
 def _file(visibility: str, path: str = "/api/v1/files/a.png") -> Any:

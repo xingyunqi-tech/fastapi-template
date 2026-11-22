@@ -1,34 +1,28 @@
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import Index, Integer, PrimaryKeyConstraint, String, Text
+from sqlalchemy import Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.infrastructure.database.base import Base, created_at
+from app.infrastructure.database.base import Base, Branch, created_at, uuid_pk
 
 
 class AuditLogModel(Base):
     __tablename__ = "audit_logs"
+    __branch__ = Branch.PLATFORM
 
-    id: Mapped[int] = mapped_column(Integer)
-    user_id: Mapped[str | None] = mapped_column("userId", String)
-    action: Mapped[str] = mapped_column(String(50), nullable=False)
-    entity_type: Mapped[str] = mapped_column("entityType", String(100), nullable=False)
-    entity_id: Mapped[str] = mapped_column("entityId", String, nullable=False)
-    old_value: Mapped[Any | None] = mapped_column("oldValue", JSONB(none_as_null=True))
-    new_value: Mapped[Any | None] = mapped_column("newValue", JSONB(none_as_null=True))
-    ip_address: Mapped[str | None] = mapped_column("ipAddress", String)
-    user_agent: Mapped[str | None] = mapped_column("userAgent", Text)
-    request_id: Mapped[str | None] = mapped_column("requestId", String)
+    id: Mapped[UUID] = uuid_pk()
+    user_id: Mapped[str | None] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    old_value: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    new_value: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
+    ip_address: Mapped[str | None] = mapped_column(String)
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    request_id: Mapped[str | None] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = created_at()
 
-    __table_args__ = (
-        PrimaryKeyConstraint("id", name="PK_audit_logs"),
-        Index("IDX_audit_logs_action", "action"),
-        Index("IDX_audit_logs_createdAt", "createdAt"),
-        Index("IDX_audit_logs_entityId", "entityId"),
-        Index("IDX_audit_logs_entityType", "entityType"),
-        Index("IDX_audit_logs_requestId", "requestId"),
-        Index("IDX_audit_logs_userId", "userId"),
-    )
+    __table_args__ = (Index(None, "created_at"),)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Final
+lazy from uuid import UUID
 
 lazy from fastapi import Request
 
@@ -113,7 +114,7 @@ class AuditService:
         action: AuditAction | str,
         entity_type: str,
         entity_id: str | int,
-        user_id: str | int | None = None,
+        user_id: UUID | str | None = None,
         old_value: Mapping[str, Any] | list[Any] | None = None,
         new_value: Mapping[str, Any] | list[Any] | None = None,
         request: Request | None = None,

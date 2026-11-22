@@ -71,7 +71,8 @@ api 与 worker 挂载同一 `prometheus-multiproc` 卷并设 `PROMETHEUS_MULTIPR
 | `METRICS_TOKEN` | ≥16 字符；未设置时生产拒绝访问 `/metrics` 与 `/api/v1/health` |
 | `CORS_ORIGINS` | CORS 白名单，逗号分隔 |
 | `APP_FRONTEND_URL` | 邮件链接的前端地址 |
-| `DATABASE_*`、`PASSWORD_HASHER`、`DB_SCHEMA_OWNER` | 见 [database.md](database.md) |
+| `DATABASE_*` | 见 [database.md](database.md) |
+| `PASSWORD_HASHER` | 见 [auth.md](auth.md) |
 | `FILE_DRIVER` 及 S3 变量 | `s3` / `s3-presigned` 缺凭据、桶或区域时启动失败 |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | `RUN_SEEDS=true` 时创建首个管理员 |
 | `TRUST_PROXY` | 反向代理层数 |

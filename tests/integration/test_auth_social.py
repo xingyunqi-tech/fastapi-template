@@ -196,7 +196,7 @@ class TestWechatLogin:
         async with client_for(wechat_app) as client:
             first = await client.post(WECHAT_LOGIN, json={"code": "blocked", "type": "mini_app"})
             await connection.execute(
-                text('UPDATE "user" SET "statusId" = NULL WHERE id = :id'),
+                text('UPDATE "user" SET status_id = NULL WHERE id = :id'),
                 {"id": first.json()["data"]["user"]["id"]},
             )
             response = await client.post(WECHAT_LOGIN, json={"code": "blocked", "type": "mini_app"})
@@ -258,7 +258,7 @@ class TestWechatPhoneLogin:
     ) -> None:
         user_id = await connection.scalar(
             text(
-                'INSERT INTO "user" (phone, provider, "roleId", "statusId") '
+                'INSERT INTO "user" (phone, provider, role_id, status_id) '
                 "VALUES ('13800138003', 'phone', 2, 1) RETURNING id"
             )
         )
@@ -268,7 +268,7 @@ class TestWechatPhoneLogin:
                 json={"loginCode": "o-existing:u-existing", "phoneCode": "86-13800138003"},
             )
         user = response.json()["data"]["user"]
-        assert user["id"] == user_id
+        assert user["id"] == str(user_id)
         assert (user["wechatOpenId"], user["wechatUnionId"]) == ("o-existing", "u-existing")
 
     async def test_missing_openid_leaves_wechat_unbound(
@@ -276,7 +276,7 @@ class TestWechatPhoneLogin:
     ) -> None:
         user_id = await connection.scalar(
             text(
-                'INSERT INTO "user" (phone, provider, "roleId", "statusId") '
+                'INSERT INTO "user" (phone, provider, role_id, status_id) '
                 "VALUES ('13800138009', 'phone', 2, 1) RETURNING id"
             )
         )
@@ -284,9 +284,9 @@ class TestWechatPhoneLogin:
             response = await client.post(
                 WECHAT_PHONE_LOGIN, json={"loginCode": "no-openid", "phoneCode": "86-13800138009"}
             )
-        assert response.json()["data"]["user"]["id"] == user_id
+        assert response.json()["data"]["user"]["id"] == str(user_id)
         stored = await connection.scalar(
-            text('SELECT "wechatOpenId" FROM "user" WHERE id = :id'), {"id": user_id}
+            text('SELECT wechat_open_id FROM "user" WHERE id = :id'), {"id": user_id}
         )
         assert stored is None
 
@@ -455,9 +455,9 @@ class TestConcurrentFirstLogin:
                 "find_by_wechat_open_id",
                 WECHAT_LOGIN,
                 {"code": "race-openid", "type": "mini_app"},
-                "wechatOpenId",
+                "wechat_open_id",
             ),
-            ("find_by_alipay_open_id", ALIPAY_LOGIN, {"authCode": "race-openid"}, "alipayOpenId"),
+            ("find_by_alipay_open_id", ALIPAY_LOGIN, {"authCode": "race-openid"}, "alipay_open_id"),
         ],
     )
     async def test_unique_violation_falls_back_to_existing_user(
@@ -474,7 +474,7 @@ class TestConcurrentFirstLogin:
     ) -> None:
         existing = await connection.scalar(
             text(
-                f'INSERT INTO "user" ("{column}", provider, "roleId", "statusId") '  # noqa: S608
+                f'INSERT INTO "user" ({column}, provider, role_id, status_id) '  # noqa: S608
                 "VALUES ('race-openid', 'wechat', 2, 1) RETURNING id"
             )
         )
@@ -501,5 +501,5 @@ class TestConcurrentFirstLogin:
         async with client_for(app) as client:
             response = await client.post(url, json=body)
         assert response.status_code == 200, response.text
-        assert response.json()["data"]["user"]["id"] == existing
+        assert response.json()["data"]["user"]["id"] == str(existing)
         assert calls == 2

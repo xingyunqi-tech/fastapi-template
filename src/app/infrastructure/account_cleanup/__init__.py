@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Final, Protocol
 lazy from datetime import datetime
+lazy from uuid import UUID
 
 from sqlalchemy import text
 lazy from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +36,7 @@ class AccountDataCleaner(Protocol):
     @property
     def name(self) -> str: ...
 
-    async def clean(self, user_id: int) -> None: ...
+    async def clean(self, user_id: UUID) -> None: ...
 
 
 type CleanerFactory = Callable[[AppContext], AccountDataCleaner]
@@ -58,16 +59,16 @@ def registered_cleaners(context: AppContext) -> list[AccountDataCleaner]:
     return [factory(context) for _, factory in sorted(_CLEANERS, key=lambda item: item[0])]
 
 
-def pending_key(user_id: int) -> str:
+def pending_key(user_id: UUID) -> str:
     return f"{stream_name(ACCOUNT_CLEANUP_QUEUE)}:user-{user_id}"
 
 
-def run_lock_key(user_id: int) -> str:
+def run_lock_key(user_id: UUID) -> str:
     return f"{ACCOUNT_CLEANUP_QUEUE}:user-{user_id}"
 
 
 class AccountCleanupError(Exception):
-    def __init__(self, user_id: int, failed_cleaners: list[str], causes: list[BaseException]):
+    def __init__(self, user_id: UUID, failed_cleaners: list[str], causes: list[BaseException]):
         details = ", ".join(
             f"{name} ({cause})" for name, cause in zip(failed_cleaners, causes, strict=True)
         )
@@ -77,7 +78,7 @@ class AccountCleanupError(Exception):
         self.causes = causes
 
 
-def log_account_cleanup_failure(user_id: int, error: BaseException) -> None:
+def log_account_cleanup_failure(user_id: UUID, error: BaseException) -> None:
     if isinstance(error, AccountCleanupError):
         logger.error("%s", error)
     else:
@@ -88,29 +89,27 @@ class AccountCleanupRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def mark_completed(self, user_id: int) -> None:
+    async def mark_completed(self, user_id: UUID) -> None:
         await self.session.execute(
             text(
-                'INSERT INTO "account_cleanup" ("userId", "completedAt") VALUES (:user_id, now()) '
-                'ON CONFLICT ("userId") DO UPDATE SET "completedAt" = EXCLUDED."completedAt"'
+                "INSERT INTO account_cleanup (user_id, completed_at) VALUES (:user_id, now()) "
+                "ON CONFLICT (user_id) DO UPDATE SET completed_at = EXCLUDED.completed_at"
             ),
             {"user_id": user_id},
         )
 
-    async def find_pending_user_ids(self, deleted_before: datetime, limit: int) -> list[int]:
+    async def find_pending_user_ids(self, deleted_before: datetime, limit: int) -> list[UUID]:
         """软删除时间早于 deleted_before 且尚未完成清理的用户，按用户 id 升序。"""
         result = await self.session.execute(
             text(
-                'SELECT u."id" FROM "user" AS u '
-                'WHERE u."deletedAt" IS NOT NULL '
-                'AND u."deletedAt" < (CAST(:deleted_before AS timestamptz) '
-                "AT TIME ZONE current_setting('TimeZone')) "
-                'AND NOT EXISTS (SELECT 1 FROM "account_cleanup" AS c WHERE c."userId" = u."id") '
-                'ORDER BY u."id" LIMIT :limit'
+                'SELECT u.id FROM "user" AS u '
+                "WHERE u.deleted_at IS NOT NULL AND u.deleted_at < :deleted_before "
+                "AND NOT EXISTS (SELECT 1 FROM account_cleanup AS c WHERE c.user_id = u.id) "
+                "ORDER BY u.id LIMIT :limit"
             ),
             {"deleted_before": deleted_before, "limit": limit},
         )
-        return [int(row[0]) for row in result]
+        return [row[0] for row in result]
 
 
 class AccountCleanupRunner:
@@ -132,7 +131,7 @@ class AccountCleanupRunner:
     def cleaner_names(self) -> list[str]:
         return [cleaner.name for cleaner in self.cleaners]
 
-    async def run(self, user_id: int) -> None:
+    async def run(self, user_id: UUID) -> None:
         failed: list[str] = []
         causes: list[BaseException] = []
         for cleaner in self.cleaners:
@@ -148,7 +147,7 @@ class AccountCleanupRunner:
             await AccountCleanupRepository(session).mark_completed(user_id)
         logger.info("Account data of user %s cleaned", user_id)
 
-    async def report_failure(self, user_id: int, error: BaseException) -> None:
+    async def report_failure(self, user_id: UUID, error: BaseException) -> None:
         log_account_cleanup_failure(user_id, error)
 
 
@@ -161,7 +160,7 @@ async def clean_account(
     context: Annotated[AppContext, APP_CONTEXT],
 ) -> None:
     """持 `lock:account-cleanup:user-<id>` 执行，锁被占用时跳过；失败重试，最终失败记日志。"""
-    user_id = int(job["userId"])
+    user_id = UUID(job["userId"])
     runner = AccountCleanupRunner.from_context(context)
     async with _serial:
         token = await context.locks.try_acquire(run_lock_key(user_id), RUN_LOCK_TTL_MS)
@@ -187,7 +186,7 @@ class AccountCleanupProducer:
     def __init__(self, context: AppContext) -> None:
         self.context = context
 
-    async def enqueue_cleanup(self, user_id: int) -> None:
+    async def enqueue_cleanup(self, user_id: UUID) -> None:
         queue = self.context.queue
         if queue is None:
             logger.warning("No account cleanup runner for user %s", user_id)
@@ -199,7 +198,7 @@ class AccountCleanupProducer:
             ):
                 return
             try:
-                await queue.enqueue(clean_account, {"userId": user_id})
+                await queue.enqueue(clean_account, {"userId": str(user_id)})
             except BaseException:
                 if redis is not None:
                     await redis.delete(pending_key(user_id))
@@ -207,10 +206,10 @@ class AccountCleanupProducer:
         except Exception as error:
             log_account_cleanup_failure(user_id, error)
 
-    def after_commit(self, session: AsyncSession) -> Callable[[int], Awaitable[None]]:
+    def after_commit(self, session: AsyncSession) -> Callable[[UUID], Awaitable[None]]:
         """供 UsersService.remove 使用：事务提交后再入队。"""
 
-        async def schedule(user_id: int) -> None:
+        async def schedule(user_id: UUID) -> None:
             async def enqueue() -> None:
                 await self.enqueue_cleanup(user_id)
 

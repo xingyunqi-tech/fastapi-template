@@ -1,12 +1,12 @@
 """{{ class_name }} 的 CRUD 接口。"""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Path, Query
 
 from app.common.pagination import PageParams
 from app.common.routing import ApiRouter, Auth
-from app.common.types import SerialId
 from app.infrastructure.database.session import DbSession
 from app.modules.{{ package }}.repository import {{ class_name }}Repository
 from app.modules.{{ package }}.schemas import (
@@ -20,7 +20,7 @@ lazy from sqlalchemy.ext.asyncio import AsyncSession
 
 router = ApiRouter(prefix="/v1/{{ url }}", tags=["{{ tag }}"])
 
-EntityId = Annotated[SerialId, Path()]
+EntityId = Annotated[UUID, Path()]
 
 
 def build_service(session: AsyncSession) -> {{ class_plural }}Service:

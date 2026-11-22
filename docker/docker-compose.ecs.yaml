@@ -20,8 +20,7 @@ x-app: &app
 x-app-env: &app-env
   APP_ENV: production
   APP_PORT: '3000'
-  DATABASE_HOST: postgres
-  DATABASE_PORT: '5432'
+  DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?sslmode=disable
   REDIS_ENABLED: 'true'
   REDIS_HOST: redis
   REDIS_PORT: '6379'

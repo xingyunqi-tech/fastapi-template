@@ -240,7 +240,7 @@ REDIS_URL=redis://redis:6379/0
 
 - 未配置 `DATABASE_URL` 时不建连接池、`app migrate` 直接退出、不启动事件消费者；未配置 `STORAGE_DRIVER` 时不挂载 `files`
 - `/health/ready` 只检查已配置的依赖（数据库、Redis），不检查 JWKS（约定 §1）
-- `app openapi export` 以签发方与全部模块挂载的配置生成文档
+- `app openapi export` 以签发方与全部模块挂载的配置生成文档；未配置 `DATABASE_URL` 时用占位地址（不连接）
 - Redis 键：`auth:`、`rl:` 开头的键按约定原格式使用（含私有限流规则），其余一律带 `{OTEL_SERVICE_NAME}:` 前缀（约定 §10），由 `redis.key(...)` 统一拼接；Taskiq stream 名同样带前缀；事件 stream 名例外，见下条
 - 事件：`infrastructure/events/` 提供 `EventPublisher` / `EventConsumer` 协议，`EVENTS_TRANSPORT=none|log|redis_stream`（默认 `log`）；stream 名 `EVENTS_REDIS_STREAM` 由 monorepo 配置、不加服务前缀，消费者组名为 `OTEL_SERVICE_NAME`（约定 §10）；签发方提交删除后发布 `user.deleted`，验证方的消费者调用本服务登记的清理器
 
@@ -265,7 +265,7 @@ REDIS_URL=redis://redis:6379/0
 
 - 三个 Alembic 分支：`platform` 为基础；`identity`、`modules` 声明 `depends_on` platform（`users.avatar_file_id` 引用同 schema 的 `files`）
 - `alembic upgrade` 只接受一个目标：签发方 `app migrate` 执行 `upgrade heads`，配置了数据库的验证方执行 `upgrade modules@head`（`depends_on` 带上 platform）；`app migrate` 先 `CREATE SCHEMA IF NOT EXISTS`，`version_table_schema` 为 `DATABASE_SCHEMA`
-- ORM 表用 `info={"branch": ...}` 标注；`env.py` 的 `include_object` 按当前角色过滤，验证方的 `alembic check` 不比较 identity 表；新迁移用 `alembic revision --autogenerate --head <branch>@head`
+- ORM 模型声明 `__branch__`，写入表的 `info["branch"]`；`env.py` 的 `include_object` 只比较 ORM 中的表，`-x branches=` 限定分支；`alembic check` 只能在全部 heads 已升级时运行（Alembic 硬性检查），验证方只升级 platform + modules，其 check 改用 `infrastructure/database/branches.py` 的 `schema_diff`（B7 接入 `app migrate`）；新迁移用 `alembic revision --autogenerate --head <branch>@head`
 - 初始迁移在 B3–B7 期间按需重新生成，B8 定稿；定稿后已合并的迁移不得修改
 - CI 对两种角色各跑一遍 upgrade → check → downgrade base → upgrade（B7 起）
 - `alembic.ini` 设置 `version_locations` 指向三个分支目录与 `recursive_version_locations = true`
@@ -407,11 +407,13 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `src/app/infrastructure/database/{base,session,models}.py` | UUIDv7、`timestamptz`、命名约定、schema、`info.branch` |
-| `src/app/core/users/models.py`、`core/session/models.py`、`core/permissions/models.py`、`modules/files/models.py`、`infrastructure/audit/models.py`、`infrastructure/account_cleanup/models.py` 及其 repository / service / schemas | 列名 snake_case、主键 UUIDv7、时间 `timestamptz`；id 类型由 `int` 改为 `UUID` |
-| `src/app/config/database.py` | `DATABASE_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `NAME`、`DATABASE_SSL_*`、`DATABASE_CA` / `KEY` / `CERT` / `REJECT_UNAUTHORIZED`、`DB_SCHEMA_OWNER`、`DATABASE_MAX_CONNECTIONS`、`DATABASE_CONNECTION_TIMEOUT_MS`、`WORKER_DATABASE_MAX_CONNECTIONS` → `DATABASE_URL`（libpq）、`DATABASE_SCHEMA`、`DATABASE_POOL_SIZE` / `DATABASE_POOL_TIMEOUT` |
+| `src/app/infrastructure/database/{base,session,models}.py`、新增 `branches.py` | UUIDv7、`timestamptz`、命名约定、schema（连接 `search_path`）、`__branch__` → `info.branch`；`branches.py` 提供分支过滤与 `schema_diff` |
+| `src/app/core/users/models.py`、`core/session/models.py`、`core/permissions/models.py`、`modules/files/models.py`、`infrastructure/audit/models.py`、`infrastructure/account_cleanup/models.py` 及其 repository / service / schemas | 列名 snake_case、主键 UUIDv7、时间 `timestamptz`；id 类型由 `int` 改为 `UUID`（JWT、确认 / 重置令牌与任务载荷中为字符串）；表名与列集合不变，按 §8 重建表结构在 B4（identity）、B6（files、audit）；`role` / `status` / `permission` 主键保持整数 / 字符串，B4 改为代码常量后删除；路径 id 为 `UUID`，非法值 422 `uuid` |
+| `src/app/cli/templates/resource/*` | 生成模块用 `Branch.MODULES`、UUIDv7 主键、snake_case 列；路由 id 为 `UUID` |
+| `src/app/config/database.py`、`config/base.py` | `DATABASE_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `NAME`、`DATABASE_SSL_*`、`DATABASE_CA` / `KEY` / `CERT` / `REJECT_UNAUTHORIZED`、`DB_SCHEMA_OWNER`、`DATABASE_MAX_CONNECTIONS`、`DATABASE_CONNECTION_TIMEOUT_MS`、`WORKER_DATABASE_MAX_CONNECTIONS` → `DATABASE_URL`（libpq，支持 `sslmode` / `sslrootcert` / `sslcert` / `sslkey` / `application_name`，其它参数启动失败）、`DATABASE_SCHEMA`、`DATABASE_POOL_SIZE` / `DATABASE_POOL_TIMEOUT`（`config/base.py` 新增约定 §9 时长类型 `Duration`）；B3 中 `DATABASE_URL` 必填，B7 验证方模式放开 |
+| `docker/docker-compose.{base,redis,ecs}.yaml` | 应用容器使用 `DATABASE_URL`，其余 compose 改动在 B8 |
 | `migrations/env.py`、`alembic.ini` | 多分支、`include_object`、`version_table_schema`、`CREATE SCHEMA`；`version_locations` 与 `recursive_version_locations` |
-| `src/app/factory.py`、`tests/integration/test_data_layer.py` | 去掉 `schema_check` |
+| `src/app/factory.py`、`cli/__init__.py`、`infrastructure/queue/worker.py`、`tests/integration/test_data_layer.py` | 去掉 `schema_check`；`app migrate` 执行 `upgrade heads`；每个进程的连接池为 `DATABASE_POOL_SIZE` |
 
 **B4 身份核心**
 

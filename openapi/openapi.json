@@ -223,9 +223,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "maximum": 2147483647,
-              "minimum": 1,
+              "type": "string",
+              "format": "uuid",
               "title": "Id"
             }
           }
@@ -300,9 +299,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "maximum": 2147483647,
-              "minimum": 1,
+              "type": "string",
+              "format": "uuid",
               "title": "Id"
             }
           }
@@ -387,9 +385,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "maximum": 2147483647,
-              "minimum": 1,
+              "type": "string",
+              "format": "uuid",
               "title": "Id"
             }
           }
@@ -1141,9 +1138,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "integer",
-              "maximum": 2147483647,
-              "minimum": 1,
+              "type": "string",
+              "format": "uuid",
               "title": "Id"
             }
           }
@@ -2478,7 +2474,8 @@
       "Session": {
         "properties": {
           "id": {
-            "type": "integer",
+            "type": "string",
+            "format": "uuid",
             "title": "Id"
           },
           "userAgent": {
@@ -2996,7 +2993,8 @@
       "User": {
         "properties": {
           "id": {
-            "type": "integer",
+            "type": "string",
+            "format": "uuid",
             "title": "Id"
           },
           "email": {

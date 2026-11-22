@@ -254,7 +254,7 @@ class TestRegisterAndLogin:
     ) -> None:
         data = await register(app, client)
         await connection.execute(
-            text('UPDATE "user" SET "statusId" = NULL WHERE id = :id'), {"id": data["user"]["id"]}
+            text('UPDATE "user" SET status_id = NULL WHERE id = :id'), {"id": data["user"]["id"]}
         )
         response = await client.post(PHONE_LOGIN, json={"phone": PHONE, "password": PASSWORD})
         assert error(response) == (422, {"phone": "userNotActive"})

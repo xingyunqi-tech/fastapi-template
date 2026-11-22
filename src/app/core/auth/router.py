@@ -1,4 +1,5 @@
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import Path, Request
 
@@ -6,7 +7,6 @@ from app.common.client import client_info
 from app.common.context import AppContext, Context
 from app.common.errors import AppError
 from app.common.routing import ApiRouter, Auth, Throttle
-from app.common.types import SerialId
 from app.core.auth.deps import CurrentRefreshUser, CurrentUser
 from app.core.auth.schemas import (
     AlipayLoginRequest,
@@ -190,7 +190,7 @@ async def get_sessions(user: CurrentUser, context: Context, session: DbSession) 
     summary="下线指定设备",
 )
 async def revoke_session(
-    user: CurrentUser, id: Annotated[SerialId, Path()], context: Context, session: DbSession
+    user: CurrentUser, id: Annotated[UUID, Path()], context: Context, session: DbSession
 ) -> None:
     await _service(context, session).revoke_session(user, id)
 

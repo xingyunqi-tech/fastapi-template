@@ -1,71 +1,106 @@
+import re
 import ssl
-import tempfile
-from enum import StrEnum
+from datetime import timedelta
 from pathlib import Path
+from typing import Any, Final
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from sqlalchemy.engine import URL, make_url
 
-from app.config.base import EnvFlag, SettingsGroup
+from app.config.base import Duration, SettingsGroup
 
-
-class SchemaOwner(StrEnum):
-    ALEMBIC = "alembic"
-    EXTERNAL = "external"
+_SCHEMA_RE: Final = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+_SSL_MODES: Final = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
+_SSL_FILES: Final = ("sslrootcert", "sslcert", "sslkey")
+_SUPPORTED_PARAMS: Final = frozenset({"sslmode", *_SSL_FILES, "application_name"})
 
 
 class DatabaseSettings(SettingsGroup):
-    url: str | None = Field(default=None, validation_alias="DATABASE_URL")
-    host: str = Field(default="localhost", validation_alias="DATABASE_HOST")
-    port: int = Field(default=5432, validation_alias="DATABASE_PORT")
-    username: str = Field(default="root", validation_alias="DATABASE_USERNAME")
-    password: SecretStr = Field(default=SecretStr("secret"), validation_alias="DATABASE_PASSWORD")
-    name: str = Field(default="api", validation_alias="DATABASE_NAME")
-    max_connections: int = Field(default=80, ge=1, validation_alias="DATABASE_MAX_CONNECTIONS")
-    worker_max_connections: int = Field(
-        default=10, ge=1, validation_alias="WORKER_DATABASE_MAX_CONNECTIONS"
+    url: SecretStr = Field(validation_alias="DATABASE_URL")
+    db_schema: str = Field(default="public", validation_alias="DATABASE_SCHEMA")
+    pool_size: int = Field(default=10, ge=1, validation_alias="DATABASE_POOL_SIZE")
+    pool_timeout: Duration = Field(
+        default=timedelta(seconds=10), validation_alias="DATABASE_POOL_TIMEOUT"
     )
-    connection_timeout_ms: int = Field(
-        default=10000, ge=1, validation_alias="DATABASE_CONNECTION_TIMEOUT_MS"
-    )
-    ssl_enabled: EnvFlag = Field(default=False, validation_alias="DATABASE_SSL_ENABLED")
-    reject_unauthorized: EnvFlag = Field(
-        default=True, validation_alias="DATABASE_REJECT_UNAUTHORIZED"
-    )
-    ca: str | None = Field(default=None, validation_alias="DATABASE_CA")
-    key: SecretStr | None = Field(default=None, validation_alias="DATABASE_KEY")
-    cert: str | None = Field(default=None, validation_alias="DATABASE_CERT")
-    schema_owner: SchemaOwner = Field(
-        default=SchemaOwner.ALEMBIC, validation_alias="DB_SCHEMA_OWNER"
-    )
+
+    @field_validator("url")
+    @classmethod
+    def _libpq_uri(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        if "," in urlsplit(raw).netloc:
+            raise ValueError("multiple hosts are not supported")
+        url = make_url(raw)
+        if url.drivername not in {"postgresql", "postgres"}:
+            raise ValueError("must be a libpq URI starting with postgresql://")
+        unsupported = sorted(set(url.query) - _SUPPORTED_PARAMS)
+        if unsupported:
+            raise ValueError(f"unsupported parameters: {', '.join(unsupported)}")
+        repeated = sorted(key for key, item in url.query.items() if not isinstance(item, str))
+        if repeated:
+            raise ValueError(f"repeated parameters: {', '.join(repeated)}")
+        mode = url.query.get("sslmode", "prefer")
+        if mode not in _SSL_MODES:
+            raise ValueError(f"unsupported sslmode: {mode}")
+        files = {key: str(url.query[key]) for key in _SSL_FILES if key in url.query}
+        if files and mode not in {"require", "verify-ca", "verify-full"}:
+            raise ValueError("certificate files require sslmode require, verify-ca or verify-full")
+        if mode in {"verify-ca", "verify-full"} and "sslrootcert" not in files:
+            raise ValueError(f"sslmode {mode} requires sslrootcert")
+        if "sslkey" in files and "sslcert" not in files:
+            raise ValueError("sslkey requires sslcert")
+        missing = sorted(key for key, path in files.items() if not Path(path).is_file())
+        if missing:
+            raise ValueError(f"certificate files not found: {', '.join(missing)}")
+        return value
+
+    @field_validator("db_schema")
+    @classmethod
+    def _identifier(cls, value: str) -> str:
+        if not _SCHEMA_RE.fullmatch(value):
+            raise ValueError("must match [a-z_][a-z0-9_]{0,62}")
+        if value.startswith("pg_") or value == "information_schema":
+            raise ValueError("must not be a reserved schema name")
+        return value
+
+    @field_validator("pool_timeout")
+    @classmethod
+    def _positive(cls, value: timedelta) -> timedelta:
+        if value <= timedelta(0):
+            raise ValueError("must be greater than 0")
+        return value
+
+    def _libpq(self) -> URL:
+        return make_url(self.url.get_secret_value())
 
     def sqlalchemy_url(self) -> URL:
-        if self.url:
-            return make_url(self.url).set(drivername="postgresql+asyncpg")
-        return URL.create(
-            "postgresql+asyncpg",
-            username=self.username,
-            password=self.password.get_secret_value(),
-            host=self.host,
-            port=self.port,
-            database=self.name,
-        )
+        """asyncpg 驱动 URL，libpq 查询参数由 `connect_args` 承接。"""
+        return self._libpq().set(drivername="postgresql+asyncpg", query={})
 
-    def ssl_context(self) -> ssl.SSLContext | None:
-        """DATABASE_CA / KEY / CERT 为 PEM 文本，语义同 node-postgres 的 ssl 选项。"""
-        if not self.ssl_enabled:
-            return None
-        context = ssl.create_default_context(cadata=self.ca or None)
-        if not self.reject_unauthorized:
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-        if self.cert:
-            with tempfile.TemporaryDirectory() as directory:
-                cert_file = Path(directory) / "cert.pem"
-                cert_file.write_text(self.cert, encoding="utf-8")
-                key_file = None
-                if self.key is not None:
-                    key_file = Path(directory) / "key.pem"
-                    key_file.write_text(self.key.get_secret_value(), encoding="utf-8")
-                context.load_cert_chain(cert_file, key_file)
-        return context
+    def connect_args(self) -> dict[str, Any]:
+        """asyncpg 连接参数：`search_path` 为 `DATABASE_SCHEMA`，时区 UTC，`sslmode` 转为 `ssl`。"""
+        query = self._libpq().query
+        server_settings = {"timezone": "UTC", "search_path": self.db_schema}
+        if name := query.get("application_name"):
+            server_settings["application_name"] = str(name)
+        args: dict[str, Any] = {
+            "server_settings": server_settings,
+            "timeout": self.pool_timeout.total_seconds(),
+        }
+        mode = str(query.get("sslmode", "prefer"))
+        files = {key: str(query[key]) for key in _SSL_FILES if key in query}
+        args["ssl"] = _ssl_context(mode, files) if files else mode
+        return args
+
+
+def _ssl_context(mode: str, files: dict[str, str]) -> ssl.SSLContext:
+    """无 `sslrootcert` 时不校验证书；有则校验证书链，`verify-full` 另校验主机名。"""
+    context = ssl.create_default_context(cafile=files.get("sslrootcert"))
+    if "sslrootcert" not in files:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    elif mode != "verify-full":
+        context.check_hostname = False
+    if "sslcert" in files:
+        context.load_cert_chain(files["sslcert"], files.get("sslkey"))
+    return context

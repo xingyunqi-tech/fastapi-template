@@ -1,3 +1,5 @@
+lazy from uuid import UUID
+
 from app.common.errors import AppError
 lazy from app.modules.{{ package }}.models import {{ class_name }}Model
 lazy from app.modules.{{ package }}.repository import {{ class_name }}Repository
@@ -16,14 +18,14 @@ class {{ class_plural }}Service:
     ) -> tuple[list[{{ class_name }}Model], int]:
         return await self.repository.find_page(page=page, limit=limit)
 
-    async def find_one(self, entity_id: int) -> {{ class_name }}Model:
+    async def find_one(self, entity_id: UUID) -> {{ class_name }}Model:
         entity = await self.repository.find_by_id(entity_id)
         if entity is None:
             raise AppError("common.notFound")
         return entity
 
     async def update(
-        self, entity_id: int, data: Update{{ class_name }}Request
+        self, entity_id: UUID, data: Update{{ class_name }}Request
     ) -> {{ class_name }}Model:
         await self.find_one(entity_id)
         updated = await self.repository.update(
@@ -33,6 +35,6 @@ class {{ class_plural }}Service:
             raise AppError("common.notFound")
         return updated
 
-    async def remove(self, entity_id: int) -> None:
+    async def remove(self, entity_id: UUID) -> None:
         if not await self.repository.remove(entity_id):
             raise AppError("common.notFound")

@@ -14,7 +14,7 @@ x-app: &app
   env_file:
     - ../.env.example
   environment: &app-env
-    DATABASE_HOST: postgres
+    DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?sslmode=disable
     MAIL_HOST: mailpit
     MAIL_PORT: '1025'
 

@@ -1,4 +1,6 @@
 import hashlib
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -135,6 +137,21 @@ class TestEmailFlows:
 
 
 class TestSessions:
+    async def test_last_active_at_is_current_utc_time_in_any_process_time_zone(
+        self, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "Asia/Shanghai")
+            time.tzset()
+            tokens = await login(client, "john.doe@example.com")
+            listed = (
+                await client.get("/api/v1/auth/sessions", headers=bearer(tokens["token"]))
+            ).json()["data"]
+        time.tzset()
+        current = next(s for s in listed if s["current"])
+        last_active = datetime.fromisoformat(current["lastActiveAt"])
+        assert abs(datetime.now(UTC) - last_active) < timedelta(minutes=1)
+
     async def test_list_revoke_and_logout(self, client: httpx.AsyncClient) -> None:
         first = await login(client, "john.doe@example.com")
         second = await login(client, "john.doe@example.com")
@@ -276,7 +293,7 @@ class TestUsersAdmin:
     async def test_invalid_id_after_auth(self, client: httpx.AsyncClient) -> None:
         admin = await login(client, "admin@example.com")
         response = await client.get("/api/v1/users/abc", headers=bearer(admin["token"]))
-        assert rules_of(response) == {"path.id": "type"}
+        assert rules_of(response) == {"path.id": "uuid"}
 
 
 @pytest.mark.committed

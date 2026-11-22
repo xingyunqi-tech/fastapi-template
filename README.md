@@ -29,7 +29,7 @@ FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platf
 make install                  # uv sync + 安装 prek 钩子
 cp .env.example .env          # 要单独运行 worker 时把 REDIS_ENABLED 改为 true
 make infra                    # Postgres 18 :5432、Redis 8 :6379、Mailpit（SMTP :1025，UI :8025）
-make migrate                  # alembic upgrade head
+make migrate                  # alembic upgrade heads
 make seed                     # 角色、状态、权限、初始账号
 make dev                      # 热重载，http://localhost:3000
 uv run --frozen app worker    # 队列 worker（需 REDIS_ENABLED=true）
@@ -56,7 +56,7 @@ uv run --frozen app scheduler # 定时任务调度
 | `make test-conventions` | 约定测试（探针路由） |
 | `make openapi` | 导出 `openapi/openapi.json` |
 | `make test-e2e` | e2e：ci 组合起完整服务栈后黑盒测试 |
-| `make migrate` | 执行迁移（`DB_SCHEMA_OWNER=external` 时跳过） |
+| `make migrate` | 执行全部迁移分支 |
 | `make seed` | 写入种子数据 |
 | `make generate-resource name=Product` | 生成 CRUD 模块骨架 |
 | `make infra` | 启动本地 Postgres / Redis / Mailpit |

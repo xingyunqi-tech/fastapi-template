@@ -1,5 +1,7 @@
 """{{ class_name }} 的请求与响应模型。"""
 
+from uuid import UUID
+
 from pydantic import Field
 
 from app.common.pagination import Page
@@ -7,7 +9,7 @@ from app.common.types import ApiModel, UtcDatetime
 
 
 class {{ class_name }}(ApiModel):
-    id: int
+    id: UUID
     name: str
     created_at: UtcDatetime
     updated_at: UtcDatetime

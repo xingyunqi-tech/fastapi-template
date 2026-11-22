@@ -5,6 +5,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
+lazy from uuid import UUID
 
 from fastapi import Depends, Request
 
@@ -32,15 +33,15 @@ def unauthorized(*, token_present: bool = True) -> AppError:
 
 @dataclass(frozen=True, slots=True)
 class JwtUser:
-    id: int
-    session_id: int
+    id: UUID
+    session_id: UUID
     role_id: int | None
     payload: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
 class RefreshUser:
-    session_id: int
+    session_id: UUID
     hash: str
 
 
@@ -71,7 +72,7 @@ def is_status_allowed_for_auth(status_id: int | None) -> bool:
     return status_id in {StatusId.ACTIVE, StatusId.INACTIVE}
 
 
-async def _touch(context: AppContext, session: DbSession, session_id: int) -> None:
+async def _touch(context: AppContext, session: DbSession, session_id: UUID) -> None:
     """在请求事务的 SAVEPOINT 中更新 lastActiveAt；失败只记日志。"""
     try:
         async with session.begin_nested():
@@ -80,26 +81,34 @@ async def _touch(context: AppContext, session: DbSession, session_id: int) -> No
         logger.warning("Failed to update lastActiveAt of session %s: %s", session_id, error)
 
 
+def _claim_uuid(payload: dict[str, Any], name: str) -> UUID:
+    value = payload.get(name)
+    if isinstance(value, str):
+        try:
+            return UUID(value)
+        except ValueError:
+            pass
+    raise unauthorized()
+
+
 async def _validate_access(
     payload: dict[str, Any], context: Context, session: DbSession
 ) -> JwtUser:
-    user_id = payload.get("id")
-    session_id = payload.get("sessionId")
-    if not user_id or not session_id:
-        raise unauthorized()
+    user_id = _claim_uuid(payload, "id")
+    session_id = _claim_uuid(payload, "sessionId")
     key = session_auth_cache_key(session_id)
     cached = await context.cache.get(key)
     if cached:
         if not is_status_allowed_for_auth(cached.get("statusId")):
             raise unauthorized()
-        return JwtUser(int(user_id), int(session_id), cached.get("roleId"), payload)
-    record = await SessionRepository(session).find_by_id(int(session_id))
+        return JwtUser(user_id, session_id, cached.get("roleId"), payload)
+    record = await SessionRepository(session).find_by_id(session_id)
     user = (
         await UserRepository(session).find_by_id(record.user_id)
         if record and record.user_id
         else None
     )
-    if record is None or user is None or str(user.id) != str(user_id):
+    if record is None or user is None or user.id != user_id:
         raise unauthorized()
     if not is_status_allowed_for_auth(user.status_id):
         raise unauthorized()
@@ -107,7 +116,7 @@ async def _validate_access(
     await context.cache.set(
         key, {"statusId": user.status_id, "roleId": user.role_id}, JWT_USER_CACHE_TTL_MS
     )
-    return JwtUser(int(user_id), int(session_id), user.role_id, payload)
+    return JwtUser(user_id, session_id, user.role_id, payload)
 
 
 async def current_user(request: Request, context: Context, session: DbSession) -> JwtUser:
@@ -131,10 +140,7 @@ async def optional_user(request: Request, context: Context, session: DbSession) 
 async def refresh_user(request: Request, context: Context) -> RefreshUser:
     secret = context.settings.auth.refresh_secret.get_secret_value()
     payload = _verify(_bearer(request), secret)
-    session_id = payload.get("sessionId")
-    if not session_id:
-        raise unauthorized()
-    return RefreshUser(int(session_id), str(payload.get("hash")))
+    return RefreshUser(_claim_uuid(payload, "sessionId"), str(payload.get("hash")))
 
 
 CurrentUser = Annotated[JwtUser, Depends(current_user)]

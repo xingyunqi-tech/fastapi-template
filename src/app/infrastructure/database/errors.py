@@ -7,8 +7,8 @@ lazy from collections.abc import Mapping
 PG_UNIQUE_VIOLATION: Final = "23505"
 
 UNIQUE_CONSTRAINT_ERRORS: Final[Mapping[str, str]] = {
-    "UQ_e12875dfb3b1d92d7d7c5377e22": "user.emailTaken",
-    "user_phone_key": "user.phoneTaken",
+    "uq_user_email": "user.emailTaken",
+    "uq_user_phone": "user.phoneTaken",
 }
 
 

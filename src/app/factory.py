@@ -20,13 +20,12 @@ from app.common.middleware import (
 from app.common.openapi import install_openapi, package_version
 from app.common.routing import API_PREFIX, ApiRouter, finalize_routes, include_routes
 from app.common.security import Passwords
-from app.config import SchemaOwner, Settings, get_settings
+from app.config import Settings, get_settings
 from app.core.auth import deps as _auth_deps  # noqa: F401
 from app.core.auth import router as auth
 from app.core.users import account_cleaner as _users_account_cleaner  # noqa: F401
 from app.core.users import router as users
 from app.infrastructure.cache import Cache, MemoryCache, RedisCache
-from app.infrastructure.database.schema_check import ensure_external_schema
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import router as health
 from app.infrastructure.logging import configure_logging
@@ -51,18 +50,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger("app")
 
 
-def build_context(settings: Settings, *, max_connections: int | None = None) -> AppContext:
-    """`max_connections` 为本进程连接上限；缺省按 API 进程数均分 `DATABASE_MAX_CONNECTIONS`。"""
+def build_context(settings: Settings, *, pool_size: int | None = None) -> AppContext:
+    """`pool_size` 覆盖本进程的 `DATABASE_POOL_SIZE`。"""
     redis = Redis.from_url(settings.redis.url()) if settings.redis.enabled else None
     cache: Cache = RedisCache(redis) if redis is not None else MemoryCache()
     queue = TaskQueue.from_settings(settings)
     context = AppContext(
         settings=settings,
-        database=(
-            Database.from_settings(settings.database, processes=settings.app.web_concurrency)
-            if max_connections is None
-            else Database.from_settings(settings.database, max_connections=max_connections)
-        ),
+        database=Database.from_settings(settings.database, pool_size=pool_size),
         cache=cache,
         passwords=Passwords(
             settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency
@@ -85,9 +80,6 @@ def _mailer(settings: Settings, queue: TaskQueue) -> Mailer:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     context: AppContext = app.state.context
-    database_settings = context.settings.database
-    if database_settings.schema_owner is SchemaOwner.EXTERNAL and context.database.engine:
-        await ensure_external_schema(context.database.engine)
     if context.queue is not None:
         await context.queue.startup()
     yield

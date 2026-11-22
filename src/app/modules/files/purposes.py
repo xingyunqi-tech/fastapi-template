@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
+lazy from uuid import UUID
 
 from app.common.errors import AppError, ValidationFailed, field_error
 from app.core.permissions.service import Permission
@@ -69,7 +70,7 @@ FILE_PURPOSE_RULES: Final[dict[FilePurpose, FilePurposeRule]] = {
 }
 
 
-def file_owner_for(purpose: FilePurpose, uploader_id: int | None) -> int | None:
+def file_owner_for(purpose: FilePurpose, uploader_id: UUID | None) -> UUID | None:
     return None if FILE_PURPOSE_RULES[purpose].content_asset else uploader_id
 
 
