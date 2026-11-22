@@ -1,5 +1,6 @@
 import asyncio
 from typing import Annotated, Final
+lazy from uuid import UUID
 
 import typer
 from alembic import command
@@ -14,15 +15,18 @@ from app.cli.generate import generate_cli
 from app.cli.openapi import openapi_cli
 from app.cli.seed import seed as run_seed
 from app.config import Settings, get_settings
-from app.core.permissions.service import ROLE_PERMISSIONS_CACHE_KEY
 from app.factory import build_context
+from app.infrastructure.account_cleanup import AccountCleanupRunner
 from app.infrastructure.logging import configure_logging
+from app.security.keys import generate_key_pair
 
 CLI_DATABASE_POOL_SIZE: Final = 1
 
 cli = typer.Typer(no_args_is_help=True, add_completion=False)
-permissions_cli = typer.Typer(no_args_is_help=True)
-cli.add_typer(permissions_cli, name="permissions", help="权限")
+keys_cli = typer.Typer(no_args_is_help=True)
+users_cli = typer.Typer(no_args_is_help=True)
+cli.add_typer(keys_cli, name="keys", help="签名密钥")
+cli.add_typer(users_cli, name="users", help="用户")
 cli.add_typer(generate_cli, name="generate", help="代码生成")
 cli.add_typer(openapi_cli, name="openapi", help="OpenAPI 文档")
 
@@ -36,26 +40,38 @@ def migrate() -> None:
 
 @cli.command()
 def seed() -> None:
-    """写入角色、状态、权限、行政区划、配置与初始账号（已存在的不覆盖）。"""
+    """无 active admin 时创建管理员账号。"""
+
+    async def run() -> bool:
+        context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
+        try:
+            async with context.database.transaction() as session:
+                return await run_seed(session, context.settings)
+        finally:
+            await context.database.dispose()
+
+    typer.echo(
+        "已创建管理员账号" if asyncio.run(run()) else "已有管理员账号或未提供管理员凭据，未创建"
+    )
+
+
+@keys_cli.command("generate")
+def generate_keys() -> None:
+    """生成 Ed25519 密钥对：私钥用于 `AUTH_SIGNING_KEY`，公钥用于其他服务的 `AUTH_VERIFY_KEYS`。"""
+    pair = generate_key_pair()
+    typer.echo(pair.private_pem + pair.public_pem, nl=False)
+
+
+@users_cli.command("cleanup")
+def cleanup_user(user_id: Annotated[UUID, typer.Argument(help="已注销用户的 id")]) -> None:
+    """重新执行该用户的注销数据清理。"""
 
     async def run() -> None:
         context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
-        async with context.database.transaction() as session:
-            await run_seed(session, context.settings)
-        await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
-        await context.database.dispose()
-
-    asyncio.run(run())
-
-
-@permissions_cli.command("clear-cache")
-def clear_permission_cache() -> None:
-    """清除角色权限缓存。"""
-
-    async def run() -> None:
-        context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
-        await context.cache.delete(ROLE_PERMISSIONS_CACHE_KEY)
-        await context.database.dispose()
+        try:
+            await AccountCleanupRunner.from_context(context).run(user_id)
+        finally:
+            await context.database.dispose()
 
     asyncio.run(run())
 

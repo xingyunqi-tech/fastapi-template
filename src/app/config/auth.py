@@ -1,48 +1,82 @@
-from enum import StrEnum
+import re
+from datetime import timedelta
+from typing import Annotated, Any, Final
 
-from pydantic import Field, SecretStr
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
+from pydantic import BeforeValidator, Field, SecretStr, field_validator
+from pydantic_settings import NoDecode
 
-from app.config.base import SettingsGroup
+from app.config.base import Duration, SettingsGroup
+from app.security.passwords import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 
-PRODUCTION_SECRET_MIN_LENGTH = 32
+_PEM_BLOCK: Final = re.compile(
+    r"-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----", re.MULTILINE
+)
 
 
-class PasswordHasher(StrEnum):
-    ARGON2ID = "argon2id"
-    BCRYPT = "bcrypt"
+def _split_public_keys(value: Any) -> Any:
+    if isinstance(value, str):
+        blocks = _PEM_BLOCK.findall(value.replace("\\n", "\n"))
+        if value.strip() and not blocks:
+            raise ValueError("must contain PEM public keys")
+        return blocks
+    return value
+
+
+PublicKeys = Annotated[list[str], NoDecode, BeforeValidator(_split_public_keys)]
 
 
 class AuthSettings(SettingsGroup):
-    secret: SecretStr = Field(validation_alias="AUTH_JWT_SECRET")
-    expires: str = Field(validation_alias="AUTH_JWT_TOKEN_EXPIRES_IN")
-    refresh_secret: SecretStr = Field(validation_alias="AUTH_REFRESH_SECRET")
-    refresh_expires: str = Field(validation_alias="AUTH_REFRESH_TOKEN_EXPIRES_IN")
-    forgot_secret: SecretStr = Field(validation_alias="AUTH_FORGOT_SECRET")
-    forgot_expires: str = Field(validation_alias="AUTH_FORGOT_TOKEN_EXPIRES_IN")
-    confirm_email_secret: SecretStr = Field(validation_alias="AUTH_CONFIRM_EMAIL_SECRET")
-    confirm_email_expires: str = Field(validation_alias="AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN")
-    password_hasher: PasswordHasher = Field(
-        default=PasswordHasher.ARGON2ID, validation_alias="PASSWORD_HASHER"
-    )
+    issuer: str = Field(min_length=1, validation_alias="AUTH_ISSUER")
+    audience: str = Field(min_length=1, validation_alias="AUTH_AUDIENCE")
+    signing_key: SecretStr = Field(validation_alias="AUTH_SIGNING_KEY")
+    verify_keys: PublicKeys = Field(default_factory=list, validation_alias="AUTH_VERIFY_KEYS")
+    access_ttl: Duration = Field(default=timedelta(minutes=15), validation_alias="AUTH_ACCESS_TTL")
+    refresh_ttl: Duration = Field(default=timedelta(hours=720), validation_alias="AUTH_REFRESH_TTL")
     hash_concurrency: int = Field(default=2, ge=1, validation_alias="PASSWORD_HASH_CONCURRENCY")
+    seed_admin_email: str | None = Field(default=None, validation_alias="SEED_ADMIN_EMAIL")
+    seed_admin_password: SecretStr | None = Field(
+        default=None, validation_alias="SEED_ADMIN_PASSWORD"
+    )
 
-    def secrets(self) -> list[SecretStr]:
-        return [self.secret, self.refresh_secret, self.forgot_secret, self.confirm_email_secret]
+    @field_validator("signing_key")
+    @classmethod
+    def _ed25519_private_key(cls, value: SecretStr) -> SecretStr:
+        pem = value.get_secret_value().replace("\\n", "\n")
+        try:
+            key = load_pem_private_key(pem.encode(), password=None)
+        except ValueError, TypeError:
+            raise ValueError("must be an Ed25519 private key in PEM format") from None
+        if not isinstance(key, Ed25519PrivateKey):
+            raise ValueError("must be an Ed25519 private key in PEM format")
+        return SecretStr(pem)
 
-    def validate_for_production(self) -> list[str]:
-        """生产环境要求四个密钥均 ≥32 字符且互不相同。"""
-        names = [
-            "AUTH_JWT_SECRET",
-            "AUTH_REFRESH_SECRET",
-            "AUTH_FORGOT_SECRET",
-            "AUTH_CONFIRM_EMAIL_SECRET",
-        ]
-        values = [s.get_secret_value() for s in self.secrets()]
-        errors = [
-            f"{name}: must be at least {PRODUCTION_SECRET_MIN_LENGTH} characters in production"
-            for name, value in zip(names, values, strict=True)
-            if len(value) < PRODUCTION_SECRET_MIN_LENGTH
-        ]
-        if len(set(values)) != len(values):
-            errors.append(f"{', '.join(names)}: must be different from each other in production")
-        return errors
+    @field_validator("verify_keys")
+    @classmethod
+    def _ed25519_public_keys(cls, value: list[str]) -> list[str]:
+        for pem in value:
+            try:
+                key = load_pem_public_key(pem.encode())
+            except ValueError:
+                raise ValueError("must contain Ed25519 public keys in PEM format") from None
+            if not isinstance(key, Ed25519PublicKey):
+                raise ValueError("must contain Ed25519 public keys in PEM format")
+        return value
+
+    @field_validator("seed_admin_password")
+    @classmethod
+    def _seed_password_length(cls, value: SecretStr | None) -> SecretStr | None:
+        if (
+            value is not None
+            and not PASSWORD_MIN_LENGTH <= len(value.get_secret_value()) <= PASSWORD_MAX_LENGTH
+        ):
+            raise ValueError("must be 8 to 128 characters")
+        return value
+
+    @field_validator("access_ttl", "refresh_ttl")
+    @classmethod
+    def _positive(cls, value: timedelta) -> timedelta:
+        if value <= timedelta(0):
+            raise ValueError("must be greater than 0")
+        return value

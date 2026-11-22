@@ -25,9 +25,9 @@ lazy from sqlalchemy.ext.asyncio import AsyncConnection
 from app.common.context import AppContext
 from app.common.errors import field_error
 from app.common.routing import ApiRouter, Auth
-from app.common.security import Jwt, Passwords
 from app.config import Settings, get_settings
-from app.factory import create_app
+from app.factory import build_tokens, create_app
+from app.identity.sessions.account_cleaner import SessionsAccountCleaner
 from app.infrastructure import account_cleanup, metrics
 from app.infrastructure import queue as queue_module
 from app.infrastructure.account_cleanup import AccountCleanupProducer, pending_key
@@ -35,6 +35,7 @@ from app.infrastructure.audit import Auditable, AuditAction, AuditService
 from app.infrastructure.audit.models import AuditLogModel
 from app.infrastructure.cache import MemoryCache
 from app.infrastructure.database.session import Database
+from app.infrastructure.mail import MailMessage, SmtpTransport
 from app.infrastructure.queue import TaskQueue, stream_name
 from app.infrastructure.queue import mail as mail_queue
 from app.infrastructure.queue.mail import QueueMailer
@@ -45,14 +46,18 @@ from app.infrastructure.scheduler import (
     create_scheduler,
     enqueue_pending_account_cleanups,
 )
-from app.integrations.mail import MailMessage, SmtpTransport
+from app.security.passwords import Passwords
 from tests.integration.conftest import client_for
-from tests.integration.test_auth import PASSWORD, bearer, login
-lazy from app.core.auth.schemas import UpdateMeRequest
+from tests.integration.identity import PASSWORD, USER_EMAIL, bearer, login
+from tests.tokens import access_token
+lazy from app.identity.me.schemas import UpdateMeRequest
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from aiosmtpd.controller import Controller
+
+
+USER_ID = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
 
 
 def _free_port() -> int:
@@ -97,8 +102,8 @@ def smtp(monkeypatch: pytest.MonkeyPatch) -> Iterator[SmtpSink]:
     for name, value in {
         "MAIL_HOST": "127.0.0.1",
         "MAIL_PORT": str(port),
-        "MAIL_DEFAULT_EMAIL": "noreply@example.com",
-        "MAIL_DEFAULT_NAME": "Api",
+        "MAIL_FROM": "Api <noreply@example.com>",
+        "MAIL_TLS": "none",
         "APP_NAME": "Tom's <App> & Co",
         "APP_FRONTEND_URL": "https://app.example.com",
     }.items():
@@ -161,13 +166,16 @@ def cleaners(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, UUID]]:
 
 def make_context(database: Database, redis: Redis | None = None) -> AppContext:
     settings = Settings.load()
+    signer, verifier = build_tokens(settings)
     queue = TaskQueue.from_settings(settings)
     context = AppContext(
         settings=settings,
         database=database,
         cache=MemoryCache(),
-        passwords=Passwords(settings.auth.password_hasher),
+        passwords=Passwords(),
         mailer=QueueMailer(queue, settings),
+        signer=signer,
+        verifier=verifier,
         redis=redis,
         queue=queue,
     )
@@ -194,10 +202,21 @@ def counter(metric: Any, **labels: str) -> float:
 async def _user_id(database: Database, email_address: str) -> UUID:
     async with database.transaction() as session:
         value = await session.scalar(
-            text('SELECT id FROM "user" WHERE email = :email'), {"email": email_address}
+            text("SELECT id FROM users WHERE email = :email"), {"email": email_address}
         )
     assert isinstance(value, UUID)
     return value
+
+
+async def _request_deletion(database: Database, user_id: UUID, minutes_ago: int = 0) -> None:
+    async with database.transaction() as session:
+        await session.execute(
+            text(
+                "INSERT INTO account_deletions (user_id, requested_at) "
+                "VALUES (:id, now() - make_interval(mins => :minutes))"
+            ),
+            {"id": user_id, "minutes": minutes_ago},
+        )
 
 
 class TestLockWithRedis:
@@ -249,7 +268,7 @@ class TestMailQueue:
         context = make_context(Database.bound_to(connection))
         assert context.queue is not None
         before = counter(metrics.queue_jobs_total, queue_name="mail", status="completed")
-        await context.mailer.send(MailMessage("activation", "to@example.com", {"hash": "h"}))
+        await context.mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
         await context.queue.shutdown()
         await smtp.wait_for(1)
         assert no_sleep == [1.0, 2.0]
@@ -282,7 +301,7 @@ class TestMailQueue:
         assert queue.distributed
         await queue.startup()
         try:
-            await context.mailer.send(MailMessage("activation", "to@example.com", {"hash": "h"}))
+            await context.mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
             assert await redis.xlen(stream_name("mail")) == 1
             assert smtp.messages == []
             await consume(queue, 1)
@@ -299,7 +318,7 @@ class TestMailQueue:
         context = make_context(Database.bound_to(connection), redis)
         assert context.queue is not None
         await context.queue.startup()
-        await context.mailer.send(MailMessage("activation", "to@example.com", {"hash": "h"}))
+        await context.mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
         await context.queue.shutdown()
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -360,7 +379,7 @@ class TestMailQueue:
         assert isinstance(mailer, QueueMailer)
         await context.queue.startup()
         with caplog.at_level("ERROR", logger="app.queue.mail"):
-            await mailer.send(MailMessage("activation", "to@example.com", {"hash": "h"}))
+            await mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
         assert "Failed to enqueue mail" in caplog.text
         await mailer.drain()
         await context.queue.shutdown()
@@ -368,7 +387,7 @@ class TestMailQueue:
         assert smtp.messages[0]["To"] == "to@example.com"
         text_part = smtp.messages[0].get_body(("plain",))
         assert text_part is not None
-        assert "/confirm-email?hash=h" in str(text_part.get_content())
+        assert "https://app.example.com/verify-email?token=t" in str(text_part.get_content())
 
     async def test_register_does_not_hang_when_redis_blackholes(
         self,
@@ -388,21 +407,18 @@ class TestMailQueue:
             cache=MemoryCache(),
             passwords=built.passwords,
             mailer=built.mailer,
+            signer=built.signer,
+            verifier=built.verifier,
             queue=built.queue,
         )
         started = time.monotonic()
         async with client_for(app) as client:
             response = await client.post(
                 "/api/v1/auth/email/register",
-                json={
-                    "email": "blackhole@example.com",
-                    "password": PASSWORD,
-                    "firstName": "B",
-                    "lastName": "H",
-                },
+                json={"email": "blackhole@example.com", "password": PASSWORD},
             )
         elapsed = time.monotonic() - started
-        assert response.json() == {"code": 0, "message": "ok", "data": None}
+        assert response.status_code == 201
         assert elapsed < 5
         await built.mailer.drain()
         await smtp.wait_for(1)
@@ -469,8 +485,10 @@ def audit_app(connection: AsyncConnection) -> FastAPI:
         settings=settings,
         database=Database.bound_to(connection),
         cache=MemoryCache(),
-        passwords=Passwords(settings.auth.password_hasher),
+        passwords=Passwords(),
         mailer=app.state.context.mailer,
+        signer=app.state.context.signer,
+        verifier=app.state.context.verifier,
     )
     return app
 
@@ -489,12 +507,11 @@ class TestAudit:
     async def test_records_successful_request(
         self, audit_app: FastAPI, connection: AsyncConnection
     ) -> None:
-        secret = audit_app.state.settings.auth.secret.get_secret_value()
-        token = Jwt.sign({"id": 7, "role": {"id": 1}, "sessionId": 1}, secret, "15m")
+        token = access_token(audit_app, USER_ID)
         async with client_for(audit_app) as client:
             response = await client.patch(
                 "/api/v1/audit-probe/items/5",
-                json={"firstName": "Ann", "oldPassword": PASSWORD, "unknown": 1},
+                json={"displayName": "Ann", "currentPassword": PASSWORD, "unknown": 1},
                 headers={
                     **bearer(token),
                     "X-Forwarded-For": "198.51.100.1, 10.0.0.1",
@@ -510,7 +527,7 @@ class TestAudit:
             None,
         )
         assert log.old_value is None
-        assert log.new_value == {"firstName": "Ann", "oldPassword": "[REDACTED]"}
+        assert log.new_value == {"displayName": "Ann"}
         assert (log.ip_address, log.user_agent) == ("198.51.100.1", "probe/1.0")
         assert log.request_id == response.headers["x-request-id"]
         assert await _scalar(
@@ -523,11 +540,11 @@ class TestAudit:
         self, audit_app: FastAPI, connection: AsyncConnection
     ) -> None:
         async with client_for(audit_app) as client:
-            tokens = await login(client, "john.doe@example.com")
+            tokens = await login(client, USER_EMAIL)
             response = await client.patch(
                 "/api/v1/audit-probe/me/items/5",
-                json={"firstName": "Ann"},
-                headers=bearer(tokens["token"]),
+                json={"displayName": "Ann"},
+                headers=bearer(tokens["accessToken"]),
             )
         assert response.status_code == 200
         [log] = await _audit_logs(connection)
@@ -590,28 +607,46 @@ class TestAccountCleanup:
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
         async with client_for(committed_app) as client:
-            tokens = await login(client, "john.doe@example.com")
-            deleted = await client.request(
-                "DELETE",
-                "/api/v1/auth/me",
-                json={"oldPassword": PASSWORD},
-                headers=bearer(tokens["token"]),
-            )
-        assert deleted.status_code == 200
+            tokens = await login(client, USER_EMAIL)
+            deleted = await client.delete("/api/v1/me", headers=bearer(tokens["accessToken"]))
+        assert deleted.status_code == 202
         await context.queue.shutdown()
         user_id = UUID(tokens["user"]["id"])
         assert cleaners == [("probe", user_id)]
         async with context.database.transaction() as session:
             completed = await session.scalar(
-                text("SELECT completed_at FROM account_cleanup WHERE user_id = :id"),
+                text("SELECT completed_at FROM account_deletions WHERE user_id = :id"),
                 {"id": user_id},
             )
-            active_sessions = await session.scalar(
-                text("SELECT count(*) FROM session WHERE user_id = :id AND deleted_at IS NULL"),
+            active = await session.scalar(
+                text("SELECT count(*) FROM sessions WHERE user_id = :id AND revoked_at IS NULL"),
                 {"id": user_id},
             )
         assert completed is not None
-        assert active_sessions == 0
+        assert active == 0
+
+    async def test_sessions_cleaner_deletes_sessions_and_refresh_tokens(
+        self, committed_app: FastAPI
+    ) -> None:
+        context: AppContext = committed_app.state.context
+        async with client_for(committed_app) as client:
+            tokens = await login(client, USER_EMAIL)
+        user_id = UUID(tokens["user"]["id"])
+
+        await SessionsAccountCleaner(context.database).clean(user_id)
+        await SessionsAccountCleaner(context.database).clean(user_id)
+
+        async with context.database.transaction() as session:
+            counts = (
+                await session.execute(
+                    text(
+                        "SELECT (SELECT count(*) FROM sessions WHERE user_id = :id), "
+                        "(SELECT count(*) FROM refresh_tokens)"
+                    ),
+                    {"id": user_id},
+                )
+            ).one()
+        assert tuple(counts) == (0, 0)
 
     async def test_final_failure_logs_error(
         self,
@@ -633,16 +668,24 @@ class TestAccountCleanup:
         context: AppContext = committed_app.state.context
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
-        user_id = await _user_id(context.database, "john.doe@example.com")
+        user_id = await _user_id(context.database, USER_EMAIL)
+        await _request_deletion(context.database, user_id)
         with caplog.at_level("ERROR", logger="app.account_cleanup"):
             await AccountCleanupProducer(context).enqueue_cleanup(user_id)
             await context.queue.shutdown()
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
         async with context.database.transaction() as session:
-            completed = await session.scalar(
-                text("SELECT count(*) FROM account_cleanup WHERE user_id = :id"), {"id": user_id}
-            )
-        assert completed == 0
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT completed_at, attempts, last_error FROM account_deletions "
+                        "WHERE user_id = :id"
+                    ),
+                    {"id": user_id},
+                )
+            ).one()
+        assert (row.completed_at, row.attempts) == (None, 5)
+        assert row.last_error == f"Account cleanup for user {user_id} failed: files (s3 down)"
         failures = [
             record.getMessage()
             for record in caplog.records
@@ -671,7 +714,7 @@ class TestAccountCleanup:
         queue = context.queue
         assert queue is not None
         await queue.startup()
-        user_id = await _user_id(context.database, "john.doe@example.com")
+        user_id = await _user_id(context.database, USER_EMAIL)
         producer = AccountCleanupProducer(context)
         try:
             await producer.enqueue_cleanup(user_id)
@@ -705,7 +748,7 @@ class TestAccountCleanup:
         queue = context.queue
         assert queue is not None
         await queue.startup()
-        user_id = await _user_id(context.database, "john.doe@example.com")
+        user_id = await _user_id(context.database, USER_EMAIL)
         other_worker = LockService(redis)
         token = await other_worker.try_acquire(f"account-cleanup:user-{user_id}", 60_000)
         assert token is not None
@@ -752,13 +795,24 @@ class TestLifespan:
 class TestScheduler:
     async def test_cleanup_conditions(self, committed_app: FastAPI) -> None:
         context: AppContext = committed_app.state.context
-        user_id = await _user_id(context.database, "john.doe@example.com")
+        user_id = await _user_id(context.database, USER_EMAIL)
         async with context.database.transaction() as session:
             await session.execute(
                 text(
-                    "INSERT INTO session (hash, user_id, deleted_at) VALUES "
-                    "('old', :u, NOW() - INTERVAL '8 days'), "
-                    "('recent', :u, NOW() - INTERVAL '6 days'), ('active', :u, NULL)"
+                    "INSERT INTO sessions (user_id, user_agent, auth_time, expires_at, revoked_at) "
+                    "VALUES "
+                    "(:u, 'expired', now(), now() - INTERVAL '1 minute', NULL), "
+                    "(:u, 'old', now(), now() + INTERVAL '1 day', now() - INTERVAL '8 days'), "
+                    "(:u, 'recent', now(), now() + INTERVAL '1 day', now() - INTERVAL '6 days'), "
+                    "(:u, 'active', now(), now() + INTERVAL '1 day', NULL)"
+                ),
+                {"u": user_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO verification_tokens (user_id, purpose, token_hash, expires_at) "
+                    "VALUES (:u, 'verify_email', 'expired', now() - INTERVAL '1 minute'), "
+                    "(:u, 'reset_password', 'valid', now() + INTERVAL '1 minute')"
                 ),
                 {"u": user_id},
             )
@@ -770,19 +824,17 @@ class TestScheduler:
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
         async with context.database.transaction() as session:
-            assert (
-                await session.scalar(text("SELECT count(*) FROM session WHERE hash = 'old'")) == 1
-            )
+            assert await session.scalar(text("SELECT count(*) FROM sessions")) == 4
         await context.locks.release("scheduler:cleanup-old-sessions", token)
 
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
         assert await cleanup_old_sessions(context) == 0
         async with context.database.transaction() as session:
-            hashes = await session.scalars(
-                text("SELECT hash FROM session WHERE hash IN ('old', 'recent', 'active')")
-            )
-            assert sorted(hashes) == ["active", "recent"]
+            agents = await session.scalars(text("SELECT user_agent FROM sessions"))
+            assert sorted(agents) == ["active", "recent"]
+            hashes = await session.scalars(text("SELECT token_hash FROM verification_tokens"))
+            assert list(hashes) == ["valid"]
 
     async def test_compensation_enqueues_users_deleted_before_grace(
         self, committed_app: FastAPI, cleaners: list[tuple[str, UUID]]
@@ -800,21 +852,10 @@ class TestScheduler:
         context: AppContext = committed_app.state.context
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
-        old_id = await _user_id(context.database, "john.doe@example.com")
+        old_id = await _user_id(context.database, USER_EMAIL)
         new_id = await _user_id(context.database, "admin@example.com")
-        async with context.database.transaction() as session:
-            await session.execute(
-                text(
-                    "UPDATE \"user\" SET deleted_at = NOW() - INTERVAL '31 minutes' WHERE id = :id"
-                ),
-                {"id": old_id},
-            )
-            await session.execute(
-                text(
-                    "UPDATE \"user\" SET deleted_at = NOW() - INTERVAL '10 minutes' WHERE id = :id"
-                ),
-                {"id": new_id},
-            )
+        await _request_deletion(context.database, old_id, minutes_ago=31)
+        await _request_deletion(context.database, new_id, minutes_ago=10)
         assert await enqueue_pending_account_cleanups(context) == 1
         await context.queue.shutdown()
         assert cleaners == [("probe", old_id)]

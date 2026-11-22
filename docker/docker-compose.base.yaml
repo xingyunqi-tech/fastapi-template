@@ -50,7 +50,6 @@ services:
       - -c
       - >-
         app migrate
-        && app permissions clear-cache
         && if [ "$${RUN_SEEDS:-false}" = true ]; then app seed; fi
     restart: 'no'
 

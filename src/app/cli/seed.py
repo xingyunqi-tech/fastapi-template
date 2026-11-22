@@ -1,94 +1,41 @@
-"""种子数据，与 nestjs seeds 一致：已存在的数据不覆盖。"""
+"""种子数据：无 active admin 时创建管理员账号（角色为代码常量，不入库）。"""
 
-import hashlib
-import json
-import os
-from pathlib import Path
-from typing import Any, Final
+from datetime import UTC, datetime
+from typing import Final
 
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.security import Passwords
-from app.core.permissions.models import PermissionModel, RolePermissionModel
-from app.core.permissions.service import RoleId, StatusId
-from app.core.users.models import RoleModel, StatusModel, UserModel
+from app.identity.users.models import UserModel, UserRoleModel, UserStatus
+from app.identity.users.repository import UserRepository
+from app.security.passwords import Passwords
+from app.security.rbac import Role
 lazy from app.config import Settings
 
-DATA_DIR: Final = Path(__file__).resolve().parent / "seed_data"
-DEFAULT_PASSWORD: Final = "Secret00"  # noqa: S105
+DEVELOPMENT_ADMIN_EMAIL: Final = "admin@example.com"
+DEVELOPMENT_ADMIN_PASSWORD: Final = "Secret00"  # noqa: S105
 
 
-def _load(name: str) -> Any:
-    return json.loads((DATA_DIR / name).read_text(encoding="utf-8"))
-
-
-def _md5(text: str) -> str:
-    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-
-
-async def seed(session: AsyncSession, settings: Settings) -> None:
-    data = _load("seed.json")
-    for model, rows in ((RoleModel, data["roles"]), (StatusModel, data["statuses"])):
-        await session.execute(insert(model).values(rows).on_conflict_do_nothing())
-    await session.execute(
-        insert(PermissionModel).values(data["permissions"]).on_conflict_do_nothing()
-    )
-    await session.execute(
-        insert(RolePermissionModel)
-        .values(
-            [
-                {"role_id": row["roleId"], "permission_id": row["permissionId"]}
-                for row in data["rolePermissions"]
-            ]
+async def seed(session: AsyncSession, settings: Settings) -> bool:
+    """非生产为 `admin@example.com` / `Secret00`；生产取 `SEED_ADMIN_*`，未设置时不创建。"""
+    if settings.app.is_production:
+        auth = settings.auth
+        email = (auth.seed_admin_email or "").strip().lower() or None
+        secret = auth.seed_admin_password
+        password = secret.get_secret_value() if secret is not None else None
+    else:
+        email, password = DEVELOPMENT_ADMIN_EMAIL, DEVELOPMENT_ADMIN_PASSWORD
+    if email is None or password is None or await UserRepository(session).active_admin_ids():
+        return False
+    passwords = Passwords(concurrency=settings.auth.hash_concurrency)
+    session.add(
+        UserModel(
+            email=email,
+            email_verified_at=datetime.now(UTC),
+            password_hash=passwords.hash(password),
+            display_name="Admin",
+            status=UserStatus.ACTIVE.value,
+            role_rows=[UserRoleModel(role=Role.ADMIN.value), UserRoleModel(role=Role.USER.value)],
         )
-        .on_conflict_do_nothing()
     )
-    await _seed_users(session, settings)
-
-
-async def _count_role(session: AsyncSession, role: RoleId) -> int:
-    return int(
-        await session.scalar(
-            select(func.count())
-            .select_from(UserModel)
-            .where(UserModel.role_id == role, UserModel.deleted_at.is_(None))
-        )
-        or 0
-    )
-
-
-async def _seed_users(session: AsyncSession, settings: Settings) -> None:
-    passwords = Passwords(settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency)
-    production = settings.app.is_production
-    admin_email = (
-        (os.environ.get("SEED_ADMIN_EMAIL") or "").strip().lower() or None
-        if production
-        else "admin@example.com"
-    )
-    admin_password = os.environ.get("SEED_ADMIN_PASSWORD") if production else DEFAULT_PASSWORD
-    if not await _count_role(session, RoleId.ADMIN) and admin_email and admin_password:
-        session.add(
-            UserModel(
-                first_name="Super",
-                last_name="Admin",
-                email=admin_email,
-                password=passwords.hash(_md5(admin_password)),
-                role_id=RoleId.ADMIN,
-                status_id=StatusId.ACTIVE,
-            )
-        )
-        await session.flush()
-    if not await _count_role(session, RoleId.USER) and not production:
-        session.add(
-            UserModel(
-                first_name="John",
-                last_name="Doe",
-                email="john.doe@example.com",
-                password=passwords.hash(_md5(DEFAULT_PASSWORD)),
-                role_id=RoleId.USER,
-                status_id=StatusId.ACTIVE,
-            )
-        )
-        await session.flush()
+    await session.flush()
+    return True

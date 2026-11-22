@@ -21,6 +21,7 @@ from app.config import (
     get_settings,
 )
 from app.config.base import env_names
+from tests import keys
 
 TESTS_ROOT = Path(__file__).parent
 DIRECTORY_MARKERS = {"unit", "conventions", "integration", "e2e"}
@@ -45,14 +46,9 @@ SETTINGS_ENV_VARS = set().union(
     )
 )
 TEST_ENV = {
-    "AUTH_JWT_SECRET": "test-access-secret-0123456789abcdef",
-    "AUTH_JWT_TOKEN_EXPIRES_IN": "15m",
-    "AUTH_REFRESH_SECRET": "test-refresh-secret-0123456789abcdef",
-    "AUTH_REFRESH_TOKEN_EXPIRES_IN": "3650d",
-    "AUTH_FORGOT_SECRET": "test-forgot-secret-0123456789abcdef",
-    "AUTH_FORGOT_TOKEN_EXPIRES_IN": "30m",
-    "AUTH_CONFIRM_EMAIL_SECRET": "test-confirm-secret-0123456789abcdef",
-    "AUTH_CONFIRM_EMAIL_TOKEN_EXPIRES_IN": "1d",
+    "AUTH_ISSUER": keys.ISSUER,
+    "AUTH_AUDIENCE": keys.AUDIENCE,
+    "AUTH_SIGNING_KEY": keys.SIGNING_KEY,
     "THROTTLE_ENABLED": "false",
     "DATABASE_URL": "postgresql://root:secret@localhost:5432/api?sslmode=disable",
 }
@@ -88,5 +84,5 @@ def use_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("REDIS_ENABLED", "true")
     monkeypatch.setenv("MAIL_HOST", "smtp.example.com")
-    monkeypatch.setenv("MAIL_DEFAULT_EMAIL", "noreply@example.com")
-    monkeypatch.setenv("MAIL_DEFAULT_NAME", "Api")
+    monkeypatch.setenv("MAIL_FROM", "Api <noreply@example.com>")
+    monkeypatch.setenv("APP_FRONTEND_URL", "https://app.example.com")

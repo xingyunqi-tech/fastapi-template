@@ -22,7 +22,7 @@ make docker-build IMAGE=myapp:dev
 | api | 默认 `CMD`（Granian，`WEB_CONCURRENCY` 个进程） |
 | worker | `app worker` |
 | scheduler | `app scheduler` |
-| migrate | `app migrate && app permissions clear-cache`，`RUN_SEEDS=true` 时追加 `app seed` |
+| migrate | `app migrate`，`RUN_SEEDS=true` 时追加 `app seed` |
 
 ## Compose
 
@@ -66,13 +66,13 @@ api 与 worker 挂载同一 `prometheus-multiproc` 卷并设 `PROMETHEUS_MULTIPR
 
 | 变量 | 要求 |
 |---|---|
-| `AUTH_JWT_SECRET`、`AUTH_REFRESH_SECRET`、`AUTH_FORGOT_SECRET`、`AUTH_CONFIRM_EMAIL_SECRET` | ≥32 字符且互不相同，否则启动失败 |
-| `MAIL_HOST`、`MAIL_DEFAULT_EMAIL`、`MAIL_DEFAULT_NAME` | 必填，否则启动失败 |
+| `AUTH_ISSUER`、`AUTH_AUDIENCE` | 必填；验证方配置相同的值 |
+| `AUTH_SIGNING_KEY` | 必填，Ed25519 私钥 PEM（`app keys generate`）；轮换时旧公钥放入 `AUTH_VERIFY_KEYS`，见 [auth.md](auth.md#令牌) |
+| `MAIL_HOST`、`MAIL_FROM` | 必填，否则启动失败；`MAIL_TLS` 取 `none` / `starttls`（默认）/ `tls` |
 | `METRICS_TOKEN` | ≥16 字符；未设置时生产拒绝访问 `/metrics` 与 `/api/v1/health` |
 | `CORS_ORIGINS` | CORS 白名单，逗号分隔 |
-| `APP_FRONTEND_URL` | 邮件链接的前端地址 |
+| `APP_FRONTEND_URL` | 必填，邮件链接的前端地址（`/verify-email`、`/reset-password`） |
 | `DATABASE_*` | 见 [database.md](database.md) |
-| `PASSWORD_HASHER` | 见 [auth.md](auth.md) |
 | `FILE_DRIVER` 及 S3 变量 | `s3` / `s3-presigned` 缺凭据、桶或区域时启动失败 |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | `RUN_SEEDS=true` 时创建首个管理员 |
 | `TRUST_PROXY` | 反向代理层数 |

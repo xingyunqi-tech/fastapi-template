@@ -196,7 +196,7 @@ Pydantic 错误类型 → `rule`（按顺序匹配，先匹配到的生效）：
 
 ### 7.3 密码
 
-见约定 §5.4。`Argon2Hasher(memory_cost=19456, time_cost=2, parallelism=1)` 显式传参；`PASSWORD_HASH_CONCURRENCY` 用 `asyncio.Semaphore` + `to_thread` 实现；模块加载时生成一次固定假哈希。短信或第三方注册的用户 `password_hash` 为空，`hasPassword` 由此得出。
+见约定 §5.4。`Argon2Hasher(memory_cost=19456, time_cost=2, parallelism=1)` 显式传参；`PASSWORD_HASH_CONCURRENCY` 用 `anyio.CapacityLimiter` + `anyio.to_thread` 实现；`Passwords` 实例化时生成一次固定假哈希。短信或第三方注册的用户 `password_hash` 为空，`hasPassword` 由此得出。
 
 ### 7.4 角色与权限
 
@@ -424,8 +424,13 @@ REDIS_URL=redis://redis:6379/0
 | `src/app/infrastructure/throttler/guard.py`、`infrastructure/audit/__init__.py`、`infrastructure/logging/middleware.py`、`modules/files/{router,purposes}.py`、`infrastructure/queue/{mail,worker}.py`、`common/context.py`、`factory.py` | 导入改为 `identity/`、`security/`、`infrastructure/mail/` |
 | `src/app/config/auth.py` | `AUTH_JWT_SECRET`、`AUTH_REFRESH_SECRET`、`AUTH_FORGOT_SECRET`、`AUTH_CONFIRM_EMAIL_SECRET`、`AUTH_*_EXPIRES_IN`、`PASSWORD_HASHER` → 约定 §9 的 `AUTH_*` 与 `PASSWORD_HASH_CONCURRENCY` |
 | `src/app/config/mail.py`、`config/app.py` | `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` → `MAIL_FROM`；`MAIL_SECURE` / `MAIL_IGNORE_TLS` / `MAIL_REQUIRE_TLS` → `MAIL_TLS`（`APP_FRONTEND_URL` 已在 B2 引入） |
-| `src/app/cli/{__init__,seed}.py`、`seed_data/seed.json` | `keys generate`、`users cleanup`；seed 只建管理员账号（角色为代码常量） |
-| `pyproject.toml` | `pwdlib[argon2,bcrypt]` → `pwdlib[argon2]`；dev 依赖删 `aiosmtpd`（集成测试改用 Mailpit 容器） |
+| `src/app/cli/{__init__,seed}.py`、`seed_data/seed.json` | `keys generate`、`users cleanup`；删除 `permissions clear-cache`；seed 只建管理员账号（角色为代码常量），`SEED_ADMIN_*` 归入 `AuthSettings` |
+| `src/app/cli/openapi.py` | 未配置 `AUTH_*` 时用占位 iss / aud 与临时密钥导出 |
+| `docker/docker-compose.{base,ecs}.yaml`、`docker/docker-compose.ci.yaml` | migrate 命令去掉 `app permissions clear-cache`；ci 组合改用 `AUTH_ISSUER` / `AUTH_AUDIENCE` / `AUTH_SIGNING_KEY`、`MAIL_FROM` / `MAIL_TLS`、`SEED_ADMIN_*` |
+| `src/app/infrastructure/account_cleanup/` | 仍在原位（迁移在 B6），完成与失败记录改写 `account_deletions`；新增 `identity/sessions/account_cleaner.py` 删除会话 |
+| `src/app/modules/files/purposes.py` | 管理类用途的权限码暂为 `file:manage`（只有 `admin`），B6 按 §7.4 改为 `file:write`；`updateMe.avatarFileId` 暂按「本人上传且为图片」校验，B6 增加 `purpose` 列后改为用途 `avatar` |
+| 身份接口限流 | 沿用 v1 的按路由计数（`Throttle`），取值接近约定 §11.6 的突发值；GCRA 共享规则、账号主体与「只计失败」在 B6 |
+| `pyproject.toml` | `pwdlib[argon2,bcrypt]` → `pwdlib[argon2]`；typos 忽略 Ed25519 PEM 的 base64 行 |
 | `.gitleaks.toml` | 去掉 MD5 固定值白名单，改为 Ed25519 测试密钥白名单 |
 
 **B5 短信与可选 provider**
@@ -433,6 +438,7 @@ REDIS_URL=redis://redis:6379/0
 | 路径 | 改写要点 |
 |---|---|
 | `src/app/integrations/{sms,wechat,alipay}/` | 迁到 `identity/providers/`，实现 `ProviderClient` 与错误映射 |
+| `migrations/versions/identity/` | 新增 `user_identities` 表（B4 的 identity 初始迁移不含该表）；注销时删除 `user_identities` |
 | `src/app/config/sms.py` | `SMS_MOCK_MODE`、`SMS_ACCESS_KEY_*`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`、`SMS_ENDPOINT` → `SMS_PROVIDER`、`SMS_ALIYUN_*`；删除 `SMS_CODE_LENGTH`、`SMS_CODE_EXPIRES`、`SMS_MAX_ATTEMPTS`、`SMS_RESEND_INTERVAL`（规则由约定 §11.1 固定） |
 | `src/app/config/{wechat,alipay}.py` | `WECHAT_MINI_APP_ID` / `_SECRET` → `WECHAT_MINIAPP_APP_ID` / `_SECRET`；`WECHAT_APP_ID` / `_SECRET` → `WECHAT_APP_APP_ID` / `_SECRET`；删除 `WECHAT_MINI_PROGRAM_STATE`；支付宝增加 `ALIPAY_PUBLIC_KEY` |
 
@@ -446,7 +452,7 @@ REDIS_URL=redis://redis:6379/0
 | `src/app/infrastructure/account_cleanup/` | 迁到 `identity/account_deletion/`，增加 `user.deleted` 发布；新增 `infrastructure/events/` |
 | `src/app/modules/files/`（router、service、storage、urls、uploads、purposes、models） | 按约定 §11.5 与 §9「文件」 |
 | `src/app/config/{redis,file,log,metrics,observability,throttler,app}.py` | `REDIS_HOST` / `PORT` / `DB` / `PASSWORD` / `ENABLED` → `REDIS_URL`；`FILE_DRIVER`、`FILE_*_MAX_SIZE`、`ACCESS_KEY_ID`、`SECRET_ACCESS_KEY`、`AWS_*` → `STORAGE_*`、`S3_*`；`LOG_PRETTY_PRINT` → `LOG_FORMAT`；删除 `METRICS_ENABLED`、`METRICS_PATH`、`APP_NAME`（指标标签）；`OTEL_ENABLED` → 标准 `OTEL_*`，新增必填 `OTEL_SERVICE_NAME`；`THROTTLE_*` → `RATE_LIMIT_DEFAULT`；`TRUST_PROXY` → `TRUSTED_PROXIES`；删除 `BACKEND_DOMAIN` |
-| `pyproject.toml` | 新增 `opentelemetry-exporter-prometheus`、`cloudevents`；删除直接依赖 `prometheus-client`、`psutil` |
+| `pyproject.toml` | 新增 `opentelemetry-exporter-prometheus`、`cloudevents`；删除直接依赖 `prometheus-client`、`psutil`；dev 依赖删 `aiosmtpd`（`test_background_jobs` 的 SMTP 用例改用 Mailpit 容器） |
 | `Dockerfile`、`docker/docker-compose.{base,redis,ecs}.yaml`、`.dockerignore`、`.gitignore` | Dockerfile 去掉 `/tmp/prometheus` 与 `COPY openapi`，`/app/files` 改 `/app/var/files`，加 `ENV OTEL_SEMCONV_STABILITY_OPT_IN=http`；compose 去掉 `PROMETHEUS_MULTIPROC_DIR`、共享 PID 命名空间、`prometheus-multiproc` 卷，`uploaded-files` 卷改挂 `/app/var/files`；`.dockerignore` 去掉 `!openapi/`、`!db/`；`.gitignore` 的 `/files/` 改 `/var/` |
 | `Dockerfile`（HEALTHCHECK）、`docker/docker-compose.base.yaml`（healthcheck）、`deploy/manage.sh`、`.github/workflows/deploy.yml`、`tests/e2e/test_stack.py` | 健康检查路径改为 `/health/live`、`/health/ready` |
 

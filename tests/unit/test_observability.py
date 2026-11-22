@@ -6,6 +6,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 lazy from collections.abc import Iterator
 lazy from pathlib import Path
 
@@ -18,7 +19,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from app import __main__ as app_main
 from app.common.errors import AppError
-from app.common.security import Jwt
 from app.config import FileDriver, LogLevel, Settings, SettingsError
 from app.factory import create_app
 from app.infrastructure import observability
@@ -32,7 +32,8 @@ from app.infrastructure.observability import setup_otel, setup_sentry
 from app.infrastructure.throttler import MemoryGcra, normalize_ip, redis_key
 from app.infrastructure.throttler import storage as throttler_storage
 from app.infrastructure.throttler.guard import handler_name, nest_handlers
-from tests.conftest import TEST_ENV, use_production
+from tests.conftest import use_production
+from tests.tokens import access_token
 
 
 class TestNormalizeIp:
@@ -304,7 +305,8 @@ class TestLogging:
     ) -> None:
         monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
         app = create_app(Settings.load())
-        token = Jwt.sign({"id": 7, "sessionId": 1}, TEST_ENV["AUTH_JWT_SECRET"], "15m")
+        user_id = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
+        token = access_token(app, user_id)
         capsys.readouterr()
 
         response = TestClient(app).get(
@@ -318,7 +320,7 @@ class TestLogging:
         assert access["msg"] == "GET /api/v1/health/live?token=abc&page=1 200"
         assert access["level"] == "info"
         assert access["request_id"] == "rid-1"
-        assert access["user_id"] == "7"
+        assert access["user_id"] == str(user_id)
         assert access["context"] == "HTTP"
         assert access["res"] == {"statusCode": 200}
         assert access["req"]["headers"]["authorization"] == "[REDACTED]"

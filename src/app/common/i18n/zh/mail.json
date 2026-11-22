@@ -1,0 +1,10 @@
+{
+  "verifyEmail.subject": "验证你的邮箱",
+  "verifyEmail.body": "请点击下方按钮验证你在 {app} 的邮箱地址。",
+  "verifyEmail.action": "验证邮箱",
+  "verifyEmail.expires": "链接 24 小时内有效。如果不是你本人操作，请忽略本邮件。",
+  "resetPassword.subject": "重置你的密码",
+  "resetPassword.body": "我们收到了重置你在 {app} 的密码的请求，请点击下方按钮设置新密码。",
+  "resetPassword.action": "重置密码",
+  "resetPassword.expires": "链接 30 分钟内有效。如果不是你本人操作，请忽略本邮件，密码不会改变。"
+}

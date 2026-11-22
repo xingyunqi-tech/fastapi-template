@@ -5,6 +5,7 @@ import logging
 from typing import Annotated, Any, Final
 
 from app.common.i18n import current_language, get_i18n
+from app.infrastructure.mail import MailComposer, MailMessage, SmtpTransport, mask_email
 from app.infrastructure.queue import (
     APP_CONTEXT,
     DEFAULT_RETRY,
@@ -13,7 +14,6 @@ from app.infrastructure.queue import (
     stream_name,
     tasks,
 )
-from app.integrations.mail import MailComposer, MailMessage, SmtpTransport, mask_email
 lazy from app.common.context import AppContext
 lazy from app.config import Settings
 lazy from app.infrastructure.queue import TaskQueue

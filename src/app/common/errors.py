@@ -86,6 +86,13 @@ class FieldError:
     message: str | None = None
 
 
+DEPENDENCY_RETRY_AFTER_SECONDS: Final = 5
+
+
+class DependencyUnavailableError(Exception):
+    """外部依赖（Redis 等）不可用：响应 503 `common.serviceUnavailable`，请求事务回滚。"""
+
+
 class AppError(Exception):
     """按 `error_key` 查登记表得到 HTTP 状态与 `code`；未登记的键在构造时抛 KeyError。"""
 

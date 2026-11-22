@@ -6,7 +6,10 @@ from typing import Any, Final
 lazy from uuid import UUID
 
 from app.common.errors import AppError, ValidationFailed, field_error
-from app.core.permissions.service import Permission
+from app.security import rbac
+
+FILE_MANAGE: Final = rbac.register("file:manage", roles=())
+"""内容素材、导入导出用途的上传权限，只有 `admin` 拥有。"""
 
 
 class FilePurpose(StrEnum):
@@ -27,7 +30,7 @@ class FileVisibility(StrEnum):
 class FilePurposeRule:
     mime_types: dict[str, str]
     visibility: FileVisibility
-    permission: Permission | None = None
+    permission: str | None = None
     content_asset: bool = False
     """内容素材：文件无归属用户，不随上传者注销删除。"""
 
@@ -47,12 +50,12 @@ FILE_PURPOSE_RULES: Final[dict[FilePurpose, FilePurposeRule]] = {
         FileVisibility.PRIVATE,
     ),
     FilePurpose.CONTENT_IMAGE: FilePurposeRule(
-        _IMAGE_TYPES, FileVisibility.PUBLIC, Permission.CONTENT_MANAGE, content_asset=True
+        _IMAGE_TYPES, FileVisibility.PUBLIC, FILE_MANAGE, content_asset=True
     ),
     FilePurpose.AUDIO: FilePurposeRule(
         {"mp3": "audio/mpeg", "m4a": "audio/mp4"},
         FileVisibility.PUBLIC,
-        Permission.CONTENT_MANAGE,
+        FILE_MANAGE,
         content_asset=True,
     ),
     FilePurpose.IMPORT: FilePurposeRule(
@@ -62,10 +65,10 @@ FILE_PURPOSE_RULES: Final[dict[FilePurpose, FilePurposeRule]] = {
             "json": "application/json",
         },
         FileVisibility.PRIVATE,
-        Permission.CONTENT_MANAGE,
+        FILE_MANAGE,
     ),
     FilePurpose.EXPORT: FilePurposeRule(
-        {"pdf": "application/pdf"}, FileVisibility.PRIVATE, Permission.CONTENT_MANAGE
+        {"pdf": "application/pdf"}, FileVisibility.PRIVATE, FILE_MANAGE
     ),
 }
 

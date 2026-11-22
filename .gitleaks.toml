@@ -2,10 +2,10 @@
 useDefault = true
 
 [allowlist]
-description = "测试固定值：123456 的 MD5、校验用例中的固定 UUID、测试与 CI 用密钥"
+description = "测试固定值：校验用例中的固定 UUID、测试与 CI 用 Ed25519 密钥、Ed25519 密钥类型名"
 regexes = [
-  '''(?i)e10adc3949ba59abbe56e057f20f883e''',
   '''(?i)3f0c8a52-7d0e-4b59-9f8e-2a1d6c4b7e10''',
-  '''test-[a-z]+-secret-0123456789abcdef''',
-  '''ci_[a-z_]+_0123456789abcdef''',
+  '''MC4CAQAwBQYDK2VwBCIEIIfsCwlN9KBxNWmO/r4h9O5HYHy12QqyuUnx96zHD0pL''',
+  '''MC4CAQAwBQYDK2VwBCIEID10cSByJospHGBRHPOPgQxbyX4aUeDGZx2sKMBkfoX7''',
+  '''^Ed25519(Private|Public)Key$''',
 ]

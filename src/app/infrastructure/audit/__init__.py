@@ -12,7 +12,6 @@ lazy from fastapi import Request
 
 from app.common.client import client_ip as express_client_ip
 from app.common.middleware import current_request_id
-from app.common.security import InvalidTokenError, Jwt, TokenExpiredError
 from app.infrastructure.audit.models import AuditLogModel
 lazy from app.common.routing import Auth
 lazy from app.infrastructure.database.session import Database
@@ -174,15 +173,8 @@ def _user_id(request: Request) -> Any:
     """鉴权路由的 JWT 用户 id；公开路由即使携带 token 也为 None。"""
     if getattr(request.scope.get("route"), "auth", Auth.PUBLIC) in {None, Auth.PUBLIC}:
         return None
-    header = request.headers.get("authorization") or ""
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        return None
-    secret = request.app.state.settings.auth.secret.get_secret_value()
-    try:
-        return Jwt.verify(token.strip(), secret).get("id")
-    except InvalidTokenError, TokenExpiredError:
-        return None
+    principal = getattr(request.state, "principal", None)
+    return principal.sub if principal is not None else None
 
 
 async def record_audit(request: Request, options: Auditable, body: Any, response: Any) -> None:

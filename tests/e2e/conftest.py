@@ -4,7 +4,6 @@
 设置 `CI` 时启动或用例失败后也保留，供 workflow 收集容器日志。
 """
 
-import hashlib
 import ipaddress
 import os
 import random
@@ -23,16 +22,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PROJECT = os.environ.get("E2E_PROJECT", "fastapi-e2e")
 COMPOSE_FILES = ("base", "postgres", "redis", "ci")
 METRICS_TOKEN = "ci_metrics_token_0123456789abcdef"
-SEED_USER = "john.doe@example.com"
+SEED_USER = "admin@example.com"
 CLIENT_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 MAIL_TIMEOUT_S = 30.0
 
 
-def md5(text: str) -> str:
-    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-
-
-PASSWORD = md5("Secret00")
+PASSWORD = "Secret00"
 
 
 def compose(*args: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -114,10 +109,12 @@ def login(api: httpx.Client, email: str, password: str = PASSWORD) -> dict[str, 
     return data
 
 
-def register(api: httpx.Client, email: str) -> None:
-    body = {"email": email, "password": PASSWORD, "firstName": "E2E", "lastName": "Tester"}
+def register(api: httpx.Client, email: str) -> dict[str, Any]:
+    body = {"email": email, "password": PASSWORD, "displayName": "E2E"}
     response = api.post("/api/v1/auth/email/register", json=body)
-    assert response.status_code == 200, response.text
+    assert response.status_code == 201, response.text
+    data: dict[str, Any] = response.json()["data"]
+    return data
 
 
 def wait_for_mail(mailpit: httpx.Client, email: str) -> dict[str, Any]:
@@ -133,8 +130,9 @@ def wait_for_mail(mailpit: httpx.Client, email: str) -> dict[str, Any]:
     raise AssertionError(f"{MAIL_TIMEOUT_S}s 内 Mailpit 未收到发往 {email} 的邮件")
 
 
-def confirm_hash(message: dict[str, Any]) -> str:
+def verification_token(message: dict[str, Any]) -> str:
     text: str = message["Text"]
-    link = urlsplit(text.split(maxsplit=1)[0])
-    assert link.path == "/confirm-email", text
-    return parse_qs(link.query)["hash"][0]
+    [url] = [word for word in text.split() if word.startswith("http")]
+    link = urlsplit(url)
+    assert link.path == "/verify-email", text
+    return parse_qs(link.query)["token"][0]

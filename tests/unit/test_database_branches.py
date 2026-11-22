@@ -45,7 +45,7 @@ def test_table_filter_skips_other_branches_and_unknown_tables() -> None:
     tables = AllModels.metadata.tables
 
     assert include(tables["file"], "file", "table", False, None)
-    assert not include(tables["user"], "user", "table", False, None)
+    assert not include(tables["users"], "users", "table", False, None)
     assert not include(object(), "stray", "table", True, None)
     assert include(tables["file"], "file", "table", True, tables["file"])
 

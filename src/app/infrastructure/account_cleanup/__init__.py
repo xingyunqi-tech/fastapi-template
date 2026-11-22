@@ -1,8 +1,8 @@
-"""注销账号后的数据清理：清理器登记与执行、`account_cleanup` 完成记录、失败日志、入队。"""
+"""注销账号后的数据清理：清理器登记与执行、`account_deletions` 进度记录、失败日志、入队。"""
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Annotated, Any, Final, Protocol
 lazy from datetime import datetime
 lazy from uuid import UUID
@@ -10,7 +10,6 @@ lazy from uuid import UUID
 from sqlalchemy import text
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database.session import after_commit
 from app.infrastructure.queue import (
     ACCOUNT_CLEANUP_QUEUE,
     APP_CONTEXT,
@@ -92,22 +91,30 @@ class AccountCleanupRepository:
     async def mark_completed(self, user_id: UUID) -> None:
         await self.session.execute(
             text(
-                "INSERT INTO account_cleanup (user_id, completed_at) VALUES (:user_id, now()) "
-                "ON CONFLICT (user_id) DO UPDATE SET completed_at = EXCLUDED.completed_at"
+                "UPDATE account_deletions SET completed_at = now(), "
+                "attempts = attempts + 1, last_error = NULL WHERE user_id = :user_id"
             ),
             {"user_id": user_id},
         )
 
-    async def find_pending_user_ids(self, deleted_before: datetime, limit: int) -> list[UUID]:
-        """软删除时间早于 deleted_before 且尚未完成清理的用户，按用户 id 升序。"""
+    async def mark_failed(self, user_id: UUID, error: str) -> None:
+        await self.session.execute(
+            text(
+                "UPDATE account_deletions SET attempts = attempts + 1, last_error = :error "
+                "WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id, "error": error},
+        )
+
+    async def find_pending_user_ids(self, requested_before: datetime, limit: int) -> list[UUID]:
+        """注销请求早于 requested_before 且尚未完成清理的用户，按用户 id 升序。"""
         result = await self.session.execute(
             text(
-                'SELECT u.id FROM "user" AS u '
-                "WHERE u.deleted_at IS NOT NULL AND u.deleted_at < :deleted_before "
-                "AND NOT EXISTS (SELECT 1 FROM account_cleanup AS c WHERE c.user_id = u.id) "
-                "ORDER BY u.id LIMIT :limit"
+                "SELECT user_id FROM account_deletions "
+                "WHERE completed_at IS NULL AND requested_at < :requested_before "
+                "ORDER BY user_id LIMIT :limit"
             ),
-            {"deleted_before": deleted_before, "limit": limit},
+            {"requested_before": requested_before, "limit": limit},
         )
         return [row[0] for row in result]
 
@@ -142,7 +149,10 @@ class AccountCleanupRunner:
                 causes.append(error)
                 logger.exception("Cleaner %s failed for user %s", cleaner.name, user_id)
         if failed:
-            raise AccountCleanupError(user_id, failed, causes)
+            failure = AccountCleanupError(user_id, failed, causes)
+            async with self.database.transaction() as session:
+                await AccountCleanupRepository(session).mark_failed(user_id, str(failure))
+            raise failure
         async with self.database.transaction() as session:
             await AccountCleanupRepository(session).mark_completed(user_id)
         logger.info("Account data of user %s cleaned", user_id)
@@ -205,14 +215,3 @@ class AccountCleanupProducer:
                 raise
         except Exception as error:
             log_account_cleanup_failure(user_id, error)
-
-    def after_commit(self, session: AsyncSession) -> Callable[[UUID], Awaitable[None]]:
-        """供 UsersService.remove 使用：事务提交后再入队。"""
-
-        async def schedule(user_id: UUID) -> None:
-            async def enqueue() -> None:
-                await self.enqueue_cleanup(user_id)
-
-            after_commit(session, enqueue)
-
-        return schedule

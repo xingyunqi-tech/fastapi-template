@@ -9,10 +9,11 @@ uv run --frozen app --help
 | 命令 | 说明 | Make |
 |---|---|---|
 | `app migrate` | 在 `DATABASE_SCHEMA` 中执行 `alembic upgrade heads` | `make migrate` |
-| `app seed` | 写入角色、状态、权限与初始账号，已存在的不覆盖，见 [database.md](database.md#seed) | `make seed` |
+| `app seed` | 无 active admin 时创建管理员，见 [auth.md](auth.md#种子数据) | `make seed` |
 | `app worker [--workers N]` | 启动 Taskiq worker（默认 1 个进程）；`REDIS_ENABLED=false` 或 Redis 不可达时退出码 1 | – |
 | `app scheduler` | 启动 Taskiq scheduler，按 cron 投递定时任务 | – |
-| `app permissions clear-cache` | 删除角色权限缓存 `permissions:v2:role-map` | – |
+| `app keys generate` | 输出新的 Ed25519 私钥与公钥（PEM），不读取配置 | – |
+| `app users cleanup <id>` | 重新执行该用户的注销数据清理 | – |
 | `app generate resource <Name>` | 生成 CRUD 模块骨架 | `make generate-resource name=<Name>` |
 | `app openapi export [--check]` | 按代码导出 `openapi/openapi.json`；`--check` 不一致时退出码 1 | `make openapi` |
 

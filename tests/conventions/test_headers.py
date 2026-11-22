@@ -2,18 +2,19 @@
 
 import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
+import time_machine
 from fastapi.testclient import TestClient
 lazy from fastapi import FastAPI
 
 from app.common.errors import ERRORS
 from app.common.i18n import get_i18n
 from app.common.idempotency import MEMORY_STORE_KEY
-from app.common.security import Jwt
-from app.config import Settings
 from tests.conftest import use_production
 from tests.conventions.probe import PROBE, build_probe_app
+from tests.tokens import access_token
 
 ME = f"{PROBE}/me"
 ORDERS = f"{PROBE}/orders"
@@ -34,8 +35,8 @@ class TestUnauthorized:
         assert response.headers["www-authenticate"] == 'Bearer error="invalid_token"'
 
     def test_expired_token(self, client: TestClient) -> None:
-        secret = Settings.load().auth.secret.get_secret_value()
-        token = Jwt.sign({"id": 1, "role": {"id": 1}, "sessionId": 1}, secret, "-1s")
+        with time_machine.travel(datetime.now(UTC) - timedelta(minutes=20), tick=False):
+            token = access_token(client.app, uuid.UUID(int=1))  # type: ignore[arg-type]
 
         response = client.get(ME, headers={"Authorization": f"Bearer {token}"})
 

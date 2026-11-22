@@ -1,20 +1,18 @@
 import asyncio
-import hashlib
 import logging
 import uuid
 
 import pytest
-from pwdlib.hashers.bcrypt import BcryptHasher
+from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
+lazy from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.common.errors import AppError
-from app.core.auth.router import _service
-from app.core.session.repository import SessionRepository
-from app.core.users.repository import UserRepository
+from app.identity.sessions.repository import SessionRepository
+from app.identity.users.repository import UserRepository
 from app.infrastructure.database.errors import find_unique_violation
 from app.infrastructure.database.session import Database, after_commit
 from tests.integration.conftest import (
@@ -22,20 +20,14 @@ from tests.integration.conftest import (
     _build_app,
     client_for,
     clone_database_async,
-    rules_of,
+    error_of,
 )
-from tests.integration.test_auth import PASSWORD, bearer, login
-
-SESSION_ID = uuid.UUID("019a8f3c-6b1e-7d2a-8000-000000000042")
-
-
-def md5(value: str) -> str:
-    return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest()
+from tests.integration.identity import ADMIN_EMAIL, PASSWORD, USER_EMAIL, bearer, login
 
 
 async def password_of(connection: AsyncConnection, email: str) -> str:
     row = await connection.execute(
-        text('SELECT password FROM "user" WHERE email = :email'), {"email": email}
+        text("SELECT password_hash FROM users WHERE email = :email"), {"email": email}
     )
     return str(row.scalar_one())
 
@@ -44,68 +36,66 @@ async def test_unique_violation_exposes_constraint_name(connection: AsyncConnect
     with pytest.raises(IntegrityError) as caught:
         async with connection.begin_nested():
             await connection.execute(
-                text("INSERT INTO \"user\" (email) VALUES ('admin@example.com')")
+                text("INSERT INTO users (email) VALUES (:email)"), {"email": ADMIN_EMAIL}
             )
     violation = find_unique_violation(caught.value)
     assert violation is not None
-    assert violation.constraint == "uq_user_email"
+    assert violation.constraint == "uq_users_email"
 
 
-async def test_refresh_rejects_blocked_user(
+async def test_refresh_rejects_disabled_user(
     client: httpx.AsyncClient, connection: AsyncConnection
 ) -> None:
-    tokens = await login(client, "john.doe@example.com")
+    tokens = await login(client, USER_EMAIL)
     await connection.execute(
-        text('UPDATE "user" SET status_id = NULL WHERE email = :email'),
-        {"email": "john.doe@example.com"},
+        text("UPDATE users SET status = 'disabled' WHERE email = :email"), {"email": USER_EMAIL}
     )
-    response = await client.post("/api/v1/auth/refresh", headers=bearer(tokens["refreshToken"]))
-    assert rules_of(response) == {"refresh": "userNotActive"}
+    response = await client.post(
+        "/api/v1/auth/refresh", json={"refreshToken": tokens["refreshToken"]}
+    )
+    assert error_of(response) == (401, "auth.refreshTokenInvalid")
 
 
-async def test_login_upgrades_bcrypt_hash(
+async def test_login_upgrades_hash_with_other_parameters(
     client: httpx.AsyncClient, connection: AsyncConnection
 ) -> None:
+    legacy = Argon2Hasher(memory_cost=65_536, time_cost=3, parallelism=4).hash(PASSWORD)
     await connection.execute(
-        text('UPDATE "user" SET password = :hash WHERE email = :email'),
-        {"hash": BcryptHasher(rounds=4).hash(PASSWORD), "email": "john.doe@example.com"},
+        text("UPDATE users SET password_hash = :hash WHERE email = :email"),
+        {"hash": legacy, "email": USER_EMAIL},
     )
-    await login(client, "john.doe@example.com")
-    assert (await password_of(connection, "john.doe@example.com")).startswith("$argon2")
+    await login(client, USER_EMAIL)
+    assert "$m=19456,t=2,p=1$" in await password_of(connection, USER_EMAIL)
 
 
 async def test_rehash_keeps_concurrently_changed_password(
     app: FastAPI, connection: AsyncConnection
 ) -> None:
-    stale = BcryptHasher(rounds=4).hash(PASSWORD)
-    await connection.execute(
-        text('UPDATE "user" SET password = :hash WHERE email = :email'),
-        {"hash": stale, "email": "john.doe@example.com"},
-    )
-    context = app.state.context
-    async with context.database.transaction() as session:
-        user = await UserRepository(session).find_by_email("john.doe@example.com")
+    stale = await password_of(connection, USER_EMAIL)
+    changed = await app.state.context.passwords.hash_async("Changed00")
+    async with app.state.context.database.transaction() as session:
+        repository = UserRepository(session)
+        user = await repository.find_by_email(USER_EMAIL)
         assert user is not None
-        changed = await context.passwords.hash_async(md5("Changed00"))
         await connection.execute(
-            text('UPDATE "user" SET password = :hash WHERE id = :id'),
+            text("UPDATE users SET password_hash = :hash WHERE id = :id"),
             {"hash": changed, "id": user.id},
         )
-        assert await _service(context, session)._verify_password(user, PASSWORD)
-    assert await password_of(connection, "john.doe@example.com") == changed
+        await repository.rehash_password(user, stale, "rehashed")
+    assert await password_of(connection, USER_EMAIL) == changed
 
 
 async def test_touch_failure_does_not_fail_request(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    tokens = await login(client, "john.doe@example.com")
+    tokens = await login(client, USER_EMAIL)
 
     async def broken(*_: object) -> None:
         raise RuntimeError("touch failed")
 
     monkeypatch.setattr(SessionRepository, "touch", broken)
     with caplog.at_level(logging.WARNING, logger="app.auth"):
-        response = await client.get("/api/v1/auth/me", headers=bearer(tokens["token"]))
+        response = await client.get("/api/v1/me", headers=bearer(tokens["accessToken"]))
     assert response.status_code == 200
     assert "Failed to update lastActiveAt" in caplog.text
 
@@ -138,37 +128,23 @@ class TestAfterCommit:
                 after_commit(session, broken)
         assert "after-commit callback failed" in caplog.text
 
-    async def test_session_cache_cleared_after_commit(self, app: FastAPI) -> None:
-        context = app.state.context
-        async with context.database.transaction() as session:
-            sessions = _service(context, session).sessions
-            await sessions.forget([SESSION_ID])
-            await context.cache.set(f"jwt:session:{SESSION_ID}", {"statusId": 1})
-            assert isinstance(session, AsyncSession)
-        assert await context.cache.get(f"jwt:session:{SESSION_ID}") is None
-
 
 async def test_user_list_orders_by_id_after_requested_sort(
     client: httpx.AsyncClient, connection: AsyncConnection
 ) -> None:
     await connection.execute(
         text(
-            'INSERT INTO "user" (email, first_name, role_id, status_id) '
-            "SELECT 'order' || n || '@example.com', 'Same', 2, 1 FROM generate_series(1, 3) n"
+            "INSERT INTO users (email, display_name) "
+            "SELECT 'order' || n || '@example.com', 'Same' FROM generate_series(1, 3) n"
         )
     )
-    await connection.execute(
-        text("UPDATE \"user\" SET first_name = 'Same' WHERE email = 'john.doe@example.com'")
-    )
-    token = (await login(client, "admin@example.com"))["token"]
-    for query in ("", "&sort=firstName"):
+    token = (await login(client, ADMIN_EMAIL))["accessToken"]
+    for query in ("", "&sort=createdAt", "&sort=-createdAt"):
         response = await client.get(f"/api/v1/users?pageSize=10{query}", headers=bearer(token))
         users = response.json()["data"]["items"]
-        same = [user["id"] for user in users if user["firstName"] == "Same"]
-        assert len(same) == 4
+        same = [user["id"] for user in users if user["displayName"] == "Same"]
+        assert len(same) == 3
         assert same == sorted(same)
-        if not query:
-            assert [user["id"] for user in users] == sorted(user["id"] for user in users)
 
 
 async def test_authenticated_request_needs_one_connection(
@@ -178,9 +154,9 @@ async def test_authenticated_request_needs_one_connection(
     database = Database.from_settings(pg_server.settings(name), pool_size=1)
     try:
         async with client_for(_build_app(database)) as http:
-            tokens = await login(http, "john.doe@example.com")
+            tokens = await login(http, USER_EMAIL)
             async with asyncio.timeout(10):
-                response = await http.get("/api/v1/auth/me", headers=bearer(tokens["token"]))
+                response = await http.get("/api/v1/me", headers=bearer(tokens["accessToken"]))
         assert response.status_code == 200
     finally:
         await database.dispose()

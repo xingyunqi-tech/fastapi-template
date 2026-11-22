@@ -46,19 +46,20 @@ async def run_exclusive[T](
 
 
 async def cleanup_old_sessions(context: AppContext) -> int:
-    """物理删除软删除超过 7 天的会话。"""
+    """删除已过期或吊销超过 7 天的会话（refresh 记录随之删除）与过期的一次性令牌。"""
     async with context.database.transaction() as session:
         result = await session.execute(
             text(
-                "DELETE FROM session WHERE deleted_at IS NOT NULL "
-                "AND deleted_at < now() - INTERVAL '7 days'"
+                "DELETE FROM sessions WHERE expires_at < now() "
+                "OR revoked_at < now() - INTERVAL '7 days'"
             )
         )
+        await session.execute(text("DELETE FROM verification_tokens WHERE expires_at < now()"))
     return affected_rows(result)
 
 
 async def enqueue_pending_account_cleanups(context: AppContext) -> int:
-    """已注销超过 30 分钟仍未完成清理的用户重新入队。"""
+    """注销请求超过 30 分钟仍未完成清理的用户重新入队。"""
     async with context.database.transaction() as session:
         user_ids = await AccountCleanupRepository(session).find_pending_user_ids(
             datetime.now(UTC) - ACCOUNT_CLEANUP_GRACE, ACCOUNT_CLEANUP_BATCH_SIZE

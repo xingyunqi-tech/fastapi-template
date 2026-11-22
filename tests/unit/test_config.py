@@ -116,12 +116,12 @@ def test_reports_all_invalid_values_at_once(monkeypatch: pytest.MonkeyPatch) -> 
 def test_production_requires_mail_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     use_production(monkeypatch)
     monkeypatch.delenv("MAIL_HOST")
-    monkeypatch.delenv("MAIL_DEFAULT_NAME")
+    monkeypatch.delenv("MAIL_FROM")
 
     with pytest.raises(SettingsError) as exc_info:
         Settings.load()
 
     assert {error.split(":")[0] for error in exc_info.value.errors} >= {
         "MAIL_HOST",
-        "MAIL_DEFAULT_NAME",
+        "MAIL_FROM",
     }

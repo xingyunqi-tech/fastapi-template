@@ -5,10 +5,15 @@
 
 x-ci-env: &ci-env
   APP_ENV: production
-  AUTH_JWT_SECRET: ci_jwt_secret_0123456789abcdefghijklmnop
-  AUTH_REFRESH_SECRET: ci_refresh_secret_0123456789abcdefghijklmnop
-  AUTH_FORGOT_SECRET: ci_forgot_secret_0123456789abcdefghijklmnop
-  AUTH_CONFIRM_EMAIL_SECRET: ci_confirm_email_secret_0123456789abcdefghijklmnop
+  APP_FRONTEND_URL: https://app.example.com
+  AUTH_ISSUER: https://identity.ci
+  AUTH_AUDIENCE: ci-api
+  # 与 tests/keys.py 相同的测试密钥，仅用于 CI
+  AUTH_SIGNING_KEY: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIIfsCwlN9KBxNWmO/r4h9O5HYHy12QqyuUnx96zHD0pL\n-----END PRIVATE KEY-----\n"
+  MAIL_FROM: Api <noreply@example.com>
+  MAIL_TLS: none
+  SEED_ADMIN_EMAIL: admin@example.com
+  SEED_ADMIN_PASSWORD: Secret00
   DOCS_ENABLED: 'true'
   METRICS_TOKEN: ci_metrics_token_0123456789abcdef
   THROTTLE_ENABLED: ${CI_THROTTLE_ENABLED:-true}

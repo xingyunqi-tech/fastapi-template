@@ -7,12 +7,13 @@ src/app/
 ├── __main__.py          # python -m app：Granian 启动（WEB_CONCURRENCY 个进程）
 ├── main.py              # app = create_app()，fastapi dev / Granian 入口
 ├── factory.py           # create_app()、build_context()、lifespan
-├── cli/                 # Typer `app` 命令：migrate、seed、worker、scheduler、permissions、generate、openapi
+├── cli/                 # Typer `app` 命令：migrate、seed、worker、scheduler、keys、users、generate、openapi
 ├── config/              # Settings，按分组拆分（app、auth、database、redis、mail、file、throttler、metrics、log、observability、sms、wechat、alipay）
-├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、安全、i18n
-├── core/                # auth、users、session、permissions
-├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup
-├── integrations/        # mail、sms（阿里云）、wechat、alipay
+├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、i18n
+├── security/            # 密钥与 kid、JWT、吊销键、角色与权限、密码哈希、鉴权依赖
+├── identity/            # 签发方：auth、sessions、me、users、account_deletion、keys（JWKS）
+├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup、mail
+├── integrations/        # sms（阿里云）、wechat、alipay
 └── modules/             # files
 ```
 
@@ -54,7 +55,7 @@ src/app/
 | 参数 | 说明 |
 |---|---|
 | `operation_id` | 与基线一致 |
-| `auth` | 必填：`PUBLIC`、`JWT`、`OPTIONAL_JWT`、`REFRESH_JWT`、`MONITORING`；未声明的路由在 `finalize_routes` 时报错 |
+| `auth` | 必填：`PUBLIC`、`JWT`、`OPTIONAL_JWT`、`MONITORING`；未声明的路由在 `finalize_routes` 时报错 |
 | `permissions` / `any_permissions` | RBAC，AND / OR；`ApiRouter(rbac=True)` 时全部路由经过权限守卫 |
 | `status_code` | 默认 200；只有 `POST files/upload` 为 201 |
 | `wrap` | 默认包装为信封；`/metrics` 等为 `False` |
@@ -99,7 +100,7 @@ src/app/
 | api | `python -m app` | Granian ASGI，`WEB_CONCURRENCY` 个 worker 进程 |
 | worker | `app worker` | Taskiq worker，消费 Redis Stream；需 `REDIS_ENABLED=true`，Redis 不可达时退出 |
 | scheduler | `app scheduler` | Taskiq scheduler，按 cron 投递定时任务 |
-| migrate | `app migrate && app permissions clear-cache [&& app seed]` | compose 中的一次性服务，api 依赖其成功完成 |
+| migrate | `app migrate [&& app seed]` | compose 中的一次性服务，api 依赖其成功完成 |
 
 `REDIS_ENABLED=false` 时队列任务在 API 进程内执行（仅开发 / 测试）。
 
@@ -111,16 +112,16 @@ src/app/
 | 锁 | `infrastructure/redis` | `lock:<key>`，Redis 不可用时退回进程内锁 |
 | 限流 | `infrastructure/throttler` | GCRA（Redis Lua），键 `throttle:<sha256>:default:gcra`；JWT 路由按用户、其余按 IP（`TRUST_PROXY` 跳数）；Redis 故障时回落内存，计入 `throttler_storage_fallback_total` 并记 error 日志 |
 | 队列 | `infrastructure/queue` | Taskiq + Redis Stream：`taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler` |
-| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 清理软删会话、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `lock:scheduler:<name>` |
+| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 删除已过期或吊销超过 7 天的会话与过期的一次性令牌、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `lock:scheduler:<name>` |
 | 日志 | `infrastructure/logging` | structlog；生产 JSON、开发彩色单行；带 request_id、trace_id / span_id、user_id，敏感字段脱敏 |
 | 指标 | `infrastructure/metrics` | `/metrics`（`METRICS_PATH`），指标名、标签、桶同 nestjs；多进程共享 `PROMETHEUS_MULTIPROC_DIR` |
 | 健康检查 | `infrastructure/health` | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready` |
 | 链路 / 错误上报 | `infrastructure/observability` | `OTEL_ENABLED`（OTLP/HTTP）、`SENTRY_DSN`，默认关闭 |
 | 审计 | `infrastructure/audit` | `audit=Auditable(...)` 的路由成功后写 `audit_logs` |
-| 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器，最终失败记 error 日志 |
-| 邮件 | `integrations/mail`、`queue/mail.py` | 设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |
+| 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器（sessions、files），结果记入 `account_deletions`，最终失败记 error 日志 |
+| 邮件 | `infrastructure/mail`、`queue/mail.py` | 模板 `verify-email`、`reset-password`（zh / en），链接为 `APP_FRONTEND_URL` + 路径 + `?token=`；设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |
 | 文件 | `modules/files` | `FILE_DRIVER`：`local`（`./files`）、`s3`、`s3-presigned` |
 
 ## 配置
 
-`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），变量名与 nestjs `env-example-relational` 一致，全部变量见 `.env.example`。生产环境额外校验：四个 JWT 密钥 ≥32 字符且互不相同、`REDIS_ENABLED=true`、`MAIL_HOST` / `MAIL_DEFAULT_EMAIL` / `MAIL_DEFAULT_NAME` 必填。
+`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），变量名与 nestjs `env-example-relational` 一致，全部变量见 `.env.example`。`AUTH_ISSUER`、`AUTH_AUDIENCE`、`AUTH_SIGNING_KEY` 始终必填；生产环境另要求 `REDIS_ENABLED=true`、`APP_FRONTEND_URL`、`MAIL_HOST`、`MAIL_FROM`。

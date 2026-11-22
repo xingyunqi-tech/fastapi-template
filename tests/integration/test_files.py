@@ -20,7 +20,7 @@ from app.modules.files.account_cleaner import FilesAccountCleaner
 from app.modules.files.models import FileModel
 from app.modules.files.storage import close_s3_clients
 from tests.integration.conftest import _build_app, client_for
-from tests.integration.test_auth import bearer, login
+from tests.integration.identity import bearer, login
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, MutableMapping
@@ -104,7 +104,7 @@ async def local_client(make_app: AppFactory) -> AsyncIterator[httpx.AsyncClient]
 
 
 async def token(client: httpx.AsyncClient, email: str = "john.doe@example.com") -> dict[str, str]:
-    return bearer((await login(client, email))["token"])
+    return bearer((await login(client, email))["accessToken"])
 
 
 def png(name: str = "a.png", content: bytes = PNG) -> dict[str, Any]:
@@ -739,27 +739,25 @@ async def _cleaner_scenario(
     exists: Callable[[str], Awaitable[bool]],
 ) -> None:
     headers = await token(client)
-    me = (await client.get("/api/v1/auth/me", headers=headers)).json()["data"]
-    kept = await upload(client, headers, "image")
+    me = (await client.get("/api/v1/me", headers=headers)).json()["data"]
+    avatar = await upload(client, headers, "image")
     removed = [await upload(client, headers, purpose) for purpose in ("image", "private-image")]
     content = await upload(client, await token(client, "admin@example.com"), "content-image")
-    await client.put("/api/v1/auth/me", headers=headers, json={"photo": {"id": kept["id"]}})
+    await client.patch("/api/v1/me", headers=headers, json={"avatarFileId": avatar["id"]})
     paths = {r.id: r.path for r in await rows(connection)}
 
     context: AppContext = app.state.context
     await FilesAccountCleaner(context.database, context.settings.file).clean(me["id"])
 
     remaining = {r.id for r in await rows(connection)}
-    assert UUID(kept["id"]) in remaining
-    assert UUID(content["id"]) in remaining
-    for file in removed:
-        assert UUID(file["id"]) not in remaining
+    assert remaining == {UUID(content["id"])}
+    for file in [avatar, *removed]:
         assert not await exists(paths[UUID(file["id"])])
-    assert await exists(paths[UUID(kept["id"])])
+    assert await exists(paths[UUID(content["id"])])
 
 
 class TestFilesAccountCleaner:
-    async def test_local_removes_owned_files_and_keeps_referenced(
+    async def test_local_removes_owned_files_and_keeps_content_assets(
         self, make_app: AppFactory, connection: AsyncConnection
     ) -> None:
         app = make_app()
@@ -791,7 +789,7 @@ class TestFilesAccountCleaner:
         app = make_app("s3", minio_endpoint)
         async with client_for(app) as client:
             headers = await token(client)
-            me = (await client.get("/api/v1/auth/me", headers=headers)).json()["data"]
+            me = (await client.get("/api/v1/me", headers=headers)).json()["data"]
             uploaded = [await upload(client, headers, "image") for _ in range(3)]
         ids = sorted(UUID(file["id"]) for file in uploaded)
         paths = {r.id: r.path for r in await rows(connection)}

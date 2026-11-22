@@ -19,17 +19,19 @@ from app.common.middleware import (
 )
 from app.common.openapi import install_openapi, package_version
 from app.common.routing import API_PREFIX, ApiRouter, finalize_routes, include_routes
-from app.common.security import Passwords
 from app.config import Settings, get_settings
-from app.core.auth import deps as _auth_deps  # noqa: F401
-from app.core.auth import router as auth
-from app.core.users import account_cleaner as _users_account_cleaner  # noqa: F401
-from app.core.users import router as users
+from app.identity.auth import router as auth
+from app.identity.keys import router as keys
+from app.identity.me import router as me
+from app.identity.sessions import account_cleaner as _sessions_account_cleaner  # noqa: F401
+from app.identity.sessions import deps as _issuer_auth  # noqa: F401
+from app.identity.users import router as users
 from app.infrastructure.cache import Cache, MemoryCache, RedisCache
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import router as health
 from app.infrastructure.logging import configure_logging
 from app.infrastructure.logging.middleware import RequestLoggingMiddleware
+from app.infrastructure.mail import LoggingMailer, Mailer
 from app.infrastructure.metrics import mark_process_dead
 from app.infrastructure.metrics import router as metrics
 from app.infrastructure.metrics.database import instrument_sqlalchemy
@@ -39,10 +41,13 @@ from app.infrastructure.observability import shutdown as shutdown_otel
 from app.infrastructure.queue import TaskQueue
 from app.infrastructure.queue.mail import QueueMailer
 from app.infrastructure.throttler import RateLimitHeadersMiddleware, ThrottlerStorage
-from app.integrations.mail import LoggingMailer, Mailer
 from app.modules.files import account_cleaner as _files_account_cleaner  # noqa: F401
 from app.modules.files import router as files
 from app.modules.files.storage import close_s3_clients
+from app.security import deps as _security_auth  # noqa: F401
+from app.security.jwt import TokenSigner, TokenVerifier
+from app.security.keys import SigningKey, load_public_key
+from app.security.passwords import Passwords
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
@@ -50,19 +55,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger("app")
 
 
+def build_tokens(settings: Settings) -> tuple[TokenSigner, TokenVerifier]:
+    """签名密钥的公钥与 `AUTH_VERIFY_KEYS` 共同组成校验密钥集。"""
+    auth = settings.auth
+    key = SigningKey.from_pem(auth.signing_key.get_secret_value())
+    signer = TokenSigner(key, issuer=auth.issuer, audience=auth.audience, ttl=auth.access_ttl)
+    verifier = TokenVerifier(
+        [key.private_key.public_key(), *(load_public_key(pem) for pem in auth.verify_keys)],
+        issuer=auth.issuer,
+        audience=auth.audience,
+    )
+    return signer, verifier
+
+
 def build_context(settings: Settings, *, pool_size: int | None = None) -> AppContext:
     """`pool_size` 覆盖本进程的 `DATABASE_POOL_SIZE`。"""
     redis = Redis.from_url(settings.redis.url()) if settings.redis.enabled else None
     cache: Cache = RedisCache(redis) if redis is not None else MemoryCache()
     queue = TaskQueue.from_settings(settings)
+    signer, verifier = build_tokens(settings)
     context = AppContext(
         settings=settings,
         database=Database.from_settings(settings.database, pool_size=pool_size),
         cache=cache,
-        passwords=Passwords(
-            settings.auth.password_hasher, concurrency=settings.auth.hash_concurrency
-        ),
+        passwords=Passwords(concurrency=settings.auth.hash_concurrency),
         mailer=_mailer(settings, queue),
+        signer=signer,
+        verifier=verifier,
         redis=redis,
         queue=queue,
     )
@@ -123,10 +142,12 @@ def create_app(
     if settings.app.docs_enabled:
         mount_docs(app)
 
+    include_routes(app, auth.router, API_PREFIX)
+    include_routes(app, me.router, API_PREFIX)
     include_routes(app, users.router, API_PREFIX)
+    include_routes(app, keys.router)
     for files_router in files.routers_for(settings.file.driver):
         include_routes(app, files_router, API_PREFIX)
-    include_routes(app, auth.router, API_PREFIX)
     include_routes(app, health.router, API_PREFIX)
     include_routes(app, metrics.build_router(settings.metrics.path))
     for router, prefix in extra_routers:

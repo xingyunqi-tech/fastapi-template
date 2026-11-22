@@ -5,12 +5,12 @@ from pydantic import ValidationError
 
 from app.config.alipay import AlipaySettings
 from app.config.app import AppSettings, Environment
-from app.config.auth import AuthSettings, PasswordHasher
+from app.config.auth import AuthSettings
 from app.config.base import SettingsGroup
 from app.config.database import DatabaseSettings
 from app.config.file import FileDriver, FileSettings
 from app.config.log import LogLevel, LogSettings
-from app.config.mail import MailSettings
+from app.config.mail import MailSettings, MailTls
 from app.config.metrics import MetricsSettings
 from app.config.observability import ObservabilitySettings
 from app.config.redis import RedisSettings
@@ -29,9 +29,9 @@ __all__ = [
     "LogLevel",
     "LogSettings",
     "MailSettings",
+    "MailTls",
     "MetricsSettings",
     "ObservabilitySettings",
-    "PasswordHasher",
     "RedisSettings",
     "Settings",
     "SettingsError",
@@ -97,8 +97,8 @@ class Settings:
         wechat = loader.load(WechatSettings)
         alipay = loader.load(AlipaySettings)
         if app is not None and app.is_production:
-            if auth is not None:
-                loader.errors.extend(auth.validate_for_production())
+            if not app.frontend_url:
+                loader.errors.append("APP_FRONTEND_URL: required in production")
             if redis is not None and not redis.enabled:
                 loader.errors.append("REDIS_ENABLED: must be true in production")
             if mail is not None:

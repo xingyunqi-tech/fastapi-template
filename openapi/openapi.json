@@ -5,12 +5,948 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/email/register": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "邮箱注册",
+        "operationId": "registerWithEmail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterWithEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "邮箱登录",
+        "operationId": "loginWithEmail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginWithEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email/verify": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "验证邮箱",
+        "operationId": "verifyEmail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email/verify/resend": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "重发验证邮件",
+        "operationId": "resendVerificationEmail",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/password/forgot": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "找回密码",
+        "operationId": "forgotPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password/reset": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "重置密码",
+        "operationId": "resetPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "刷新令牌",
+        "operationId": "refreshToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "退出登录",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "当前用户",
+        "operationId": "getMe",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "注销账号",
+        "operationId": "deleteMe",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "更新当前用户",
+        "operationId": "updateMe",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/password": {
+      "put": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "修改密码",
+        "operationId": "changePassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/sessions": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "我的会话",
+        "operationId": "listMySessions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "吊销指定会话",
+        "operationId": "revokeMySession",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/sessions/revoke-others": {
+      "post": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "吊销其他会话",
+        "operationId": "revokeOtherSessions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/users": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "用户列表",
+        "operationId": "listUsers",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2147483647,
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Pagesize"
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Keyword"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/UserStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/app__security__rbac__Role"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "排序字段，逗号分隔，`-` 前缀为降序；可选 createdAt、email",
+              "default": "-createdAt",
+              "title": "Sort"
+            },
+            "description": "排序字段，逗号分隔，`-` 前缀为降序；可选 createdAt、email"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "Users"
         ],
-        "summary": "创建用户（管理员）",
+        "summary": "创建用户",
         "operationId": "createUser",
         "requestBody": {
           "required": true,
@@ -79,135 +1015,6 @@
             "bearerAuth": []
           }
         ]
-      },
-      "get": {
-        "tags": [
-          "Users"
-        ],
-        "summary": "获取用户列表（管理员）",
-        "operationId": "listUsers",
-        "parameters": [
-          {
-            "name": "page",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 2147483647,
-              "minimum": 1,
-              "default": 1,
-              "title": "Page"
-            }
-          },
-          {
-            "name": "pageSize",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 100,
-              "minimum": 1,
-              "default": 20,
-              "title": "Pagesize"
-            }
-          },
-          {
-            "name": "roleId",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "maximum": 2147483647,
-                    "minimum": 1
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Roleid"
-            }
-          },
-          {
-            "name": "sort",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "排序字段，逗号分隔，`-` 前缀为降序；可选 id、email、firstName、lastName、createdAt、updatedAt",
-              "title": "Sort"
-            },
-            "description": "排序字段，逗号分隔，`-` 前缀为降序；可选 id、email、firstName、lastName、createdAt、updatedAt"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserPageResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "无权限",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
       }
     },
     "/api/v1/users/{id}": {
@@ -215,7 +1022,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "获取用户详情（管理员）",
+        "summary": "用户详情",
         "operationId": "getUser",
         "parameters": [
           {
@@ -287,11 +1094,11 @@
           }
         ]
       },
-      "put": {
+      "patch": {
         "tags": [
           "Users"
         ],
-        "summary": "更新用户（管理员）",
+        "summary": "更新用户",
         "operationId": "updateUser",
         "parameters": [
           {
@@ -377,7 +1184,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "删除用户（管理员）",
+        "summary": "删除用户",
         "operationId": "deleteUser",
         "parameters": [
           {
@@ -392,7 +1199,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -428,6 +1235,206 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/{id}/roles": {
+      "put": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "设置用户角色",
+        "operationId": "setUserRoles",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUserRolesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/roles": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "角色列表",
+        "operationId": "listRoles",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/permissions": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "权限列表",
+        "operationId": "listPermissions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionInfoListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -552,1261 +1559,37 @@
           }
         ]
       }
-    },
-    "/api/v1/auth/email/login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "邮箱登录",
-        "operationId": "loginWithEmail",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EmailLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/email/register": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "邮箱注册",
-        "operationId": "registerWithEmail",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EmailRegisterRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/email/confirm": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "确认邮箱",
-        "operationId": "confirmEmail",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfirmEmailRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/email/confirm/new": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "确认新邮箱",
-        "operationId": "confirmNewEmail",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConfirmEmailRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/forgot/password": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "忘记密码",
-        "operationId": "forgotPassword",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForgotPasswordRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/reset/password": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "重置密码",
-        "operationId": "resetPassword",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResetPasswordRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/me": {
-      "get": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "获取当前用户信息",
-        "operationId": "getCurrentUser",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "更新当前用户信息",
-        "operationId": "updateCurrentUser",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateMeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "删除当前用户账号",
-        "operationId": "deleteCurrentUser",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteAccountRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/refresh": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "刷新令牌",
-        "operationId": "refreshToken",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TokenPairResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/sessions": {
-      "get": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "当前用户的登录设备",
-        "operationId": "getMySessions",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/sessions/{id}": {
-      "delete": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "下线指定设备",
-        "operationId": "revokeMySession",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/sessions/revoke-others": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "下线其他设备",
-        "operationId": "revokeOtherSessions",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/logout": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "退出登录",
-        "operationId": "logout",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/phone/send-code": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "发送短信验证码",
-        "operationId": "sendSmsCode",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SendSmsCodeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/phone/login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "手机号密码登录",
-        "operationId": "loginWithPhone",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PhoneLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/phone/sms-login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "短信验证码登录",
-        "operationId": "loginWithSms",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PhoneSmsLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/phone/register": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "手机号注册",
-        "operationId": "registerWithPhone",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PhoneRegisterRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/phone/reset-password": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "通过手机验证码重置密码",
-        "operationId": "resetPasswordByPhone",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PhoneResetPasswordRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/password": {
-      "put": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "修改密码",
-        "operationId": "changePassword",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangePasswordRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NullResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未认证",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/wechat/login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "微信登录",
-        "operationId": "loginWithWechat",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WechatLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/wechat/phone-login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "微信手机号快捷登录（小程序）",
-        "operationId": "loginWithWechatPhone",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WechatPhoneLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/alipay/login": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "支付宝登录（小程序）",
-        "operationId": "loginWithAlipay",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AlipayLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDataResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "校验失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
     "schemas": {
-      "AlipayLoginRequest": {
-        "properties": {
-          "authCode": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Authcode"
-          }
-        },
-        "type": "object",
-        "required": [
-          "authCode"
-        ],
-        "title": "AlipayLoginRequest"
-      },
       "ChangePasswordRequest": {
         "properties": {
-          "oldPassword": {
-            "type": "string",
-            "title": "Oldpassword"
+          "currentPassword": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currentpassword"
           },
           "newPassword": {
             "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
             "title": "Newpassword"
           }
         },
         "type": "object",
         "required": [
-          "oldPassword",
           "newPassword"
         ],
         "title": "ChangePasswordRequest"
-      },
-      "ConfirmEmailRequest": {
-        "properties": {
-          "hash": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Hash"
-          }
-        },
-        "type": "object",
-        "required": [
-          "hash"
-        ],
-        "title": "ConfirmEmailRequest"
       },
       "CreateUserRequest": {
         "properties": {
@@ -1822,54 +1605,11 @@
             ],
             "title": "Email"
           },
-          "password": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Provider"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "firstName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Firstname"
-          },
-          "lastName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lastname"
-          },
           "phone": {
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^1[3-9][0-9]{9}$"
+                "pattern": "\\+[1-9][0-9]{6,14}"
               },
               {
                 "type": "null"
@@ -1877,189 +1617,35 @@
             ],
             "title": "Phone"
           },
-          "nickname": {
+          "password": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 50
+                "maxLength": 128,
+                "minLength": 8
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Nickname"
+            "title": "Password"
           },
-          "gender": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 2.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gender"
-          },
-          "birthday": {
+          "displayName": {
             "anyOf": [
               {
                 "type": "string",
-                "format": "date"
+                "maxLength": 64,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Birthday"
-          },
-          "photo": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FileRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RoleRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "status": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/StatusRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "wechatOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatopenid"
-          },
-          "wechatUnionId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatunionid"
-          },
-          "alipayOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alipayopenid"
+            "title": "Displayname"
           }
         },
         "type": "object",
         "title": "CreateUserRequest"
-      },
-      "DeleteAccountRequest": {
-        "properties": {
-          "oldPassword": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldpassword"
-          },
-          "smsCode": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 8,
-                "minLength": 4
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Smscode"
-          }
-        },
-        "type": "object",
-        "title": "DeleteAccountRequest"
-      },
-      "EmailLoginRequest": {
-        "properties": {
-          "email": {
-            "type": "string",
-            "format": "email",
-            "title": "Email"
-          },
-          "password": {
-            "type": "string",
-            "title": "Password"
-          }
-        },
-        "type": "object",
-        "required": [
-          "email",
-          "password"
-        ],
-        "title": "EmailLoginRequest"
-      },
-      "EmailRegisterRequest": {
-        "properties": {
-          "email": {
-            "type": "string",
-            "format": "email",
-            "title": "Email"
-          },
-          "password": {
-            "type": "string",
-            "title": "Password"
-          },
-          "firstName": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Firstname"
-          },
-          "lastName": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Lastname"
-          }
-        },
-        "type": "object",
-        "required": [
-          "email",
-          "password",
-          "firstName",
-          "lastName"
-        ],
-        "title": "EmailRegisterRequest"
       },
       "ErrorResponse": {
         "properties": {
@@ -2176,20 +1762,6 @@
         ],
         "title": "FileInfo"
       },
-      "FileRef": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "FileRef"
-      },
       "ForgotPasswordRequest": {
         "properties": {
           "email": {
@@ -2204,19 +1776,25 @@
         ],
         "title": "ForgotPasswordRequest"
       },
-      "LoginData": {
+      "LoginResponse": {
         "properties": {
-          "token": {
+          "accessToken": {
             "type": "string",
-            "title": "Token"
+            "title": "Accesstoken"
           },
           "refreshToken": {
             "type": "string",
             "title": "Refreshtoken"
           },
-          "tokenExpires": {
+          "expiresIn": {
             "type": "integer",
-            "title": "Tokenexpires"
+            "title": "Expiresin"
+          },
+          "tokenType": {
+            "type": "string",
+            "const": "Bearer",
+            "title": "Tokentype",
+            "default": "Bearer"
           },
           "user": {
             "$ref": "#/components/schemas/User"
@@ -2224,14 +1802,14 @@
         },
         "type": "object",
         "required": [
-          "token",
+          "accessToken",
           "refreshToken",
-          "tokenExpires",
+          "expiresIn",
           "user"
         ],
-        "title": "LoginData"
+        "title": "LoginResponse"
       },
-      "LoginDataResponse": {
+      "LoginResponseResponse": {
         "properties": {
           "code": {
             "type": "integer",
@@ -2246,7 +1824,7 @@
             "default": "ok"
           },
           "data": {
-            "$ref": "#/components/schemas/LoginData"
+            "$ref": "#/components/schemas/LoginResponse"
           }
         },
         "type": "object",
@@ -2255,7 +1833,28 @@
           "message",
           "data"
         ],
-        "title": "LoginDataResponse"
+        "title": "LoginResponseResponse"
+      },
+      "LoginWithEmailRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginWithEmailRequest"
       },
       "NullResponse": {
         "properties": {
@@ -2284,192 +1883,149 @@
         ],
         "title": "NullResponse"
       },
-      "PhoneLoginRequest": {
+      "PermissionInfo": {
         "properties": {
-          "phone": {
+          "code": {
             "type": "string",
-            "pattern": "^1[3-9][0-9]{9}$",
-            "title": "Phone"
-          },
-          "password": {
-            "type": "string",
-            "title": "Password"
+            "title": "Code"
           }
         },
         "type": "object",
         "required": [
-          "phone",
-          "password"
+          "code"
         ],
-        "title": "PhoneLoginRequest"
+        "title": "PermissionInfo"
       },
-      "PhoneRegisterRequest": {
+      "PermissionInfoListResponse": {
         "properties": {
-          "phone": {
-            "type": "string",
-            "pattern": "^1[3-9][0-9]{9}$",
-            "title": "Phone"
-          },
           "code": {
+            "type": "integer",
+            "const": 0,
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
             "type": "string",
-            "maxLength": 8,
-            "minLength": 4,
-            "title": "Code"
+            "const": "ok",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PermissionInfo"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "PermissionInfoListResponse"
+      },
+      "RefreshTokenRequest": {
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Refreshtoken"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refreshToken"
+        ],
+        "title": "RefreshTokenRequest"
+      },
+      "RegisterWithEmailRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
           },
           "password": {
             "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
             "title": "Password"
           },
-          "nickname": {
+          "displayName": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 50
+                "maxLength": 64,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Nickname"
+            "title": "Displayname"
           }
         },
         "type": "object",
         "required": [
-          "phone",
-          "code",
-          "password"
-        ],
-        "title": "PhoneRegisterRequest"
-      },
-      "PhoneResetPasswordRequest": {
-        "properties": {
-          "phone": {
-            "type": "string",
-            "pattern": "^1[3-9][0-9]{9}$",
-            "title": "Phone"
-          },
-          "code": {
-            "type": "string",
-            "pattern": "^[0-9]{4,8}$",
-            "title": "Code"
-          },
-          "password": {
-            "type": "string",
-            "title": "Password"
-          }
-        },
-        "type": "object",
-        "required": [
-          "phone",
-          "code",
-          "password"
-        ],
-        "title": "PhoneResetPasswordRequest"
-      },
-      "PhoneSmsLoginRequest": {
-        "properties": {
-          "phone": {
-            "type": "string",
-            "pattern": "^1[3-9][0-9]{9}$",
-            "title": "Phone"
-          },
-          "code": {
-            "type": "string",
-            "maxLength": 8,
-            "minLength": 4,
-            "title": "Code"
-          }
-        },
-        "type": "object",
-        "required": [
-          "phone",
-          "code"
-        ],
-        "title": "PhoneSmsLoginRequest"
-      },
-      "Provider": {
-        "type": "string",
-        "enum": [
           "email",
-          "phone",
-          "wechat",
-          "alipay"
+          "password"
         ],
-        "title": "Provider"
+        "title": "RegisterWithEmailRequest"
       },
       "ResetPasswordRequest": {
         "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Token"
+          },
           "password": {
             "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
             "title": "Password"
-          },
-          "hash": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Hash"
           }
         },
         "type": "object",
         "required": [
-          "password",
-          "hash"
+          "token",
+          "password"
         ],
         "title": "ResetPasswordRequest"
       },
-      "RoleInfo": {
+      "RoleListResponse": {
         "properties": {
-          "id": {
+          "code": {
             "type": "integer",
-            "title": "Id"
+            "const": 0,
+            "title": "Code",
+            "default": 0
           },
-          "name": {
+          "message": {
             "type": "string",
-            "title": "Name"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "RoleInfo"
-      },
-      "RoleRef": {
-        "properties": {
-          "id": {
-            "type": "integer",
-            "title": "Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "RoleRef"
-      },
-      "SendSmsCodeRequest": {
-        "properties": {
-          "phone": {
-            "type": "string",
-            "pattern": "^1[3-9][0-9]{9}$",
-            "title": "Phone"
+            "const": "ok",
+            "title": "Message",
+            "default": "ok"
           },
-          "type": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SmsCodeType"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/app__identity__users__schemas__Role"
+            },
+            "type": "array",
+            "title": "Data"
           }
         },
         "type": "object",
         "required": [
-          "phone"
+          "code",
+          "message",
+          "data"
         ],
-        "title": "SendSmsCodeRequest"
+        "title": "RoleListResponse"
       },
       "Session": {
         "properties": {
@@ -2563,217 +2119,50 @@
         ],
         "title": "SessionListResponse"
       },
-      "SmsCodeType": {
-        "type": "string",
-        "enum": [
-          "login",
-          "register",
-          "reset_password",
-          "change_phone",
-          "verify_identity"
-        ],
-        "title": "SmsCodeType"
-      },
-      "StatusInfo": {
+      "SetUserRolesRequest": {
         "properties": {
-          "id": {
-            "type": "integer",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name"
+          "roles": {
+            "items": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "type": "array",
+            "maxItems": 16,
+            "title": "Roles"
           }
         },
         "type": "object",
         "required": [
-          "id",
-          "name"
+          "roles"
         ],
-        "title": "StatusInfo"
-      },
-      "StatusRef": {
-        "properties": {
-          "id": {
-            "type": "integer",
-            "title": "Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "StatusRef"
-      },
-      "TokenPair": {
-        "properties": {
-          "token": {
-            "type": "string",
-            "title": "Token"
-          },
-          "refreshToken": {
-            "type": "string",
-            "title": "Refreshtoken"
-          },
-          "tokenExpires": {
-            "type": "integer",
-            "title": "Tokenexpires"
-          }
-        },
-        "type": "object",
-        "required": [
-          "token",
-          "refreshToken",
-          "tokenExpires"
-        ],
-        "title": "TokenPair"
-      },
-      "TokenPairResponse": {
-        "properties": {
-          "code": {
-            "type": "integer",
-            "const": 0,
-            "title": "Code",
-            "default": 0
-          },
-          "message": {
-            "type": "string",
-            "const": "ok",
-            "title": "Message",
-            "default": "ok"
-          },
-          "data": {
-            "$ref": "#/components/schemas/TokenPair"
-          }
-        },
-        "type": "object",
-        "required": [
-          "code",
-          "message",
-          "data"
-        ],
-        "title": "TokenPairResponse"
+        "title": "SetUserRolesRequest"
       },
       "UpdateMeRequest": {
         "properties": {
-          "photo": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FileRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "firstName": {
+          "displayName": {
             "anyOf": [
               {
                 "type": "string",
+                "maxLength": 64,
                 "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Firstname"
+            "title": "Displayname"
           },
-          "lastName": {
+          "avatarFileId": {
             "anyOf": [
               {
                 "type": "string",
-                "minLength": 1
+                "format": "uuid"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Lastname"
-          },
-          "nickname": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 50,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Nickname"
-          },
-          "gender": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 2.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gender"
-          },
-          "birthday": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Birthday"
-          },
-          "email": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "email"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Email"
-          },
-          "password": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
-          },
-          "oldPassword": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldpassword"
-          },
-          "smsCode": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 8,
-                "minLength": 4
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Smscode"
+            "title": "Avatarfileid"
           }
         },
         "type": "object",
@@ -2781,172 +2170,28 @@
       },
       "UpdateUserRequest": {
         "properties": {
-          "email": {
+          "displayName": {
             "anyOf": [
               {
                 "type": "string",
-                "format": "email"
+                "maxLength": 64,
+                "minLength": 1
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Email"
-          },
-          "password": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Provider"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "firstName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Firstname"
-          },
-          "lastName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lastname"
-          },
-          "phone": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^1[3-9][0-9]{9}$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Phone"
-          },
-          "nickname": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 50
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Nickname"
-          },
-          "gender": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 2.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gender"
-          },
-          "birthday": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Birthday"
-          },
-          "photo": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FileRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RoleRef"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "title": "Displayname"
           },
           "status": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StatusRef"
+                "$ref": "#/components/schemas/UserStatus"
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "wechatOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatopenid"
-          },
-          "wechatUnionId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatunionid"
-          },
-          "alipayOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alipayopenid"
           }
         },
         "type": "object",
@@ -3008,31 +2253,9 @@
             ],
             "title": "Email"
           },
-          "provider": {
-            "type": "string",
-            "title": "Provider"
-          },
-          "firstName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Firstname"
-          },
-          "lastName": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lastname"
+          "emailVerified": {
+            "type": "boolean",
+            "title": "Emailverified"
           },
           "phone": {
             "anyOf": [
@@ -3045,7 +2268,7 @@
             ],
             "title": "Phone"
           },
-          "nickname": {
+          "displayName": {
             "anyOf": [
               {
                 "type": "string"
@@ -3054,60 +2277,32 @@
                 "type": "null"
               }
             ],
-            "title": "Nickname"
+            "title": "Displayname"
           },
-          "gender": {
+          "avatarUrl": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Gender"
-          },
-          "birthday": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Birthday"
-          },
-          "photo": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FileInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RoleInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "title": "Avatarurl"
           },
           "status": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/StatusInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/UserStatus"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Roles"
+          },
+          "hasPassword": {
+            "type": "boolean",
+            "title": "Haspassword"
           },
           "createdAt": {
             "type": "string",
@@ -3118,73 +2313,21 @@
             "type": "string",
             "format": "date-time",
             "title": "Updatedat"
-          },
-          "deletedAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Deletedat"
-          },
-          "wechatOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatopenid"
-          },
-          "wechatUnionId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Wechatunionid"
-          },
-          "alipayOpenId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alipayopenid"
           }
         },
         "type": "object",
         "required": [
           "id",
           "email",
-          "provider",
-          "firstName",
-          "lastName",
+          "emailVerified",
           "phone",
-          "nickname",
-          "gender",
-          "birthday",
-          "photo",
-          "role",
+          "displayName",
+          "avatarUrl",
           "status",
+          "roles",
+          "hasPassword",
           "createdAt",
-          "updatedAt",
-          "deletedAt",
-          "wechatOpenId",
-          "wechatUnionId",
-          "alipayOpenId"
+          "updatedAt"
         ],
         "title": "User"
       },
@@ -3271,6 +2414,14 @@
         ],
         "title": "UserResponse"
       },
+      "UserStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "disabled"
+        ],
+        "title": "UserStatus"
+      },
       "ValidationErrorData": {
         "properties": {
           "errors": {
@@ -3319,73 +2470,54 @@
         ],
         "title": "ValidationErrorResponse"
       },
-      "WechatLoginRequest": {
+      "VerifyEmailRequest": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "VerifyEmailRequest"
+      },
+      "app__identity__users__schemas__Role": {
         "properties": {
           "code": {
             "type": "string",
-            "minLength": 1,
             "title": "Code"
           },
-          "type": {
-            "$ref": "#/components/schemas/WechatLoginType"
+          "name": {
+            "type": "string",
+            "title": "Name"
           },
-          "nickname": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Nickname"
-          },
-          "avatar": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Avatar"
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Permissions"
           }
         },
         "type": "object",
         "required": [
           "code",
-          "type"
+          "name",
+          "permissions"
         ],
-        "title": "WechatLoginRequest"
+        "title": "Role"
       },
-      "WechatLoginType": {
+      "app__security__rbac__Role": {
         "type": "string",
         "enum": [
-          "mini_app",
-          "app"
+          "admin",
+          "user"
         ],
-        "title": "WechatLoginType"
-      },
-      "WechatPhoneLoginRequest": {
-        "properties": {
-          "loginCode": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Logincode"
-          },
-          "phoneCode": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Phonecode"
-          }
-        },
-        "type": "object",
-        "required": [
-          "loginCode",
-          "phoneCode"
-        ],
-        "title": "WechatPhoneLoginRequest"
+        "title": "Role"
       }
     },
     "securitySchemes": {

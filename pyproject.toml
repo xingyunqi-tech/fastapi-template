@@ -24,7 +24,7 @@ dependencies = [
     "orjson>=3.13.0",
     "prometheus-client>=0.26.0",
     "psutil>=7.2.2",
-    "pwdlib[argon2,bcrypt]>=0.3.1",
+    "pwdlib[argon2]>=0.3.1",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
     "pyjwt>=2.15.1",
@@ -159,7 +159,10 @@ skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
 
 [tool.typos.files]
-extend-exclude = ["uv.lock", "openapi/*.json", "src/app/cli/seed_data/*.json"]
+extend-exclude = ["uv.lock", "openapi/*.json"]
 
 [tool.typos.default]
-extend-ignore-re = ["(PK|FK|UQ|REL|IDX)_[0-9a-f]{20,}"]
+extend-ignore-re = ["(PK|FK|UQ|REL|IDX)_[0-9a-f]{20,}", "MC[46][A-Za-z0-9+/]{40,}={0,2}"]
+
+[tool.typos.default.extend-words]
+selectin = "selectin"

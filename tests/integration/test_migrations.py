@@ -122,7 +122,7 @@ async def test_two_schemas_coexist_in_one_database(
             assert list(await session.scalars(select(FileModel.path))) == ["b.png"]
         assert first.engine is not None
         assert second.engine is not None
-        assert "user" in await _tables(first.engine, "svc_a")
+        assert "users" in await _tables(first.engine, "svc_a")
         assert await _tables(second.engine, "svc_b") == PLATFORM_TABLES
         assert await _tables(first.engine, "public") == set()
         async with first.engine.connect() as connection:

@@ -8,7 +8,7 @@ FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platf
 | Web | FastAPI + Starlette，生产服务器 Granian |
 | 数据 | PostgreSQL 18、SQLAlchemy 2.1 async + asyncpg、Alembic |
 | 缓存 / 锁 / 限流 / 队列 | Redis 8、redis-py asyncio、Taskiq + taskiq-redis（Redis Stream） |
-| 认证 | PyJWT 双令牌 + 会话、pwdlib（argon2id / bcrypt） |
+| 认证 | PyJWT（EdDSA）access + 不透明 refresh 轮换、JWKS、pwdlib（argon2id） |
 | 可观测性 | structlog、prometheus-client、OpenTelemetry、Sentry |
 | CLI | Typer（`app` 命令） |
 | 质量 | Ruff、mypy strict（门禁）+ ty（试运行）、pytest + testcontainers、prek 钩子 |
@@ -16,7 +16,7 @@ FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platf
 ## 功能
 
 - 统一响应信封与 errorKey 错误码、校验错误转换、i18n（zh / en）、Request ID、CORS、安全头、限流（GCRA）、幂等键
-- 认证：邮箱、手机号密码、短信验证码、微信（小程序 / App / 手机号）、支付宝；JWT access + refresh 轮换；会话（设备）管理；RBAC
+- 认证：邮箱注册登录、邮箱验证、找回与重置密码；EdDSA access + refresh 轮换（30 秒宽限期、重放检测）与吊销；会话（设备）管理；角色与权限
 - 用户管理、文件上传（`local` / `s3` / `s3-presigned`）与私有文件
 - 健康检查、Prometheus 指标、审计、账号注销清理、邮件（中英模板）、定时任务
 - `/openapi.json`（OpenAPI 3.1）与 `/docs`（Scalar）；`DOCS_ENABLED` 控制，生产默认关闭；`make openapi` 导出到 `openapi/openapi.json`
@@ -28,9 +28,10 @@ FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platf
 ```bash
 make install                  # uv sync + 安装 prek 钩子
 cp .env.example .env          # 要单独运行 worker 时把 REDIS_ENABLED 改为 true
+uv run --frozen app keys generate  # 私钥填入 .env 的 AUTH_SIGNING_KEY
 make infra                    # Postgres 18 :5432、Redis 8 :6379、Mailpit（SMTP :1025，UI :8025）
 make migrate                  # alembic upgrade heads
-make seed                     # 角色、状态、权限、初始账号
+make seed                     # 管理员账号
 make dev                      # 热重载，http://localhost:3000
 uv run --frozen app worker    # 队列 worker（需 REDIS_ENABLED=true）
 uv run --frozen app scheduler # 定时任务调度
@@ -38,7 +39,7 @@ uv run --frozen app scheduler # 定时任务调度
 
 - 生产方式启动 API：`make serve`（`python -m app`，Granian，进程数取 `WEB_CONCURRENCY`）
 - `REDIS_ENABLED=false` 时任务在 API 进程内执行，无需 worker；生产强制 `REDIS_ENABLED=true`
-- 非生产环境 seed 账号：`admin@example.com` / `john.doe@example.com`，密码 `Secret00`（接口传 MD5）
+- 非生产环境 seed 账号：`admin@example.com` / `Secret00`
 
 ## Make 目标
 

@@ -8,7 +8,6 @@ from urllib.parse import parse_qsl
 from starlette.datastructures import Headers
 
 from app.common.middleware import current_request_id
-from app.common.security import InvalidTokenError, Jwt, TokenExpiredError
 from app.infrastructure.logging import bind_user_id, get_logger, reset_user_id
 
 if TYPE_CHECKING:
@@ -33,10 +32,7 @@ def _user_id(scope: Scope, authorization: str | None) -> Any:
     context = getattr(getattr(scope.get("app"), "state", None), "context", None)
     if context is None:
         return None
-    try:
-        return Jwt.verify(parts[1], context.settings.auth.secret.get_secret_value()).get("id")
-    except InvalidTokenError, TokenExpiredError:
-        return None
+    return context.verifier.subject(parts[1])
 
 
 def _original_url(scope: Scope) -> str:

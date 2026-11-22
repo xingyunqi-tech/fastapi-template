@@ -1,3 +1,4 @@
+import ipaddress
 from dataclasses import dataclass
 
 lazy from fastapi import Request
@@ -23,9 +24,19 @@ def client_ip(request: Request, trust_proxy: int) -> str | None:
     return chain[min(trust_proxy, len(chain) - 1)]
 
 
+def _valid_ip(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
 def client_info(request: Request, trust_proxy: int) -> ClientInfo:
+    """`ip` 不是合法 IP 地址时为 None。"""
     agent = request.headers.get("user-agent")
     return ClientInfo(
-        ip=client_ip(request, trust_proxy),
+        ip=_valid_ip(client_ip(request, trust_proxy)),
         user_agent=agent[:USER_AGENT_MAX_LENGTH] if agent is not None else None,
     )

@@ -24,7 +24,8 @@ from app.config import DatabaseSettings, Settings, get_settings
 from app.factory import create_app
 from app.infrastructure.cache import MemoryCache, RedisCache
 from app.infrastructure.database.session import Database
-from app.integrations.mail import LoggingMailer
+from app.infrastructure.mail import LoggingMailer
+from tests.integration.identity import seed_users
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -107,6 +108,7 @@ def template_db(pg_server: PgServer) -> str:
         database = Database.from_settings(settings.database)
         async with database.transaction() as session:
             await seed(session, settings)
+            await seed_users(session)
         await database.dispose()
 
     asyncio.run(run_seed())
@@ -140,12 +142,15 @@ def _build_app(database: Database, *, redis: Redis | None = None) -> FastAPI:
     get_settings.cache_clear()
     settings = Settings.load()
     app = create_app(settings)
+    built = app.state.context
     app.state.context = AppContext(
         settings=settings,
         database=database,
         cache=RedisCache(redis) if redis is not None else MemoryCache(),
-        passwords=app.state.context.passwords,
+        passwords=built.passwords,
         mailer=LoggingMailer(),
+        signer=built.signer,
+        verifier=built.verifier,
         redis=redis,
         http_transport=httpx_lib.MockTransport(_reject_external_request),
     )

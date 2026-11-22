@@ -60,7 +60,7 @@ def test_cli_reports_invalid_name(tmp_path: Path) -> None:
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize(("name", "table"), [("User", "user"), ("Session", "session")])
+@pytest.mark.parametrize(("name", "table"), [("Users", "users"), ("Sessions", "sessions")])
 def test_rejects_table_used_by_existing_model(tmp_path: Path, name: str, table: str) -> None:
     with pytest.raises(ValueError, match=f"'{table}'"):
         generate_resource(name, tmp_path)

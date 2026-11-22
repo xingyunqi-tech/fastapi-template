@@ -35,14 +35,14 @@ PostgreSQL 18、SQLAlchemy 2.1 async + asyncpg、Alembic。
 |---|---|
 | API（每个 Granian worker） | `DATABASE_POOL_SIZE` |
 | worker、scheduler（每个进程） | `DATABASE_POOL_SIZE` |
-| `app seed`、`app permissions clear-cache` | 1，部署时一次性运行 |
+| `app seed`、`app users cleanup` | 1，一次性运行 |
 
 部署时须满足各进程连接池之和 ≤ Postgres `max_connections`。
 
 ## 模型
 
 - 列名与约束名 snake_case；约束与索引由 `Base.metadata` 的 `naming_convention` 命名：`pk_<表>`、`uq_<表>_<列>`、`ix_<表>_<列>`、`fk_<表>_<列>_<被引用表>`、`ck_<表>_<名>`
-- 主键为 UUIDv7（`base.uuid_pk()`）：应用侧 `uuid.uuid7()` 生成，库侧默认 `uuidv7()`；`role`、`status`、`permission` 为代码常量表，主键保持整数 / 字符串
+- 主键为 UUIDv7（`base.uuid_pk()`）：应用侧 `uuid.uuid7()` 生成，库侧默认 `uuidv7()`；`user_roles` 以 `(user_id, role)` 为复合主键，`account_deletions` 以 `user_id` 为主键
 - 时间列为 `timestamptz`（`base.timestamp()`、`created_at()`、`updated_at()`）；API 输出为 `toISOString` 格式（毫秒、`Z`）
 - 软删除列 `deleted_at`；注销用户时清空其唯一字段
 - 每个模型声明 `__branch__`（`Branch.PLATFORM` / `IDENTITY` / `MODULES`），写入表的 `info["branch"]`，未声明时导入失败
@@ -73,22 +73,14 @@ uv run --frozen alembic upgrade platform@head
 uv run --frozen alembic downgrade base
 ```
 
-- 三个 Alembic 分支，目录 `migrations/versions/{platform,identity,modules}/`：`platform_0001` 为基础；`identity_0001`、`modules_0001` 声明 `depends_on` `platform_0001`（`user.photo_id` 引用 `file`），`modules_0001` 不含操作
+- 三个 Alembic 分支，目录 `migrations/versions/{platform,identity,modules}/`：`platform_0001` 为基础；`identity_0001`、`modules_0001` 声明 `depends_on` `platform_0001`（`users.avatar_file_id` 引用 `file`），`modules_0001` 不含操作
 - `alembic.ini` 的 `version_locations` 按行列出三个目录（`path_separator = newline`），`recursive_version_locations = true`
 - `migrations/env.py`：`DATABASE_SCHEMA` 不存在时先创建（已存在时迁移账号无需库级 CREATE 权限），版本表在该 schema 中；`--sql` 离线输出以 `CREATE SCHEMA IF NOT EXISTS` 与 `SET search_path` 开头；只比较 ORM 中的表，`-x branches=platform,modules` 进一步限定比较的分支（`autogenerate` 与 `check`）
 - `alembic check` 要求全部分支已升级；只升级部分分支时用 `infrastructure/database/branches.py` 的 `schema_diff(connection, branches)` 比较
 - 新迁移用 `--head <分支>@head`；自动生成的迁移需人工检查后再执行
 - CI `migrations` job：`make migrate` → `alembic check` → `alembic downgrade base` → `make migrate`
-- compose 中由一次性 `migrate` 服务执行 `app migrate && app permissions clear-cache`（`RUN_SEEDS=true` 时再执行 `app seed`），api 依赖其成功完成，多副本不会并发迁移
+- compose 中由一次性 `migrate` 服务执行 `app migrate`（`RUN_SEEDS=true` 时再执行 `app seed`），api 依赖其成功完成，多副本不会并发迁移
 
 ## Seed
 
-`make seed`（`app seed`）在一个事务内写入，已存在的数据不覆盖：
-
-| 数据 | 来源 |
-|---|---|
-| 角色、状态、权限、角色权限 | `src/app/cli/seed_data/seed.json` |
-| 管理员 | 无 admin 用户时创建：非生产为 `admin@example.com` / `Secret00`；生产取 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`，未设置则不创建 |
-| 示例用户 | 非生产且无 user 角色用户时创建 `john.doe@example.com` / `Secret00` |
-
-完成后清除角色权限缓存。
+`make seed`（`app seed`）只创建管理员，规则见 [auth.md](auth.md#种子数据)；角色与权限是代码常量，不入库。

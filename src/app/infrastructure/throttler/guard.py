@@ -13,7 +13,6 @@ lazy from fastapi import Request
 from app.common.client import client_ip
 from app.common.errors import AppError
 from app.common.routing import ApiRoute, Auth, register_throttle_guard
-from app.common.security import InvalidTokenError, Jwt, TokenExpiredError
 from app.config import FileDriver
 from app.infrastructure.throttler.ip import normalize_ip
 from app.infrastructure.throttler.storage import THROTTLER_NAME, ThrottlerStorage
@@ -53,14 +52,11 @@ def throttle_key(route: ApiRoute, tracker: str, file_driver: FileDriver = FileDr
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _bearer_user_id(request: Request, secret: str) -> Any:
+def _bearer_user_id(request: Request, context: AppContext) -> Any:
     parts = _WHITESPACE.split((request.headers.get("authorization") or "").strip(), maxsplit=2)
     if parts[0].lower() != "bearer" or len(parts) < 2 or not parts[1]:
         return None
-    try:
-        return Jwt.verify(parts[1], secret).get("id")
-    except InvalidTokenError, TokenExpiredError:
-        return None
+    return context.verifier.subject(parts[1])
 
 
 def _js_string(value: Any) -> str:
@@ -71,7 +67,7 @@ def _js_string(value: Any) -> str:
 
 def tracker_for(request: Request, route: ApiRoute, context: AppContext) -> str:
     if route.auth is Auth.JWT:
-        user_id = _bearer_user_id(request, context.settings.auth.secret.get_secret_value())
+        user_id = _bearer_user_id(request, context)
         if user_id is not None:
             return f"user:{_js_string(user_id)}"
     ip = client_ip(request, context.settings.app.trust_proxy) or ""

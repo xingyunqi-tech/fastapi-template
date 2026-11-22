@@ -9,7 +9,15 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Match
 
-from app.common.errors import ERRORS, AppError, FieldError, ValidationFailed, error_key_for_status
+from app.common.errors import (
+    DEPENDENCY_RETRY_AFTER_SECONDS,
+    ERRORS,
+    AppError,
+    DependencyUnavailableError,
+    FieldError,
+    ValidationFailed,
+    error_key_for_status,
+)
 from app.common.i18n import I18n, get_i18n
 from app.common.middleware import current_request_id
 from app.common.validation import field_errors, is_malformed_json
@@ -83,6 +91,12 @@ def render_error(i18n: I18n, exc: BaseException) -> JSONResponse | None:
         return error_response(
             i18n, error_key_for_status(exc.status_code), headers=exc.headers or None
         )
+    if isinstance(exc, DependencyUnavailableError):
+        return error_response(
+            i18n,
+            "common.serviceUnavailable",
+            headers={"Retry-After": str(DEPENDENCY_RETRY_AFTER_SECONDS)},
+        )
     if isinstance(exc, IntegrityError):
         violation = find_unique_violation(exc)
         if violation is not None:
@@ -130,7 +144,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         _log(request.url.path, response, exc)
         return response
 
-    for exc_class in (AppError, RequestValidationError, StarletteHTTPException, IntegrityError):
+    for exc_class in (
+        AppError,
+        RequestValidationError,
+        StarletteHTTPException,
+        IntegrityError,
+        DependencyUnavailableError,
+    ):
         app.add_exception_handler(exc_class, handle)
 
 

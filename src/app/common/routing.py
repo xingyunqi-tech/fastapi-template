@@ -73,7 +73,6 @@ class Auth(StrEnum):
     PUBLIC = "public"
     JWT = "jwt"
     OPTIONAL_JWT = "optional-jwt"
-    REFRESH_JWT = "refresh-jwt"
     MONITORING = "monitoring"
 
 
@@ -424,7 +423,7 @@ def _error_responses(meta: RouteMeta, validates: bool) -> dict[int | str, dict[s
     def add(status: int | str, description: str, model: type[BaseModel] = ErrorResponse) -> None:
         responses[status] = {"model": model, "description": description}
 
-    if meta.auth in {Auth.JWT, Auth.REFRESH_JWT}:
+    if meta.auth is Auth.JWT:
         add(401, "未认证")
     if meta.auth is Auth.MONITORING or meta.rbac or meta.permissions or meta.any_permissions:
         add(403, "无权限")
@@ -441,7 +440,7 @@ def _error_responses(meta: RouteMeta, validates: bool) -> dict[int | str, dict[s
 def _openapi_extra(declaration: Declaration) -> dict[str, Any] | None:
     extra: dict[str, Any] = {}
     auth = declaration.meta.auth
-    if auth in {Auth.JWT, Auth.REFRESH_JWT, Auth.MONITORING}:
+    if auth in {Auth.JWT, Auth.MONITORING}:
         extra["security"] = BEARER_SECURITY
     elif auth is Auth.OPTIONAL_JWT:
         extra["security"] = [{}, *BEARER_SECURITY]

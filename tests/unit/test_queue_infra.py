@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import re
 import socket
@@ -6,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
 from uuid import UUID
+lazy from collections.abc import AsyncIterator
 
 import pytest
 from redis.asyncio import Redis
@@ -20,16 +22,15 @@ from app.infrastructure.account_cleanup import (
     registered_cleaners,
 )
 from app.infrastructure.audit import Auditable, AuditAction, _param_id, _response_id, sanitize
-from app.infrastructure.queue import RetryPolicy, TaskQueue, UnrecoverableError, run_job
-from app.infrastructure.redis import LockService
-from app.infrastructure.scheduler import run_exclusive
-from app.integrations.mail import (
+from app.infrastructure.mail import (
     MailComposer,
     MailMessage,
     OutgoingMail,
     SmtpTransport,
-    handlebars_escape,
 )
+from app.infrastructure.queue import RetryPolicy, TaskQueue, UnrecoverableError, run_job
+from app.infrastructure.redis import LockService
+from app.infrastructure.scheduler import run_exclusive
 
 HASH = "eyJhbGciOi.pay-load_x"
 
@@ -186,37 +187,49 @@ class TestRedisSettings:
 
 
 class TestMailComposer:
-    def test_unknown_language_falls_back(self) -> None:
-        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
-        mail = MailComposer(app, get_i18n("en")).compose(
-            MailMessage("activation", "a@b.c", {"hash": "h"}), None
-        )
-        assert mail.subject == "Confirm email"
-        assert mail.text == "http://x/confirm-email?hash=h Confirm email"
+    @staticmethod
+    def composer() -> MailComposer:
+        app = AppSettings.model_validate({"APP_NAME": "Demo", "APP_FRONTEND_URL": "http://x/"})
+        return MailComposer(app, get_i18n("en"))
 
-    def test_url_params_use_form_encoding(self) -> None:
-        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
-        mail = MailComposer(app, get_i18n("en")).compose(
-            MailMessage("activation", "a@b.c", {"hash": "a b~c+d"}), "en"
-        )
-        assert mail.text == "http://x/confirm-email?hash=a+b%7Ec%2Bd Confirm email"
+    @pytest.mark.parametrize(
+        ("template", "lang", "subject", "path"),
+        [
+            ("verify-email", "zh", "验证你的邮箱", "/verify-email"),
+            ("verify-email", "en", "Verify your email", "/verify-email"),
+            ("reset-password", "zh", "重置你的密码", "/reset-password"),
+            ("reset-password", "en", "Reset your password", "/reset-password"),
+        ],
+    )
+    def test_subject_body_and_link(self, template: str, lang: str, subject: str, path: str) -> None:
+        mail = self.composer().compose(MailMessage(template, "a@b.c", {"token": "t"}), lang)
 
-    def test_handlebars_escape(self) -> None:
-        assert handlebars_escape("a=b&c<d>'\"`") == "a&#x3D;b&amp;c&lt;d&gt;&#x27;&quot;&#x60;"
-        assert handlebars_escape(None) == ""
+        assert mail.subject == subject
+        assert f"http://x{path}?token=t" in mail.text
+        assert "Demo" in mail.text
+        assert f'href="http://x{path}?token=t"' in mail.html
+        assert f'lang="{lang}"' in mail.html
+
+    def test_unknown_language_falls_back_to_default(self) -> None:
+        mail = self.composer().compose(MailMessage("verify-email", "a@b.c", {"token": "t"}), "fr")
+        assert mail.subject == "Verify your email"
+
+    def test_link_token_is_form_encoded_and_html_escaped(self) -> None:
+        mail = self.composer().compose(
+            MailMessage("reset-password", "a@b.c", {"token": "a b&c"}), "en"
+        )
+        assert "http://x/reset-password?token=a+b%26c" in mail.text
+        assert 'href="http://x/reset-password?token=a+b%26c"' in mail.html
 
     def test_smtp_message_headers(self) -> None:
-        settings = MailSettings.model_validate(
-            {"MAIL_DEFAULT_NAME": "Api", "MAIL_DEFAULT_EMAIL": "noreply@example.com"}
-        )
-        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x"})
-        mail = MailComposer(app, get_i18n("en")).compose(
-            MailMessage("activation", "to@example.com", {"hash": "h"}), "zh"
+        settings = MailSettings.model_validate({"MAIL_FROM": "Api <noreply@example.com>"})
+        mail = self.composer().compose(
+            MailMessage("verify-email", "to@example.com", {"token": "t"}), "zh"
         )
         message = SmtpTransport(settings).build(mail)
         assert message["From"] == "Api <noreply@example.com>"
         assert message["To"] == "to@example.com"
-        assert message["Subject"] == "确认电子邮件"
+        assert message["Subject"] == "验证你的邮箱"
         assert message.get_content_type() == "multipart/alternative"
         sent_at = parsedate_to_datetime(message["Date"])
         assert abs(sent_at - datetime.now(UTC)) < timedelta(minutes=1)
@@ -225,7 +238,7 @@ class TestMailComposer:
         assert message["Message-ID"] != SmtpTransport(settings).build(mail)["Message-ID"]
 
     def test_smtp_subject_line_breaks_become_spaces(self) -> None:
-        mail = OutgoingMail(to="to@example.com", subject="a\r\nb\nc\rd", text="t", html=None)
+        mail = OutgoingMail(to="to@example.com", subject="a\r\nb\nc\rd", text="t", html="<p>t</p>")
         message = SmtpTransport(MailSettings.model_validate({})).build(mail)
         assert message["Subject"] == "a b c d"
         assert message["Message-ID"].endswith("@localhost>")
@@ -288,11 +301,24 @@ class _Cleaner:
             raise self.error
 
 
+class _RecordingDatabase:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncIterator[_RecordingDatabase]:
+        yield self
+
+    async def execute(self, statement: object, params: dict[str, object]) -> None:
+        self.statements.append(str(statement))
+
+
 class TestAccountCleanupRunner:
     async def test_runs_every_cleaner_and_aggregates_failures(self) -> None:
         calls: list[str] = []
+        database = _RecordingDatabase()
         runner = AccountCleanupRunner(
-            None,  # type: ignore[arg-type]
+            database,  # type: ignore[arg-type]
             [
                 _Cleaner("practice", calls),
                 _Cleaner("papers", calls, RuntimeError("busy")),
@@ -304,6 +330,8 @@ class TestAccountCleanupRunner:
         assert calls == [f"practice:{USER_ID}", f"papers:{USER_ID}", f"files:{USER_ID}"]
         assert caught.value.failed_cleaners == ["papers"]
         assert "papers (busy)" in str(caught.value)
+        [statement] = database.statements
+        assert "last_error = :error" in statement
 
     async def test_report_failure_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
         runner = AccountCleanupRunner(None, [])  # type: ignore[arg-type]

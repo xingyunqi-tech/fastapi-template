@@ -9,17 +9,23 @@ import typer
 
 from app.common.openapi import OPENAPI_PATH, render_openapi
 from app.config import FileDriver, Settings
+from app.security.keys import generate_key_pair
 lazy from app.factory import create_app
 
 EXPORT_TITLE: Final = "fastapi-temp"
 EXPORT_DATABASE_URL: Final = "postgresql://export@localhost/export?sslmode=disable"
+EXPORT_AUTH: Final = {"AUTH_ISSUER": "https://export.invalid", "AUTH_AUDIENCE": "export"}
 
 openapi_cli = typer.Typer(no_args_is_help=True)
 
 
 def export_settings() -> Settings:
-    """导出结果不随本地环境变化：标题固定，文件驱动取 local，未配置数据库时用占位地址（不连接）。"""
+    """导出结果不随本地环境变化：标题固定，文件驱动取 local，未配置数据库与签名密钥时用占位值。"""
     os.environ.setdefault("DATABASE_URL", EXPORT_DATABASE_URL)
+    for name, value in EXPORT_AUTH.items():
+        os.environ.setdefault(name, value)
+    if not os.environ.get("AUTH_SIGNING_KEY"):
+        os.environ["AUTH_SIGNING_KEY"] = generate_key_pair().private_pem
     settings = Settings.load()
     return replace(
         settings,

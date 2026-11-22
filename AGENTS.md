@@ -49,9 +49,10 @@
 | `src/app/factory.py` | `create_app()`、中间件、路由注册、lifespan |
 | `src/app/common/` | 路由、信封、异常与翻译、校验、中间件、分页、i18n |
 | `src/app/config/` | Settings 分组 |
-| `src/app/core/` | auth、users、session、permissions |
-| `src/app/infrastructure/` | database、cache、redis 锁、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup |
-| `src/app/integrations/` | mail、sms、wechat、alipay |
+| `src/app/security/` | 密钥、JWT、吊销、角色与权限、密码、鉴权依赖 |
+| `src/app/identity/` | auth、sessions、me、users、account_deletion、keys |
+| `src/app/infrastructure/` | database、cache、redis 锁、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup、mail |
+| `src/app/integrations/` | sms、wechat、alipay |
 | `src/app/modules/` | files |
 | `src/app/cli/` | `app` 命令、seed 数据、代码生成模板 |
 | `migrations/` | Alembic |

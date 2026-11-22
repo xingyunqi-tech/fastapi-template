@@ -1,16 +1,16 @@
 import hashlib
 import logging
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 from redis.asyncio import Redis
 
-from app.common.security import Jwt
 from app.infrastructure.database.session import Database
 from app.infrastructure.metrics import throttler_storage_fallback_total
 from app.infrastructure.throttler import ThrottlerStorage, redis_key
-from tests.conftest import TEST_ENV
 from tests.integration.conftest import _build_app, client_for, error_of
+from tests.tokens import access_token
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -36,9 +36,12 @@ def nest_key(handler: str, tracker: str) -> str:
     return hashlib.sha256(f"{handler}-default-{tracker}".encode()).hexdigest()
 
 
-def user_token(user_id: int) -> dict[str, str]:
-    token = Jwt.sign({"id": user_id, "sessionId": 999_999}, TEST_ENV["AUTH_JWT_SECRET"], "15m")
-    return {"Authorization": f"Bearer {token}"}
+def user_id(n: int) -> UUID:
+    return UUID(f"019a8f3c-6b1e-7d2a-8000-{n:012d}")
+
+
+def user_token(app: FastAPI, n: int) -> dict[str, str]:
+    return {"Authorization": f"Bearer {access_token(app, user_id(n))}"}
 
 
 @pytest.fixture
@@ -90,11 +93,11 @@ class TestHeadersAndLimit:
         self, make_app: AppFactory
     ) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="100")) as client:
-            responses = [await client.post("/api/v1/auth/email/login", json={}) for _ in range(6)]
+            responses = [await client.post("/api/v1/auth/email/login", json={}) for _ in range(11)]
 
-        assert [r.status_code for r in responses] == [422] * 5 + [429]
-        assert responses[0].headers["x-ratelimit-limit"] == "5"
-        assert responses[4].headers["x-ratelimit-remaining"] == "0"
+        assert [r.status_code for r in responses] == [422] * 10 + [429]
+        assert responses[0].headers["x-ratelimit-limit"] == "10"
+        assert responses[9].headers["x-ratelimit-remaining"] == "0"
 
     async def test_routes_are_counted_separately(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
@@ -121,29 +124,31 @@ class TestHeadersAndLimit:
 
 class TestTracker:
     async def test_jwt_routes_count_per_user(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="2")) as client:
-            first = [await client.get("/api/v1/auth/me", headers=user_token(1)) for _ in range(3)]
-            second = await client.get("/api/v1/auth/me", headers=user_token(2))
+        app = make_app(THROTTLE_LIMIT="2")
+        async with client_for(app) as client:
+            first = [await client.get("/api/v1/me", headers=user_token(app, 1)) for _ in range(3)]
+            second = await client.get("/api/v1/me", headers=user_token(app, 2))
 
-        assert [r.status_code for r in first] == [401, 401, 429]
+        assert [r.status_code for r in first] == [404, 404, 429]
         assert first[0].headers["x-ratelimit-limit"] == "2"
-        assert second.status_code == 401
+        assert second.status_code == 404
         assert second.headers["x-ratelimit-remaining"] == "1"
 
     async def test_jwt_route_without_valid_token_counts_by_ip(self, make_app: AppFactory) -> None:
         async with client_for(make_app(THROTTLE_LIMIT="2")) as client:
             invalid = {"Authorization": "Bearer nope"}
             statuses = [
-                (await client.get("/api/v1/auth/me", headers=headers)).status_code
+                (await client.get("/api/v1/me", headers=headers)).status_code
                 for headers in (invalid, {}, invalid)
             ]
 
         assert statuses == [401, 401, 429]
 
     async def test_public_route_ignores_token(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get(LIVE, headers=user_token(1))
-            second = await client.get(LIVE, headers=user_token(2))
+        app = make_app(THROTTLE_LIMIT="1")
+        async with client_for(app) as client:
+            first = await client.get(LIVE, headers=user_token(app, 1))
+            second = await client.get(LIVE, headers=user_token(app, 2))
 
         assert (first.status_code, second.status_code) == (200, 429)
 
@@ -180,10 +185,11 @@ class TestRedisStorage:
         assert app.state.throttler.memory._tat == {}
 
     async def test_user_key_in_redis(self, make_app: AppFactory, redis_client: Redis) -> None:
-        async with client_for(make_app(redis_client)) as client:
-            await client.put("/api/v1/auth/me", headers=user_token(42), json={})
+        app = make_app(redis_client)
+        async with client_for(app) as client:
+            await client.patch("/api/v1/me", headers=user_token(app, 42), json={})
 
-        key = redis_key(nest_key("AuthController-update", "user:42"))
+        key = redis_key(nest_key("updateMe", f"user:{user_id(42)}"))
         assert await redis_client.exists(key) == 1
 
     async def test_coexists_with_nestjs_counter_keys(

@@ -12,9 +12,6 @@ from app.common.context import AppContext, Context
 from app.common.errors import AppError
 from app.common.routing import ApiRouter, Auth
 from app.config import FileDriver
-from app.core.auth.deps import CurrentUser
-from app.core.permissions.service import PermissionsService
-from app.core.users.schemas import FileInfo
 from app.infrastructure.database.session import DbSession
 from app.modules.files.purposes import (
     FILE_PURPOSE_RULES,
@@ -28,7 +25,12 @@ from app.modules.files.purposes import (
     parse_file_purpose,
     select_file_error,
 )
-from app.modules.files.schemas import PresignedUpload, PresignedUploadRequest, UploadedFile
+from app.modules.files.schemas import (
+    FileInfo,
+    PresignedUpload,
+    PresignedUploadRequest,
+    UploadedFile,
+)
 from app.modules.files.send import file_response
 from app.modules.files.service import FilesService
 from app.modules.files.storage import (
@@ -47,6 +49,8 @@ from app.modules.files.uploads import (
     S3Sink,
     receive_single_file,
 )
+from app.security.deps import CurrentPrincipal
+from app.security.rbac import permissions_for
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -105,7 +109,7 @@ def _content_length(request: Request) -> float | None:
 
 
 async def upload_purpose_guard(
-    request: Request, user: CurrentUser, context: Context, session: DbSession
+    request: Request, principal: CurrentPrincipal, context: Context
 ) -> FilePurpose:
     """用途合法、具备用途所需权限、Content-Length 未明显超限。"""
     values = request.query_params.getlist("purpose")
@@ -115,14 +119,8 @@ async def upload_purpose_guard(
     if purpose is None:
         raise invalid_purpose_error()
     permission = FILE_PURPOSE_RULES[purpose].permission
-    if permission is not None:
-        granted = (
-            await PermissionsService(session, context.cache).permissions_for_role(user.role_id)
-            if user.role_id is not None
-            else []
-        )
-        if permission not in granted:
-            raise AppError("common.forbidden")
+    if permission is not None and permission not in permissions_for(principal.roles):
+        raise AppError("common.forbidden")
     length = _content_length(request)
     max_size = context.settings.file.max_sizes[purpose]
     if length is not None and length > max_size + MULTIPART_OVERHEAD_BYTES:
@@ -209,11 +207,11 @@ async def _store_received(
 async def upload_local_file(
     purpose: UploadPurpose,
     received: ReceivedUpload,
-    user: CurrentUser,
+    principal: CurrentPrincipal,
     context: Context,
     session: DbSession,
 ) -> UploadedFile:
-    return await _store_received(received, purpose, user.id, context, session)
+    return await _store_received(received, purpose, principal.sub, context, session)
 
 
 @s3_router.endpoint(
@@ -230,11 +228,11 @@ async def upload_local_file(
 async def upload_s3_file(
     purpose: UploadPurpose,
     received: ReceivedUpload,
-    user: CurrentUser,
+    principal: CurrentPrincipal,
     context: Context,
     session: DbSession,
 ) -> UploadedFile:
-    return await _store_received(received, purpose, user.id, context, session)
+    return await _store_received(received, purpose, principal.sub, context, session)
 
 
 @s3_presigned_router.endpoint(
@@ -249,7 +247,7 @@ async def upload_s3_file(
 async def upload_presigned_file(
     purpose: UploadPurpose,
     body: PresignedUploadRequest,
-    user: CurrentUser,
+    principal: CurrentPrincipal,
     context: Context,
     session: DbSession,
 ) -> PresignedUpload:
@@ -263,7 +261,7 @@ async def upload_presigned_file(
     signed_url = presigned_put_url(storage.s3_options(), key, body.file_size)
     file = await FilesService(session).create(
         path=key,
-        owner_user_id=file_owner_for(purpose, user.id),
+        owner_user_id=file_owner_for(purpose, principal.sub),
         visibility=FILE_PURPOSE_RULES[purpose].visibility,
         mime_type=mime_type,
         size=body.file_size,
@@ -324,11 +322,11 @@ def redirect(request: Request, url: str) -> Response:
 async def read_private_file(
     request: Request,
     id: Annotated[UUID, Path()],
-    user: CurrentUser,
+    principal: CurrentPrincipal,
     context: Context,
     session: DbSession,
 ) -> Response:
-    file = await FilesService(session).find_accessible(id, user.id)
+    file = await FilesService(session).find_accessible(id, principal.sub)
     if context.settings.file.driver is FileDriver.LOCAL:
         return send_file(request, local_disk_path(file.path))
     return redirect(request, context.file_urls.build(file))

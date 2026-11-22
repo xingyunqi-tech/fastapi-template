@@ -1,317 +1,336 @@
-import hashlib
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import jwt
 import pytest
 import time_machine
 lazy import httpx2 as httpx
 lazy from fastapi import FastAPI
 
-from app.integrations.mail import LoggingMailer
+from tests import keys
 from tests.integration.conftest import error_of, rules_of
+from tests.integration.identity import ADMIN_EMAIL, PASSWORD, USER_EMAIL, bearer, login, sent_mail
 
 
-def md5(text: str) -> str:
-    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
-
-
-PASSWORD = md5("Secret00")
-
-
-async def login(client: httpx.AsyncClient, email: str, password: str = PASSWORD) -> dict[str, Any]:
-    response = await client.post(
-        "/api/v1/auth/email/login", json={"email": email, "password": password}
+async def register(client: httpx.AsyncClient, email: str, **extra: Any) -> httpx.Response:
+    return await client.post(
+        "/api/v1/auth/email/register", json={"email": email, "password": PASSWORD, **extra}
     )
-    assert response.status_code == 200, response.text
-    data: dict[str, Any] = response.json()["data"]
-    return data
 
 
-def bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def claims_of(access_token: str) -> dict[str, Any]:
+    decoded: dict[str, Any] = jwt.decode(
+        access_token, keys.PUBLIC_KEY, algorithms=["EdDSA"], audience=keys.AUDIENCE
+    )
+    return decoded
 
 
-def sent_mail(app: FastAPI) -> LoggingMailer:
-    mailer = app.state.context.mailer
-    assert isinstance(mailer, LoggingMailer)
-    return mailer
+async def refresh(client: httpx.AsyncClient, refresh_token: str) -> httpx.Response:
+    return await client.post("/api/v1/auth/refresh", json={"refreshToken": refresh_token})
 
 
-class TestEmailFlows:
-    async def test_register_login_and_confirm(
+async def me(client: httpx.AsyncClient, access_token: str) -> httpx.Response:
+    return await client.get("/api/v1/me", headers=bearer(access_token))
+
+
+class TestRegistrationAndLogin:
+    async def test_register_returns_login_response_and_sends_verification(
         self, client: httpx.AsyncClient, app: FastAPI
     ) -> None:
-        response = await client.post(
-            "/api/v1/auth/email/register",
-            json={
-                "email": "New.User@Example.com",
-                "password": PASSWORD,
-                "firstName": "N",
-                "lastName": "U",
-            },
+        response = await register(client, " New.User@Example.com ", displayName="New")
+
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert list(data) == ["accessToken", "refreshToken", "expiresIn", "tokenType", "user"]
+        assert (data["expiresIn"], data["tokenType"]) == (900, "Bearer")
+        user = data["user"]
+        assert list(user) == [
+            "id",
+            "email",
+            "emailVerified",
+            "phone",
+            "displayName",
+            "avatarUrl",
+            "status",
+            "roles",
+            "hasPassword",
+            "createdAt",
+            "updatedAt",
+        ]
+        assert (user["email"], user["emailVerified"], user["roles"]) == (
+            "new.user@example.com",
+            False,
+            ["user"],
         )
-        assert response.json() == {"code": 0, "message": "ok", "data": None}
-
-        data = await login(client, "new.user@example.com")
-        assert data["user"]["status"] == {"id": 2, "name": "Inactive"}
-        assert list(data) == ["token", "refreshToken", "tokenExpires", "user"]
-
+        assert (user["status"], user["hasPassword"], user["displayName"]) == ("active", True, "New")
         [mail] = sent_mail(app).sent
-        assert mail.template == "activation"
-        confirm = await client.post("/api/v1/auth/email/confirm", json={"hash": mail.data["hash"]})
-        assert confirm.status_code == 200
+        assert (mail.template, mail.to) == ("verify-email", "new.user@example.com")
 
-        again = await client.post("/api/v1/auth/email/confirm", json={"hash": mail.data["hash"]})
-        assert rules_of(again) == {"hash": "alreadyConfirmed"}
-
-    async def test_register_duplicate_email(self, client: httpx.AsyncClient) -> None:
-        response = await client.post(
-            "/api/v1/auth/email/register",
-            json={
-                "email": "john.doe@example.com",
-                "password": PASSWORD,
-                "firstName": "J",
-                "lastName": "D",
-            },
-        )
-        assert rules_of(response) == {"email": "emailAlreadyExists"}
+    async def test_register_with_taken_email_is_conflict(self, client: httpx.AsyncClient) -> None:
+        assert error_of(await register(client, USER_EMAIL)) == (409, "user.emailTaken")
 
     @pytest.mark.parametrize(
-        ("email", "password", "expected"),
-        [
-            ("nobody@example.com", PASSWORD, {"email": "notFound"}),
-            ("john.doe@example.com", md5("wrong"), {"password": "incorrectPassword"}),
-        ],
+        ("password", "rule"), [("x" * 7, "minLength"), ("x" * 129, "maxLength")]
     )
-    async def test_login_errors(
-        self, client: httpx.AsyncClient, email: str, password: str, expected: dict[str, str]
+    async def test_password_length_is_validated(
+        self, client: httpx.AsyncClient, password: str, rule: str
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/email/register", json={"email": "a@example.com", "password": password}
+        )
+        assert rules_of(response) == {"password": rule}
+
+    async def test_password_length_counts_code_points(self, client: httpx.AsyncClient) -> None:
+        response = await client.post(
+            "/api/v1/auth/email/register",
+            json={"email": "cp@example.com", "password": "密码密码密码密码"},
+        )
+        assert response.status_code == 201
+
+    @pytest.mark.parametrize(
+        ("email", "password"), [(USER_EMAIL, "Wrong000"), ("nobody@example.com", PASSWORD)]
+    )
+    async def test_wrong_credentials_are_indistinguishable(
+        self, client: httpx.AsyncClient, email: str, password: str
     ) -> None:
         response = await client.post(
             "/api/v1/auth/email/login", json={"email": email, "password": password}
         )
-        assert rules_of(response) == expected
+        assert error_of(response) == (401, "auth.invalidCredentials")
 
-    async def test_login_accepts_uppercase_md5(self, client: httpx.AsyncClient) -> None:
-        await login(client, "john.doe@example.com", PASSWORD.upper())
-
-    async def test_forgot_and_reset_password(self, client: httpx.AsyncClient, app: FastAPI) -> None:
-        tokens = await login(client, "john.doe@example.com")
-        assert (
-            await client.post(
-                "/api/v1/auth/forgot/password", json={"email": "john.doe@example.com"}
-            )
-        ).status_code == 200
-        [mail] = sent_mail(app).sent
-        new_password = md5("NewSecret00")
-
-        reset = await client.post(
-            "/api/v1/auth/reset/password",
-            json={"hash": mail.data["hash"], "password": new_password},
+    async def test_disabled_account_with_correct_password_is_forbidden(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        admin = (await login(client, ADMIN_EMAIL))["accessToken"]
+        user_id = (await login(client, USER_EMAIL))["user"]["id"]
+        await client.patch(
+            f"/api/v1/users/{user_id}", json={"status": "disabled"}, headers=bearer(admin)
         )
-        assert reset.status_code == 200
-        reused = await client.post(
-            "/api/v1/auth/reset/password",
-            json={"hash": mail.data["hash"], "password": new_password},
+
+        response = await client.post(
+            "/api/v1/auth/email/login", json={"email": USER_EMAIL, "password": PASSWORD}
         )
-        assert error_of(reused) == (422, "auth.verificationTokenInvalid")
+        assert error_of(response) == (403, "auth.accountDisabled")
 
-        me = await client.get("/api/v1/auth/me", headers=bearer(tokens["token"]))
-        assert me.status_code == 401
-        await login(client, "john.doe@example.com", new_password)
+    async def test_public_route_ignores_invalid_authorization(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/email/login",
+            json={"email": USER_EMAIL, "password": PASSWORD},
+            headers=bearer("not-a-token"),
+        )
+        assert response.status_code == 200
 
-    async def test_expired_confirm_hash(self, client: httpx.AsyncClient, app: FastAPI) -> None:
-        with time_machine.travel(0, tick=False):
-            await client.post(
-                "/api/v1/auth/email/register",
-                json={
-                    "email": "old@example.com",
-                    "password": PASSWORD,
-                    "firstName": "O",
-                    "lastName": "L",
-                },
-            )
+
+class TestAccessToken:
+    async def test_claims_and_header(self, client: httpx.AsyncClient) -> None:
+        before = int(time.time())
+        data = await login(client, USER_EMAIL)
+        header = jwt.get_unverified_header(data["accessToken"])
+        claims = claims_of(data["accessToken"])
+
+        jwks = (await client.get("/.well-known/jwks.json")).json()
+        assert header["alg"] == "EdDSA"
+        assert header["kid"] == jwks["keys"][0]["kid"]
+        assert set(claims) == {
+            "iss",
+            "aud",
+            "sub",
+            "sid",
+            "roles",
+            "email_verified",
+            "auth_time",
+            "iat",
+            "exp",
+            "jti",
+        }
+        assert (claims["iss"], claims["aud"], claims["sub"]) == (
+            keys.ISSUER,
+            keys.AUDIENCE,
+            data["user"]["id"],
+        )
+        assert (claims["roles"], claims["email_verified"]) == (["user"], False)
+        assert claims["exp"] - claims["iat"] == 900
+        assert before <= claims["auth_time"] <= claims["iat"]
+
+    async def test_jwks_lists_signing_key(self, client: httpx.AsyncClient) -> None:
+        response = await client.get("/.well-known/jwks.json")
+
+        assert response.headers["cache-control"] == "max-age=300"
+        [key] = response.json()["keys"]
+        assert {k: key[k] for k in ("kty", "crv", "alg", "use")} == {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "alg": "EdDSA",
+            "use": "sig",
+        }
+
+    async def test_expired_access_token_asks_for_refresh(self, client: httpx.AsyncClient) -> None:
+        token = (await login(client, USER_EMAIL))["accessToken"]
+        with time_machine.travel(datetime.now(UTC) + timedelta(minutes=16), tick=False):
+            response = await me(client, token)
+        assert error_of(response) == (401, "auth.tokenExpired")
+        assert response.headers["www-authenticate"] == 'Bearer error="invalid_token"'
+
+    async def test_token_signed_by_unknown_key_is_rejected(self, client: httpx.AsyncClient) -> None:
+        data = await login(client, USER_EMAIL)
+        kid = jwt.get_unverified_header(data["accessToken"])["kid"]
+        claims = claims_of(data["accessToken"])
+        forged = jwt.encode(claims, keys.OTHER_SIGNING_KEY, algorithm="EdDSA", headers={"kid": kid})
+
+        assert error_of(await me(client, forged)) == (401, "common.unauthorized")
+
+    async def test_missing_token_is_unauthorized(self, client: httpx.AsyncClient) -> None:
+        response = await client.get("/api/v1/me")
+        assert error_of(response) == (401, "common.unauthorized")
+        assert response.headers["www-authenticate"] == "Bearer"
+
+
+class TestEmailVerification:
+    async def test_verify_email_marks_user_verified(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        await register(client, "verify@example.com")
         [mail] = sent_mail(app).sent
-        response = await client.post("/api/v1/auth/email/confirm", json={"hash": mail.data["hash"]})
+
+        response = await client.post("/api/v1/auth/email/verify", json=mail.data)
+        assert response.json()["data"] is None
+        data = await login(client, "verify@example.com")
+        assert data["user"]["emailVerified"] is True
+        assert claims_of(data["accessToken"])["email_verified"] is True
+
+        again = await client.post("/api/v1/auth/email/verify", json=mail.data)
+        assert error_of(again) == (422, "auth.verificationTokenInvalid")
+
+    async def test_new_token_replaces_previous_one(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        token = (await register(client, "twice@example.com")).json()["data"]["accessToken"]
+        resend = await client.post("/api/v1/auth/email/verify/resend", headers=bearer(token))
+        assert (resend.status_code, resend.json()["data"]) == (202, None)
+        first, second = sent_mail(app).sent
+
+        stale = await client.post("/api/v1/auth/email/verify", json=first.data)
+        assert error_of(stale) == (422, "auth.verificationTokenInvalid")
+        assert (await client.post("/api/v1/auth/email/verify", json=second.data)).status_code == 200
+
+    async def test_expired_token_is_invalid(self, client: httpx.AsyncClient, app: FastAPI) -> None:
+        await register(client, "late@example.com")
+        [mail] = sent_mail(app).sent
+        with time_machine.travel(datetime.now(UTC) + timedelta(hours=25), tick=False):
+            response = await client.post("/api/v1/auth/email/verify", json=mail.data)
         assert error_of(response) == (422, "auth.verificationTokenInvalid")
 
 
-class TestSessions:
-    async def test_last_active_at_is_current_utc_time_in_any_process_time_zone(
-        self, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+class TestPasswordReset:
+    async def test_unknown_email_is_accepted_without_mail(
+        self, client: httpx.AsyncClient, app: FastAPI
     ) -> None:
-        with monkeypatch.context() as patch:
-            patch.setenv("TZ", "Asia/Shanghai")
-            time.tzset()
-            tokens = await login(client, "john.doe@example.com")
-            listed = (
-                await client.get("/api/v1/auth/sessions", headers=bearer(tokens["token"]))
-            ).json()["data"]
-        time.tzset()
-        current = next(s for s in listed if s["current"])
-        last_active = datetime.fromisoformat(current["lastActiveAt"])
-        assert abs(datetime.now(UTC) - last_active) < timedelta(minutes=1)
-
-    async def test_list_revoke_and_logout(self, client: httpx.AsyncClient) -> None:
-        first = await login(client, "john.doe@example.com")
-        second = await login(client, "john.doe@example.com")
-
-        listed = (await client.get("/api/v1/auth/sessions", headers=bearer(first["token"]))).json()[
-            "data"
-        ]
-        assert [s["current"] for s in listed].count(True) == 1
-        assert {s["ip"] for s in listed} == {"203.0.113.7"}
-        other = next(s for s in listed if not s["current"])
-
-        revoke = await client.delete(
-            f"/api/v1/auth/sessions/{other['id']}", headers=bearer(first["token"])
+        response = await client.post(
+            "/api/v1/auth/password/forgot", json={"email": "nobody@example.com"}
         )
-        assert revoke.json() == {"code": 0, "message": "ok", "data": None}
-        assert (
-            await client.get("/api/v1/auth/me", headers=bearer(second["token"]))
-        ).status_code == 401
-        missing = await client.delete(
-            f"/api/v1/auth/sessions/{other['id']}", headers=bearer(first["token"])
-        )
-        assert error_of(missing) == (404, "auth.sessionNotFound")
+        assert (response.status_code, response.json()["data"]) == (202, None)
+        assert list(sent_mail(app).sent) == []
 
-        assert (
-            await client.post("/api/v1/auth/logout", headers=bearer(first["token"]))
-        ).status_code == 200
-        expired = await client.get("/api/v1/auth/me", headers=bearer(first["token"]))
-        assert error_of(expired) == (401, "common.unauthorized")
+    async def test_reset_changes_password_and_revokes_sessions(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        old = await login(client, USER_EMAIL)
+        await client.post("/api/v1/auth/password/forgot", json={"email": USER_EMAIL})
+        [mail] = sent_mail(app).sent
+        assert mail.template == "reset-password"
 
-    async def test_refresh_rotation_and_replay(self, client: httpx.AsyncClient) -> None:
-        tokens = await login(client, "john.doe@example.com")
-        first_refresh = tokens["refreshToken"]
-
-        rotated = await client.post("/api/v1/auth/refresh", headers=bearer(first_refresh))
-        assert list(rotated.json()["data"]) == ["token", "refreshToken", "tokenExpires"]
-        second_refresh = rotated.json()["data"]["refreshToken"]
-
-        grace = await client.post("/api/v1/auth/refresh", headers=bearer(first_refresh))
-        assert grace.status_code == 401
-        still_valid = await client.post("/api/v1/auth/refresh", headers=bearer(second_refresh))
-        assert still_valid.status_code == 200
-
-        replay = await client.post("/api/v1/auth/refresh", headers=bearer(first_refresh))
-        assert replay.status_code == 401
-        assert replay.headers["www-authenticate"] == 'Bearer error="invalid_token"'
-        revoked = await client.post(
-            "/api/v1/auth/refresh", headers=bearer(still_valid.json()["data"]["refreshToken"])
-        )
-        assert revoked.status_code == 401
-
-    async def test_change_password_revokes_other_sessions(self, client: httpx.AsyncClient) -> None:
-        current = await login(client, "john.doe@example.com")
-        other = await login(client, "john.doe@example.com")
-        response = await client.put(
-            "/api/v1/auth/password",
-            json={"oldPassword": PASSWORD, "newPassword": md5("Changed00")},
-            headers=bearer(current["token"]),
+        response = await client.post(
+            "/api/v1/auth/password/reset", json={**mail.data, "password": "Changed00"}
         )
         assert response.status_code == 200
-        assert (
-            await client.get("/api/v1/auth/me", headers=bearer(current["token"]))
-        ).status_code == 200
-        assert (
-            await client.get("/api/v1/auth/me", headers=bearer(other["token"]))
-        ).status_code == 401
-
-
-class TestProfile:
-    async def test_update_and_delete_me(self, client: httpx.AsyncClient) -> None:
-        tokens = await login(client, "john.doe@example.com")
-        updated = await client.put(
-            "/api/v1/auth/me",
-            json={"nickname": "Johnny", "birthday": "1990-05-06", "gender": 1},
-            headers=bearer(tokens["token"]),
+        assert error_of(await me(client, old["accessToken"])) == (401, "common.unauthorized")
+        assert error_of(await refresh(client, old["refreshToken"])) == (
+            401,
+            "auth.refreshTokenInvalid",
         )
-        body = updated.json()["data"]
-        assert (body["nickname"], body["birthday"], body["gender"]) == ("Johnny", "1990-05-06", 1)
+        await login(client, USER_EMAIL, "Changed00")
 
-        missing = await client.request(
-            "DELETE", "/api/v1/auth/me", json={}, headers=bearer(tokens["token"])
+    async def test_reset_token_is_invalid_after_password_change(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        token = (await login(client, USER_EMAIL))["accessToken"]
+        await client.post("/api/v1/auth/password/forgot", json={"email": USER_EMAIL})
+        [mail] = sent_mail(app).sent
+        await client.put(
+            "/api/v1/me/password",
+            json={"currentPassword": PASSWORD, "newPassword": "Changed00"},
+            headers=bearer(token),
         )
-        assert rules_of(missing) == {"oldPassword": "missingOldPassword"}
-        deleted = await client.request(
-            "DELETE",
-            "/api/v1/auth/me",
-            json={"oldPassword": PASSWORD},
-            headers=bearer(tokens["token"]),
+
+        response = await client.post(
+            "/api/v1/auth/password/reset", json={**mail.data, "password": "Another00"}
         )
-        assert deleted.status_code == 200
-        gone = await client.post(
-            "/api/v1/auth/email/login", json={"email": "john.doe@example.com", "password": PASSWORD}
+        assert error_of(response) == (422, "auth.verificationTokenInvalid")
+
+
+class TestRefresh:
+    async def test_rotation_issues_new_pair(self, client: httpx.AsyncClient) -> None:
+        first = await login(client, USER_EMAIL)
+        response = await refresh(client, first["refreshToken"])
+
+        data = response.json()["data"]
+        assert data["refreshToken"] != first["refreshToken"]
+        assert data["user"]["id"] == first["user"]["id"]
+        old, new = claims_of(first["accessToken"]), claims_of(data["accessToken"])
+        assert (new["sid"], new["auth_time"]) == (old["sid"], old["auth_time"])
+        assert (await refresh(client, data["refreshToken"])).status_code == 200
+
+    async def test_reuse_within_grace_period_returns_same_pair(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        first = await login(client, USER_EMAIL)
+        rotated = (await refresh(client, first["refreshToken"])).json()["data"]
+        replayed = (await refresh(client, first["refreshToken"])).json()["data"]
+
+        assert (replayed["accessToken"], replayed["refreshToken"]) == (
+            rotated["accessToken"],
+            rotated["refreshToken"],
         )
-        assert rules_of(gone) == {"email": "notFound"}
 
-
-class TestUsersAdmin:
-    async def test_permissions(self, client: httpx.AsyncClient) -> None:
-        john = await login(client, "john.doe@example.com")
-        response = await client.get("/api/v1/users", headers=bearer(john["token"]))
-        assert error_of(response) == (403, "common.forbidden")
-        assert (await client.get("/api/v1/users")).status_code == 401
-
-    async def test_crud(self, client: httpx.AsyncClient) -> None:
-        admin = await login(client, "admin@example.com")
-        headers = bearer(admin["token"])
-        created = await client.post(
-            "/api/v1/users",
-            json={
-                "email": "made@example.com",
-                "password": PASSWORD,
-                "firstName": "M",
-                "role": {"id": 2},
-                "status": {"id": 1},
-            },
-            headers=headers,
-        )
-        assert created.status_code == 201
-        user = created.json()["data"]
-        assert user["role"] == {"id": 2, "name": "User"}
-        assert "password" not in user
-
-        listed = await client.get("/api/v1/users?pageSize=100&roleId=2", headers=headers)
-        assert {u["email"] for u in listed.json()["data"]["items"]} == {
-            "john.doe@example.com",
-            "made@example.com",
-        }
-
-        updated = await client.put(
-            f"/api/v1/users/{user['id']}", json={"nickname": "n"}, headers=headers
-        )
-        assert updated.json()["data"]["role"] == {"id": 2, "name": "User"}
-
-        assert (
-            await client.delete(f"/api/v1/users/{user['id']}", headers=headers)
-        ).status_code == 200
-        gone = await client.get(f"/api/v1/users/{user['id']}", headers=headers)
-        assert error_of(gone) == (404, "user.notFound")
-
-    async def test_invalid_id_after_auth(self, client: httpx.AsyncClient) -> None:
-        admin = await login(client, "admin@example.com")
-        response = await client.get("/api/v1/users/abc", headers=bearer(admin["token"]))
-        assert rules_of(response) == {"path.id": "uuid"}
-
-
-@pytest.mark.committed
-async def test_concurrent_refresh_only_one_wins(committed_app: FastAPI) -> None:
-    import asyncio
-
-    from tests.integration.conftest import client_for
-
-    async with client_for(committed_app) as client:
-        tokens = await login(client, "john.doe@example.com")
-        results = await asyncio.gather(
-            *(
-                client.post("/api/v1/auth/refresh", headers=bearer(tokens["refreshToken"]))
-                for _ in range(4)
+    async def test_reuse_after_grace_period_revokes_session(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        first = await login(client, USER_EMAIL)
+        rotated = (await refresh(client, first["refreshToken"])).json()["data"]
+        with time_machine.travel(datetime.now(UTC) + timedelta(seconds=31), tick=False):
+            reused = await refresh(client, first["refreshToken"])
+            assert error_of(reused) == (401, "auth.refreshTokenReused")
+            assert error_of(await me(client, rotated["accessToken"])) == (
+                401,
+                "common.unauthorized",
             )
+            assert error_of(await refresh(client, rotated["refreshToken"])) == (
+                401,
+                "auth.refreshTokenInvalid",
+            )
+
+    async def test_unknown_token_is_invalid(self, client: httpx.AsyncClient) -> None:
+        assert error_of(await refresh(client, "unknown")) == (401, "auth.refreshTokenInvalid")
+
+    async def test_session_lifetime_is_not_extended_by_rotation(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        token = (await login(client, USER_EMAIL))["refreshToken"]
+        with time_machine.travel(datetime.now(UTC) + timedelta(days=29), tick=False):
+            token = (await refresh(client, token)).json()["data"]["refreshToken"]
+        with time_machine.travel(datetime.now(UTC) + timedelta(days=31), tick=False):
+            assert error_of(await refresh(client, token)) == (401, "auth.refreshTokenInvalid")
+
+    async def test_logout_revokes_current_session(self, client: httpx.AsyncClient) -> None:
+        data = await login(client, USER_EMAIL)
+        response = await client.post("/api/v1/auth/logout", headers=bearer(data["accessToken"]))
+
+        assert response.json()["data"] is None
+        assert error_of(await me(client, data["accessToken"])) == (401, "common.unauthorized")
+        assert error_of(await refresh(client, data["refreshToken"])) == (
+            401,
+            "auth.refreshTokenInvalid",
         )
-        assert sorted(r.status_code for r in results) == [200, 401, 401, 401]
-        winner = next(r for r in results if r.status_code == 200).json()["data"]
-        assert (
-            await client.post("/api/v1/auth/refresh", headers=bearer(winner["refreshToken"]))
-        ).status_code == 200

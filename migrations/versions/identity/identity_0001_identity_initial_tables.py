@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "identity_0001"
 down_revision: str | Sequence[str] | None = None
@@ -17,77 +18,18 @@ depends_on: str | Sequence[str] | None = "platform_0001"
 
 def upgrade() -> None:
     op.create_table(
-        "permission",
-        sa.Column("id", sa.String(length=50), nullable=False),
-        sa.Column("name", sa.String(length=100), nullable=False),
-        sa.Column("description", sa.String(length=255), nullable=True),
-        sa.Column("resource", sa.String(length=50), nullable=False),
-        sa.Column("action", sa.String(length=50), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_permission")),
-    )
-    op.create_index(op.f("ix_permission_resource"), "permission", ["resource"], unique=False)
-    op.create_table(
-        "role",
-        sa.Column("id", sa.Integer(), autoincrement=False, nullable=False),
-        sa.Column("name", sa.String(), nullable=False),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_role")),
-    )
-    op.create_table(
-        "status",
-        sa.Column("id", sa.Integer(), autoincrement=False, nullable=False),
-        sa.Column("name", sa.String(), nullable=False),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_status")),
-    )
-    op.create_table(
-        "role_permission",
-        sa.Column("role_id", sa.Integer(), nullable=False),
-        sa.Column("permission_id", sa.String(length=50), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["permission_id"],
-            ["permission.id"],
-            name=op.f("fk_role_permission_permission_id_permission"),
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["role_id"],
-            ["role.id"],
-            name=op.f("fk_role_permission_role_id_role"),
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("role_id", "permission_id", name=op.f("pk_role_permission")),
-    )
-    op.create_index(
-        op.f("ix_role_permission_permission_id"), "role_permission", ["permission_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix_role_permission_role_id"), "role_permission", ["role_id"], unique=False
-    )
-    op.create_table(
-        "user",
+        "users",
         sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
-        sa.Column("email", sa.String(), nullable=True),
-        sa.Column("password", sa.String(), nullable=True),
-        sa.Column("provider", sa.String(), server_default=sa.text("'email'"), nullable=False),
-        sa.Column("first_name", sa.String(), nullable=True),
-        sa.Column("last_name", sa.String(), nullable=True),
+        sa.Column("email", sa.String(length=254), nullable=True),
+        sa.Column("email_verified_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("phone", sa.String(length=16), nullable=True),
+        sa.Column("password_hash", sa.String(), nullable=True),
+        sa.Column("display_name", sa.String(length=64), nullable=True),
+        sa.Column("avatar_file_id", sa.Uuid(), nullable=True),
+        sa.Column(
+            "status", sa.String(length=16), server_default=sa.text("'active'"), nullable=False
+        ),
+        sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -101,102 +43,151 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("photo_id", sa.Uuid(), nullable=True),
-        sa.Column("role_id", sa.Integer(), nullable=True),
-        sa.Column("status_id", sa.Integer(), nullable=True),
-        sa.Column("phone", sa.String(), nullable=True),
-        sa.Column("nickname", sa.String(), nullable=True),
-        sa.Column("gender", sa.Integer(), server_default=sa.text("0"), nullable=True),
-        sa.Column("birthday", sa.Date(), nullable=True),
-        sa.Column("wechat_open_id", sa.String(), nullable=True),
-        sa.Column("wechat_union_id", sa.String(), nullable=True),
-        sa.Column("alipay_open_id", sa.String(), nullable=True),
-        sa.ForeignKeyConstraint(["photo_id"], ["file.id"], name=op.f("fk_user_photo_id_file")),
-        sa.ForeignKeyConstraint(["role_id"], ["role.id"], name=op.f("fk_user_role_id_role")),
+        sa.CheckConstraint("status IN ('active', 'disabled')", name=op.f("ck_users_status")),
         sa.ForeignKeyConstraint(
-            ["status_id"], ["status.id"], name=op.f("fk_user_status_id_status")
+            ["avatar_file_id"],
+            ["file.id"],
+            name=op.f("fk_users_avatar_file_id_file"),
+            ondelete="SET NULL",
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_user")),
-        sa.UniqueConstraint("alipay_open_id", name=op.f("uq_user_alipay_open_id")),
-        sa.UniqueConstraint("email", name=op.f("uq_user_email")),
-        sa.UniqueConstraint("phone", name=op.f("uq_user_phone")),
-        sa.UniqueConstraint("photo_id", name=op.f("uq_user_photo_id")),
-        sa.UniqueConstraint("wechat_open_id", name=op.f("uq_user_wechat_open_id")),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
     )
+    op.create_index("ix_users_created_at", "users", ["created_at"], unique=False)
     op.create_index(
-        "ix_user_active",
-        "user",
-        ["deleted_at"],
-        unique=False,
+        "uq_users_email",
+        "users",
+        ["email"],
+        unique=True,
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
-    op.create_index(op.f("ix_user_first_name"), "user", ["first_name"], unique=False)
-    op.create_index(op.f("ix_user_last_name"), "user", ["last_name"], unique=False)
-    op.create_index(op.f("ix_user_wechat_union_id"), "user", ["wechat_union_id"], unique=False)
+    op.create_index(
+        "uq_users_phone",
+        "users",
+        ["phone"],
+        unique=True,
+        postgresql_where=sa.text("deleted_at IS NULL"),
+    )
     op.create_table(
-        "account_cleanup",
+        "account_deletions",
         sa.Column("user_id", sa.Uuid(), nullable=False),
-        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "requested_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("attempts", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("last_error", sa.Text(), nullable=True),
         sa.ForeignKeyConstraint(
             ["user_id"],
-            ["user.id"],
-            name=op.f("fk_account_cleanup_user_id_user"),
+            ["users.id"],
+            name=op.f("fk_account_deletions_user_id_users"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("user_id", name=op.f("pk_account_cleanup")),
+        sa.PrimaryKeyConstraint("user_id", name=op.f("pk_account_deletions")),
     )
     op.create_table(
-        "session",
+        "sessions",
         sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
-        sa.Column("hash", sa.String(), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
+        sa.Column("user_agent", sa.String(length=512), nullable=True),
+        sa.Column("ip", postgresql.INET(), nullable=True),
+        sa.Column("auth_time", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
         ),
+        sa.Column("last_active_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["user_id"], ["users.id"], name=op.f("fk_sessions_user_id_users"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_sessions")),
+    )
+    op.create_index(op.f("ix_sessions_user_id"), "sessions", ["user_id"], unique=False)
+    op.create_table(
+        "user_roles",
+        sa.Column("user_id", sa.Uuid(), nullable=False),
+        sa.Column("role", sa.String(length=32), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["user_id"], ["users.id"], name=op.f("fk_user_roles_user_id_users"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("user_id", "role", name=op.f("pk_user_roles")),
+    )
+    op.create_table(
+        "verification_tokens",
+        sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
+        sa.Column("user_id", sa.Uuid(), nullable=False),
+        sa.Column("purpose", sa.String(length=32), nullable=False),
+        sa.Column("token_hash", sa.String(length=64), nullable=False),
+        sa.Column("password_fingerprint", sa.String(length=64), nullable=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
-            "updated_at",
+            "created_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("user_id", sa.Uuid(), nullable=True),
-        sa.Column("user_agent", sa.String(length=512), nullable=True),
-        sa.Column("ip", sa.String(length=64), nullable=True),
-        sa.Column("last_active_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["user_id"], ["user.id"], name=op.f("fk_session_user_id_user")),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_session")),
+        sa.CheckConstraint(
+            "purpose IN ('verify_email', 'reset_password')",
+            name=op.f("ck_verification_tokens_purpose"),
+        ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            name=op.f("fk_verification_tokens_user_id_users"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_verification_tokens")),
+        sa.UniqueConstraint("token_hash", name=op.f("uq_verification_tokens_token_hash")),
+        sa.UniqueConstraint(
+            "user_id", "purpose", name=op.f("uq_verification_tokens_user_id_purpose")
+        ),
+    )
+    op.create_table(
+        "refresh_tokens",
+        sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
+        sa.Column("session_id", sa.Uuid(), nullable=False),
+        sa.Column("token_hash", sa.String(length=64), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("rotated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("grace_ciphertext", sa.LargeBinary(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["session_id"],
+            ["sessions.id"],
+            name=op.f("fk_refresh_tokens_session_id_sessions"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_refresh_tokens")),
+        sa.UniqueConstraint("token_hash", name=op.f("uq_refresh_tokens_token_hash")),
     )
     op.create_index(
-        "ix_session_active",
-        "session",
-        ["deleted_at"],
-        unique=False,
-        postgresql_where=sa.text("deleted_at IS NULL"),
+        op.f("ix_refresh_tokens_session_id"), "refresh_tokens", ["session_id"], unique=False
     )
-    op.create_index(op.f("ix_session_user_id"), "session", ["user_id"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_session_user_id"), table_name="session")
+    op.drop_index(op.f("ix_refresh_tokens_session_id"), table_name="refresh_tokens")
+    op.drop_table("refresh_tokens")
+    op.drop_table("verification_tokens")
+    op.drop_table("user_roles")
+    op.drop_index(op.f("ix_sessions_user_id"), table_name="sessions")
+    op.drop_table("sessions")
+    op.drop_table("account_deletions")
     op.drop_index(
-        "ix_session_active", table_name="session", postgresql_where=sa.text("deleted_at IS NULL")
+        "uq_users_phone", table_name="users", postgresql_where=sa.text("deleted_at IS NULL")
     )
-    op.drop_table("session")
-    op.drop_table("account_cleanup")
-    op.drop_index(op.f("ix_user_wechat_union_id"), table_name="user")
-    op.drop_index(op.f("ix_user_last_name"), table_name="user")
-    op.drop_index(op.f("ix_user_first_name"), table_name="user")
     op.drop_index(
-        "ix_user_active", table_name="user", postgresql_where=sa.text("deleted_at IS NULL")
+        "uq_users_email", table_name="users", postgresql_where=sa.text("deleted_at IS NULL")
     )
-    op.drop_table("user")
-    op.drop_index(op.f("ix_role_permission_role_id"), table_name="role_permission")
-    op.drop_index(op.f("ix_role_permission_permission_id"), table_name="role_permission")
-    op.drop_table("role_permission")
-    op.drop_table("status")
-    op.drop_table("role")
-    op.drop_index(op.f("ix_permission_resource"), table_name="permission")
-    op.drop_table("permission")
+    op.drop_index("ix_users_created_at", table_name="users")
+    op.drop_table("users")
