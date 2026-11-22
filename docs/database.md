@@ -73,7 +73,7 @@ uv run --frozen alembic upgrade platform@head
 uv run --frozen alembic downgrade base
 ```
 
-- 三个 Alembic 分支，目录 `migrations/versions/{platform,identity,modules}/`：`platform_0001` 为基础；`identity_0001`、`modules_0001` 声明 `depends_on` `platform_0001`（`users.avatar_file_id` 引用 `file`），`modules_0001` 不含操作
+- 三个 Alembic 分支，目录 `migrations/versions/{platform,identity,modules}/`：`platform_0001` 为基础；`identity_0001`、`modules_0001` 声明 `depends_on` `platform_0001`（`users.avatar_file_id` 引用 `file`），`identity_0002` 新增 `user_identities`，`modules_0001` 不含操作
 - `alembic.ini` 的 `version_locations` 按行列出三个目录（`path_separator = newline`），`recursive_version_locations = true`
 - `migrations/env.py`：`DATABASE_SCHEMA` 不存在时先创建（已存在时迁移账号无需库级 CREATE 权限），版本表在该 schema 中；`--sql` 离线输出以 `CREATE SCHEMA IF NOT EXISTS` 与 `SET search_path` 开头；只比较 ORM 中的表，`-x branches=platform,modules` 进一步限定比较的分支（`autogenerate` 与 `check`）
 - `alembic check` 要求全部分支已升级；只升级部分分支时用 `infrastructure/database/branches.py` 的 `schema_diff(connection, branches)` 比较

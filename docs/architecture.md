@@ -11,9 +11,8 @@ src/app/
 ├── config/              # Settings，按分组拆分（app、auth、database、redis、mail、file、throttler、metrics、log、observability、sms、wechat、alipay）
 ├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、i18n
 ├── security/            # 密钥与 kid、JWT、吊销键、角色与权限、密码哈希、鉴权依赖
-├── identity/            # 签发方：auth、sessions、me、users、account_deletion、keys（JWKS）
+├── identity/            # 签发方：auth、sessions、me、users、providers（短信、微信、支付宝）、account_deletion、keys（JWKS）
 ├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup、mail
-├── integrations/        # sms（阿里云）、wechat、alipay
 └── modules/             # files
 ```
 
@@ -116,7 +115,7 @@ src/app/
 | 日志 | `infrastructure/logging` | structlog；生产 JSON、开发彩色单行；带 request_id、trace_id / span_id、user_id，敏感字段脱敏 |
 | 指标 | `infrastructure/metrics` | `/metrics`（`METRICS_PATH`），指标名、标签、桶同 nestjs；多进程共享 `PROMETHEUS_MULTIPROC_DIR` |
 | 健康检查 | `infrastructure/health` | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready` |
-| 链路 / 错误上报 | `infrastructure/observability` | `OTEL_ENABLED`（OTLP/HTTP）、`SENTRY_DSN`，默认关闭 |
+| 链路 / 错误上报 | `infrastructure/observability` | `OTEL_ENABLED`（OTLP/HTTP）、`SENTRY_DSN`，默认关闭；出站 httpx span 与 Sentry 面包屑的 URL 去掉查询串，Sentry 不采集局部变量 |
 | 审计 | `infrastructure/audit` | `audit=Auditable(...)` 的路由成功后写 `audit_logs` |
 | 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器（sessions、files），结果记入 `account_deletions`，最终失败记 error 日志 |
 | 邮件 | `infrastructure/mail`、`queue/mail.py` | 模板 `verify-email`、`reset-password`（zh / en），链接为 `APP_FRONTEND_URL` + 路径 + `?token=`；设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |

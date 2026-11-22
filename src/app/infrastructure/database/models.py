@@ -2,6 +2,7 @@
 
 from app.identity.account_deletion.models import AccountDeletionModel
 from app.identity.auth.models import VerificationTokenModel
+from app.identity.providers.models import UserIdentityModel
 from app.identity.sessions.models import RefreshTokenModel, SessionModel
 from app.identity.users.models import UserModel, UserRoleModel
 from app.infrastructure.audit.models import AuditLogModel
@@ -15,6 +16,7 @@ __all__ = [
     "FileModel",
     "RefreshTokenModel",
     "SessionModel",
+    "UserIdentityModel",
     "UserModel",
     "UserRoleModel",
     "VerificationTokenModel",

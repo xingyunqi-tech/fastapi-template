@@ -1,25 +1,22 @@
-from enum import StrEnum
-
 from pydantic import Field, SecretStr
 
 from app.config.base import SettingsGroup
 
 
-class WechatMiniProgramState(StrEnum):
-    DEVELOPER = "developer"
-    TRIAL = "trial"
-    FORMAL = "formal"
-
-
 class WechatSettings(SettingsGroup):
-    """登录用到的小程序与开放平台（APP）配置。"""
+    """小程序（`wechat_miniapp`）与开放平台移动应用（`wechat_app`）；AppID 与密钥配齐即启用。"""
 
-    mini_app_id: str = Field(default="", validation_alias="WECHAT_MINI_APP_ID")
-    mini_app_secret: SecretStr = Field(
-        default=SecretStr(""), validation_alias="WECHAT_MINI_APP_SECRET"
+    miniapp_app_id: str = Field(default="", validation_alias="WECHAT_MINIAPP_APP_ID")
+    miniapp_secret: SecretStr = Field(
+        default=SecretStr(""), validation_alias="WECHAT_MINIAPP_SECRET"
     )
-    mini_program_state: WechatMiniProgramState = Field(
-        default=WechatMiniProgramState.FORMAL, validation_alias="WECHAT_MINI_PROGRAM_STATE"
-    )
-    app_id: str = Field(default="", validation_alias="WECHAT_APP_ID")
+    app_app_id: str = Field(default="", validation_alias="WECHAT_APP_APP_ID")
     app_secret: SecretStr = Field(default=SecretStr(""), validation_alias="WECHAT_APP_SECRET")
+
+    @property
+    def miniapp_enabled(self) -> bool:
+        return bool(self.miniapp_app_id and self.miniapp_secret.get_secret_value())
+
+    @property
+    def app_enabled(self) -> bool:
+        return bool(self.app_app_id and self.app_secret.get_secret_value())

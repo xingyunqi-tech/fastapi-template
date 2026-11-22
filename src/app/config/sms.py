@@ -1,20 +1,40 @@
-from pydantic import Field, SecretStr
+from enum import StrEnum
+from typing import Self
 
-from app.config.base import EnvFlag, SettingsGroup
+from pydantic import Field, SecretStr, model_validator
+
+from app.config.base import SettingsGroup
+
+
+class SmsProvider(StrEnum):
+    LOG = "log"
+    ALIYUN = "aliyun"
 
 
 class SmsSettings(SettingsGroup):
-    """nestjs sms.config：阿里云短信与验证码规则，时间单位为秒。"""
+    """短信发送渠道；验证码规则由约定 §11.1 固定。"""
 
-    access_key_id: str = Field(default="", validation_alias="SMS_ACCESS_KEY_ID")
-    access_key_secret: SecretStr = Field(
-        default=SecretStr(""), validation_alias="SMS_ACCESS_KEY_SECRET"
+    provider: SmsProvider = Field(default=SmsProvider.LOG, validation_alias="SMS_PROVIDER")
+    aliyun_access_key_id: str = Field(default="", validation_alias="SMS_ALIYUN_ACCESS_KEY_ID")
+    aliyun_access_key_secret: SecretStr = Field(
+        default=SecretStr(""), validation_alias="SMS_ALIYUN_ACCESS_KEY_SECRET"
     )
-    sign_name: str = Field(default="", validation_alias="SMS_SIGN_NAME")
-    template_code: str = Field(default="", validation_alias="SMS_TEMPLATE_CODE")
-    code_expires: int = Field(default=300, ge=60, le=600, validation_alias="SMS_CODE_EXPIRES")
-    code_length: int = Field(default=6, ge=4, le=8, validation_alias="SMS_CODE_LENGTH")
-    endpoint: str = Field(default="dysmsapi.aliyuncs.com", validation_alias="SMS_ENDPOINT")
-    mock_mode: EnvFlag = Field(default=False, validation_alias="SMS_MOCK_MODE")
-    max_attempts: int = Field(default=5, ge=1, le=10, validation_alias="SMS_MAX_ATTEMPTS")
-    resend_interval: int = Field(default=60, ge=30, le=300, validation_alias="SMS_RESEND_INTERVAL")
+    aliyun_sign_name: str = Field(default="", validation_alias="SMS_ALIYUN_SIGN_NAME")
+    aliyun_template_code: str = Field(default="", validation_alias="SMS_ALIYUN_TEMPLATE_CODE")
+    aliyun_endpoint: str = Field(
+        default="dysmsapi.aliyuncs.com", validation_alias="SMS_ALIYUN_ENDPOINT"
+    )
+
+    @model_validator(mode="after")
+    def _aliyun_complete(self) -> Self:
+        if self.provider is SmsProvider.ALIYUN and not (
+            self.aliyun_access_key_id
+            and self.aliyun_access_key_secret.get_secret_value()
+            and self.aliyun_sign_name
+            and self.aliyun_template_code
+        ):
+            raise ValueError(
+                "SMS_PROVIDER=aliyun requires SMS_ALIYUN_ACCESS_KEY_ID, "
+                "SMS_ALIYUN_ACCESS_KEY_SECRET, SMS_ALIYUN_SIGN_NAME and SMS_ALIYUN_TEMPLATE_CODE"
+            )
+        return self

@@ -8,6 +8,7 @@ from app.config import DatabaseSettings
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import indicators
 from tests.integration.conftest import _build_app, client_for, error_of
+from tests.integration.test_auth_providers import alipay_env
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -159,7 +160,7 @@ class TestFullCheck:
             return httpx.Response(405 if request.method == "HEAD" else 200)
 
         app = mock_http(
-            make_app(WECHAT_APP_ID="wx", WECHAT_APP_SECRET="secret", ALIPAY_APP_ID="ali"), handler
+            make_app(WECHAT_APP_APP_ID="wx", WECHAT_APP_SECRET="secret", **alipay_env()), handler
         )
         async with client_for(app) as client:
             response = await client.get("/api/v1/health")
@@ -174,7 +175,7 @@ class TestFullCheck:
         ]
 
     async def test_payment_api_failure_returns_503(self, make_app: AppFactory) -> None:
-        app = mock_http(make_app(ALIPAY_APP_ID="ali"), lambda request: httpx.Response(500))
+        app = mock_http(make_app(**alipay_env()), lambda request: httpx.Response(500))
         async with client_for(app) as client:
             response = await client.get("/api/v1/health")
 

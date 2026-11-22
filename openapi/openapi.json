@@ -306,6 +306,209 @@
         }
       }
     },
+    "/api/v1/auth/sms/send": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "发送短信验证码",
+        "description": "`scene=login` 公开；`scene=bind_phone` 需要 JWT。",
+        "operationId": "sendSmsCode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendSmsCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/sms/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "短信登录",
+        "operationId": "loginWithSms",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginWithSmsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/providers": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "已启用的第三方登录",
+        "operationId": "listAuthProviders",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProviderListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/providers/{provider}/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "第三方登录",
+        "description": "`provider`：`wechat_miniapp`、`wechat_app`、`alipay`；未启用时 404。",
+        "operationId": "loginWithProvider",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginWithProviderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/refresh": {
       "post": {
         "tags": [
@@ -581,6 +784,138 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NullResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/phone": {
+      "put": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "绑定手机号",
+        "operationId": "bindPhone",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindPhoneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/me/phone/wechat": {
+      "put": {
+        "tags": [
+          "Me"
+        ],
+        "summary": "用微信手机号绑定",
+        "operationId": "bindPhoneWithWechat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindPhoneWithWechatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
                 }
               }
             }
@@ -1563,6 +1898,84 @@
   },
   "components": {
     "schemas": {
+      "AuthProvider": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "AuthProvider"
+      },
+      "AuthProviderListResponse": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "const": 0,
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "const": "ok",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AuthProvider"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "AuthProviderListResponse"
+      },
+      "BindPhoneRequest": {
+        "properties": {
+          "phone": {
+            "type": "string",
+            "pattern": "\\+[1-9][0-9]{6,14}",
+            "title": "Phone"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone",
+          "code"
+        ],
+        "title": "BindPhoneRequest"
+      },
+      "BindPhoneWithWechatRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "BindPhoneWithWechatRequest"
+      },
       "ChangePasswordRequest": {
         "properties": {
           "currentPassword": {
@@ -1856,6 +2269,41 @@
         ],
         "title": "LoginWithEmailRequest"
       },
+      "LoginWithProviderRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "LoginWithProviderRequest"
+      },
+      "LoginWithSmsRequest": {
+        "properties": {
+          "phone": {
+            "type": "string",
+            "pattern": "\\+[1-9][0-9]{6,14}",
+            "title": "Phone"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone",
+          "code"
+        ],
+        "title": "LoginWithSmsRequest"
+      },
       "NullResponse": {
         "properties": {
           "code": {
@@ -2027,6 +2475,24 @@
         ],
         "title": "RoleListResponse"
       },
+      "SendSmsCodeRequest": {
+        "properties": {
+          "phone": {
+            "type": "string",
+            "pattern": "\\+[1-9][0-9]{6,14}",
+            "title": "Phone"
+          },
+          "scene": {
+            "$ref": "#/components/schemas/SmsScene"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone",
+          "scene"
+        ],
+        "title": "SendSmsCodeRequest"
+      },
       "Session": {
         "properties": {
           "id": {
@@ -2136,6 +2602,14 @@
           "roles"
         ],
         "title": "SetUserRolesRequest"
+      },
+      "SmsScene": {
+        "type": "string",
+        "enum": [
+          "login",
+          "bind_phone"
+        ],
+        "title": "SmsScene"
       },
       "UpdateMeRequest": {
         "properties": {

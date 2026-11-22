@@ -1,4 +1,4 @@
-"""应用级单例（配置、数据库、Redis、缓存、令牌、密码哈希、邮件、队列、锁），挂在 app.state 上。"""
+"""应用级单例（配置、数据库、Redis、缓存、令牌、密码、邮件、队列、锁、短信计数）。"""
 
 from dataclasses import dataclass, field
 from typing import Annotated
@@ -8,6 +8,7 @@ lazy import httpx
 lazy from redis.asyncio import Redis
 
 from app.config import Settings
+from app.identity.providers.sms.store import SmsStore, sms_store
 from app.infrastructure.cache import Cache
 from app.infrastructure.database.session import Database
 from app.infrastructure.mail import Mailer
@@ -31,13 +32,15 @@ class AppContext:
     redis: Redis | None = None
     queue: TaskQueue | None = None
     http_transport: httpx.AsyncBaseTransport | None = None
-    """调用短信、微信、支付宝等外部接口的 httpx transport，为 None 时走网络。"""
+    """调用短信、微信、支付宝接口的 httpx transport，为 None 时走网络。"""
     locks: LockService = field(init=False)
     revocations: Revocations = field(init=False)
+    sms_store: SmsStore = field(init=False)
 
     def __post_init__(self) -> None:
         self.locks = LockService(self.redis)
         self.revocations = Revocations(self.redis, self.settings.auth.access_ttl)
+        self.sms_store = sms_store(self.redis)
 
     @property
     def file_urls(self) -> FileUrls:

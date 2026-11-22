@@ -4,18 +4,24 @@ from app.common.client import client_info
 from app.common.context import AppContext, Context
 from app.common.routing import ApiRouter, Auth, Throttle
 from app.identity.auth.schemas import (
+    AuthProvider,
     ForgotPasswordRequest,
     LoginResponse,
     LoginWithEmailRequest,
+    LoginWithProviderRequest,
+    LoginWithSmsRequest,
     RefreshTokenRequest,
     RegisterWithEmailRequest,
     ResetPasswordRequest,
+    SendSmsCodeRequest,
     VerifyEmailRequest,
 )
 from app.identity.auth.service import AuthService
+from app.identity.providers.registry import enabled_providers
+from app.identity.providers.sms import SmsScene
 from app.identity.users.schemas import User
 from app.infrastructure.database.session import DbSession
-from app.security.deps import CurrentPrincipal
+from app.security.deps import CurrentPrincipal, OptionalPrincipal, authenticate
 lazy from app.identity.sessions.service import Login
 
 router = ApiRouter(prefix="/v1/auth", tags=["Auth"])
@@ -107,6 +113,75 @@ async def forgot_password(
 )
 async def reset_password(body: ResetPasswordRequest, context: Context, session: DbSession) -> None:
     await AuthService(context, session).reset_password(body.token, body.password)
+
+
+@router.endpoint(
+    "POST",
+    "/sms/send",
+    operation_id="sendSmsCode",
+    auth=Auth.OPTIONAL_JWT,
+    status=202,
+    throttle=Throttle(limit=5, ttl=3_600_000),
+    summary="发送短信验证码",
+    description="`scene=login` 公开；`scene=bind_phone` 需要 JWT。",
+)
+async def send_sms_code(
+    body: SendSmsCodeRequest,
+    principal: OptionalPrincipal,
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> None:
+    if body.scene is SmsScene.BIND_PHONE and principal is None:
+        await authenticate(request, context)
+    await AuthService(context, session).send_sms_code(body.phone, body.scene)
+
+
+@router.endpoint(
+    "POST",
+    "/sms/login",
+    operation_id="loginWithSms",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=10, ttl=60_000),
+    summary="短信登录",
+)
+async def login_with_sms(
+    body: LoginWithSmsRequest, request: Request, context: Context, session: DbSession
+) -> LoginResponse:
+    client = client_info(request, context.settings.app.trust_proxy)
+    return login_response(await AuthService(context, session).login_with_sms(body, client), context)
+
+
+@router.endpoint(
+    "GET",
+    "/providers",
+    operation_id="listAuthProviders",
+    auth=Auth.PUBLIC,
+    summary="已启用的第三方登录",
+)
+async def list_auth_providers(context: Context) -> list[AuthProvider]:
+    return [AuthProvider(id=provider.value) for provider in enabled_providers(context)]
+
+
+@router.endpoint(
+    "POST",
+    "/providers/{provider}/login",
+    operation_id="loginWithProvider",
+    auth=Auth.PUBLIC,
+    throttle=Throttle(limit=10, ttl=60_000),
+    summary="第三方登录",
+    description="`provider`：`wechat_miniapp`、`wechat_app`、`alipay`；未启用时 404。",
+)
+async def login_with_provider(
+    provider: str,
+    body: LoginWithProviderRequest,
+    request: Request,
+    context: Context,
+    session: DbSession,
+) -> LoginResponse:
+    client = client_info(request, context.settings.app.trust_proxy)
+    login = await AuthService(context, session).login_with_provider(provider, body.code, client)
+    return login_response(login, context)
 
 
 @router.endpoint(

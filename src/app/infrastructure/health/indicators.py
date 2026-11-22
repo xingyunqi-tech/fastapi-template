@@ -132,7 +132,7 @@ def _fetch_error(error: httpx.HTTPError) -> str:
 
 async def wechat_api(key: str, context: AppContext) -> IndicatorResult:
     settings = context.settings.wechat
-    if not settings.app_id or not settings.app_secret.get_secret_value():
+    if not settings.miniapp_enabled and not settings.app_enabled:
         return up(key, {"message": "WeChat not configured, skipped"})
     try:
         async with httpx.AsyncClient(
@@ -147,7 +147,7 @@ async def wechat_api(key: str, context: AppContext) -> IndicatorResult:
 
 
 async def alipay_api(key: str, context: AppContext) -> IndicatorResult:
-    if not context.settings.alipay.app_id:
+    if not context.settings.alipay.enabled:
         return up(key, {"message": "Alipay not configured, skipped"})
     try:
         async with httpx.AsyncClient(

@@ -9,6 +9,7 @@
 | `identity/sessions` | 会话与 refresh 令牌、宽限期重放、活跃时间、注销清理器 |
 | `identity/me` | 当前用户资料、改密、会话管理、注销 |
 | `identity/users` | 用户管理、角色分配、角色与权限列表 |
+| `identity/providers` | 短信验证码与发送渠道、微信与支付宝客户端、第三方身份（`user_identities`） |
 | `identity/account_deletion` | 注销流程（`deleteMe` 与 `deleteUser` 共用） |
 | `identity/keys` | `GET /.well-known/jwks.json` |
 
@@ -24,12 +25,18 @@
 | POST | `auth/email/verify/resend` | resendVerificationEmail | JWT | | 3 / 1h |
 | POST | `auth/password/forgot` | forgotPassword | 公开 | | 3 / 1h |
 | POST | `auth/password/reset` | resetPassword | 公开 | | 默认 |
+| POST | `auth/sms/send` | sendSmsCode | `login` 公开，`bind_phone` 需 JWT | | 5 / 1h |
+| POST | `auth/sms/login` | loginWithSms | 公开 | | 10 / 60s |
+| GET | `auth/providers` | listAuthProviders | 公开 | | 默认 |
+| POST | `auth/providers/{provider}/login` | loginWithProvider | 公开 | | 10 / 60s |
 | POST | `auth/refresh` | refreshToken | 公开 | | 10 / 60s |
 | POST | `auth/logout` | logout | JWT | | 默认 |
 | GET | `me` | getMe | JWT | | 默认 |
 | PATCH | `me` | updateMe | JWT | | 默认 |
 | DELETE | `me` | deleteMe | JWT，10 分钟内登录 | | 默认 |
 | PUT | `me/password` | changePassword | JWT | | 5 / 15min |
+| PUT | `me/phone` | bindPhone | JWT | | 默认 |
+| PUT | `me/phone/wechat` | bindPhoneWithWechat | JWT | | 默认 |
 | GET | `me/sessions` | listMySessions | JWT | | 默认 |
 | DELETE | `me/sessions/{id}` | revokeMySession | JWT | | 默认 |
 | POST | `me/sessions/revoke-others` | revokeOtherSessions | JWT | | 默认 |
@@ -79,6 +86,30 @@
 - argon2id `m=19456, t=2, p=1`；参数不同的已有哈希在登录成功时重哈希（库中哈希未被并发修改时才写入）
 - 账号不存在或未设置密码时仍校验一次固定假哈希
 - 哈希在线程池中执行，每进程并发数 `PASSWORD_HASH_CONCURRENCY`（默认 2）
+
+## 短信验证码
+
+| 项 | 实现 |
+|---|---|
+| 规则 | 6 位数字，有效 5 分钟，与 `(phone, scene)` 绑定，单个验证码最多尝试 5 次；同一手机号冷却 60 秒、每个 UTC 日最多 10 条；1 小时内累计失败 10 次锁定 1 小时（失败按手机号计，未发过验证码的号码同样计入） |
+| 存储 | Redis 键 `sms:code:*`、`sms:attempts:*`、`sms:cooldown:*`、`sms:daily:*`、`sms:failures:*`、`sms:locked:*`，只存验证码的 HMAC-SHA256（密钥由 `AUTH_SIGNING_KEY` 经 HKDF 派生）；比对与计次在 Lua 脚本内原子完成；未配置 Redis 时用进程内实现；Redis 出错时 503 |
+| 渠道 | `SMS_PROVIDER=log`（默认）只写日志，生产环境不输出验证码；`aliyun` 以表单 body 调用 Dysmsapi `SendSms`，模板参数为 `{"code": "..."}`，需配齐 `SMS_ALIYUN_*` |
+| 失败 | 渠道调用失败 502 `common.badGateway`，并撤销本次冷却与当日计数 |
+| 登录 | `loginWithSms` 对未注册手机号自动注册（无邮箱、无密码）；`bindPhone` 只接受 `scene=bind_phone` 的验证码 |
+
+## 第三方登录
+
+| provider | 配置 | 换取 |
+|---|---|---|
+| `wechat_miniapp` | `WECHAT_MINIAPP_APP_ID` / `WECHAT_MINIAPP_SECRET` | `jscode2session` 的 `openid`、`unionid` |
+| `wechat_app` | `WECHAT_APP_APP_ID` / `WECHAT_APP_SECRET` | `sns/oauth2/access_token` 的 `openid`、`unionid` |
+| `alipay` | `ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` | `alipay.system.oauth.token` 的 `open_id`（旧应用为 `user_id`）；请求用应用私钥签名，响应用支付宝公钥验签 |
+
+- 凭据配齐即启用；路由始终注册，未启用时 404 `auth.providerDisabled`
+- 上游返回 `code` 无效（微信 errcode 40029 / 40163 / 42003，支付宝 `isv.code-*`）时 422 `auth.providerCodeInvalid`；网络错误、超时、非 2xx、其他错误码、缺少 openid 或验签失败时 502 `common.badGateway`
+- 身份存 `user_identities`，`(provider, openid)` 唯一；微信两个 provider 之间按 `unionid` 关联到同一账号，命中后回填缺失的 `unionid`；首次登录（含经 `unionid` 关联）在 savepoint 中写入，并发冲突时回读已写入的身份；不同 provider 携带同一 `unionid` 同时首次登录时可能建出两个账号，之后按最早的身份关联
+- `bindPhoneWithWechat` 用小程序 `stable_token`（缓存至过期前 5 分钟，失效时强制刷新一次）调用 `getuserphonenumber`
+- 注销时删除该用户的 `user_identities`，同一第三方身份可重新注册
 
 ## 角色与权限
 

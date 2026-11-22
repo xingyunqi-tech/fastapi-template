@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.auth.models import VerificationTokenModel
+from app.identity.providers.models import UserIdentityModel
 from app.identity.users.models import UserModel, UserRoleModel, UserStatus
 from app.security.rbac import Role
 lazy from app.common.pagination import SortField
@@ -39,6 +40,11 @@ class UserRepository:
     async def find_by_email(self, email: str) -> UserModel | None:
         return await self.session.scalar(
             _loaded(select(UserModel).where(UserModel.email == email, _active()))
+        )
+
+    async def find_by_phone(self, phone: str) -> UserModel | None:
+        return await self.session.scalar(
+            _loaded(select(UserModel).where(UserModel.phone == phone, _active()))
         )
 
     async def create(
@@ -147,14 +153,13 @@ class UserRepository:
         await self.session.flush()
 
     async def soft_delete(self, user: UserModel, now: datetime) -> None:
-        """软删除并立即释放邮箱、手机号，删除角色与一次性令牌。"""
+        """软删除并立即释放邮箱、手机号与第三方身份，删除角色与一次性令牌。"""
         user.deleted_at = now
         user.email = None
         user.phone = None
         user.password_hash = None
         user.avatar_file_id = None
         user.role_rows = []
-        await self.session.execute(
-            delete(VerificationTokenModel).where(VerificationTokenModel.user_id == user.id)
-        )
+        for model in (VerificationTokenModel, UserIdentityModel):
+            await self.session.execute(delete(model).where(model.user_id == user.id))
         await self.session.flush()

@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from app.common.types import ApiModel
-from app.identity.auth.schemas import SubmittedPassword
+from app.common.types import ApiModel, Phone
+from app.identity.auth.schemas import ProviderCode, SmsCode, SubmittedPassword
 from app.identity.users.schemas import DisplayName, Password
 
 
@@ -13,3 +13,12 @@ class UpdateMeRequest(ApiModel):
 class ChangePasswordRequest(ApiModel):
     current_password: SubmittedPassword | None = None
     new_password: Password
+
+
+class BindPhoneRequest(ApiModel):
+    phone: Phone
+    code: SmsCode
+
+
+class BindPhoneWithWechatRequest(ApiModel):
+    code: ProviderCode

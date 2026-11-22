@@ -1,10 +1,14 @@
-"""约定 §11.2 当前用户（手机号绑定除外）。"""
+"""约定 §11.2 当前用户。"""
 
 import time
 from typing import TYPE_CHECKING, Final
 
 from app.common.errors import AppError, FieldError, ValidationFailed, field_error
+from app.common.types import normalize_phone
 from app.identity.account_deletion.service import delete_account
+from app.identity.providers import bad_gateway
+from app.identity.providers.registry import miniapp_client
+from app.identity.providers.sms import SmsScene, sms_codes
 from app.identity.sessions.service import SessionService
 from app.identity.users.repository import UserRepository
 from app.modules.files.service import FilesService
@@ -14,7 +18,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.common.context import AppContext
-    from app.identity.me.schemas import ChangePasswordRequest, UpdateMeRequest
+    from app.identity.me.schemas import BindPhoneRequest, ChangePasswordRequest, UpdateMeRequest
     from app.identity.sessions.models import SessionModel
     from app.identity.users.models import UserModel
     from app.security.jwt import Principal
@@ -71,6 +75,30 @@ class MeService:
             raise AppError("auth.reauthRequired")
         user.password_hash = await self.context.passwords.hash_async(body.new_password)
         await self.sessions.revoke(user.id, keep=principal.sid)
+
+    async def _bind_phone(self, principal: Principal, phone: str) -> UserModel:
+        """手机号属于其他账号时 409 `user.phoneTaken`。"""
+        user = await self.get(principal)
+        owner = await self.users.find_by_phone(phone)
+        if owner is not None and owner.id != user.id:
+            raise AppError("user.phoneTaken")
+        user.phone = phone
+        return await self.users.reload(user)
+
+    async def bind_phone(self, principal: Principal, body: BindPhoneRequest) -> UserModel:
+        await sms_codes(self.context).verify(body.phone, SmsScene.BIND_PHONE, body.code)
+        return await self._bind_phone(principal, body.phone)
+
+    async def bind_phone_with_wechat(self, principal: Principal, code: str) -> UserModel:
+        """`wechat_miniapp` 未启用时 404 `auth.providerDisabled`。"""
+        client = miniapp_client(self.context)
+        if client is None:
+            raise AppError("auth.providerDisabled")
+        try:
+            phone = normalize_phone(await client.phone_number(code))
+        except ValueError:
+            raise bad_gateway() from None
+        return await self._bind_phone(principal, phone)
 
     async def sessions_of(self, principal: Principal) -> list[SessionModel]:
         return await self.sessions.list_active(principal.sub)

@@ -178,7 +178,7 @@ Pydantic 错误类型 → `rule`（按顺序匹配，先匹配到的生效）：
 |---|---|---|
 | §11.1 邮箱 | `identity/auth/` | `registerWithEmail` 提交后入队验证邮件，邮件链接取 `APP_FRONTEND_URL`；`loginWithEmail` 对不存在的账号校验固定假哈希（约定 §5.4）；`auth-login-account` 主体为 `a:{SHA-256(规范化邮箱) 前 16 位}`，只在失败时计数、成功后删除该键；`forgotPassword` 同时套 `auth-mail`（IP）与 `auth-mail-account`（账号） |
 | §11.1 一次性令牌 | `identity/auth/tokens.py` | 表 `verification_tokens`，（user_id, purpose）唯一，新令牌覆盖旧令牌；只存 SHA-256；找回密码令牌另存当前密码哈希指纹，改密后失效 |
-| §11.1 短信 | `identity/auth/` + `identity/providers/sms/` | 验证码、冷却、每日次数、失败计数与锁定按约定 §11.1，存 Redis `{service}:sms:*`；`loginWithSms` 套 `auth-login`（IP）与 `auth-login-account`（`a:{SHA-256(E.164) 前 16 位}`，只计失败）；短信服务调用失败返回 `common.badGateway`；`scene=bind_phone` 由路由内的可选 JWT 依赖校验；`SMS_PROVIDER=log|aliyun`，非生产默认 `log` |
+| §11.1 短信 | `identity/auth/` + `identity/providers/sms/` | 验证码、冷却、每日次数、失败计数与锁定按约定 §11.1，存 Redis `{service}:sms:*`；`loginWithSms` 套 `auth-login`（IP）与 `auth-login-account`（`a:{SHA-256(E.164) 前 16 位}`，只计失败）；短信服务调用失败返回 `common.badGateway`；`scene=bind_phone` 由路由内的可选 JWT 依赖校验；`SMS_PROVIDER=log|aliyun`，默认 `log`，`log` 在生产环境不输出验证码；每日上限按 UTC 日期计 |
 | §11.1 第三方 | `identity/providers/{wechat,alipay}/` | `ProviderClient` 协议：`exchange(code) -> ProviderIdentity(openid, union_id)`；`code` 无效映射为 `auth.providerCodeInvalid`，第三方调用失败映射为 `common.badGateway`；微信按 `union_id` 或 `(provider, openid)` 任一命中视为同一身份，命中后回填缺失的 `union_id`；`registry` 收集已启用 provider，供 `listAuthProviders` 与 `loginWithProvider` 使用；路由始终注册，OpenAPI 与配置无关 |
 | §11.2 当前用户 | `identity/me/` | `deleteMe` 与无密码时的 `changePassword` 用 `require_recent_login` 依赖（按 access 的 `auth_time`，约定 §5.4）；`changePassword` 校验 `currentPassword` 失败时计入 `auth-password-verify`（`u:{sub}`），成功后清除；`deleteMe` 同样执行 `role.lastAdmin` 检查；`bindPhoneWithWechat` 复用 `wechat_miniapp` 客户端 |
 | §11.2 会话 | `identity/sessions/` | `current` 由 access 的 `sid` 判定；`last_active_at` 每会话最多 5 分钟写一次 |
@@ -254,7 +254,7 @@ REDIS_URL=redis://redis:6379/0
 | `audit_logs` | actor_id（`sub`）、action、resource_type、resource_id、request_id、ip、user_agent、changes（jsonb，已脱敏）、created_at；created_at 索引 | platform |
 | `users` | email（可空，唯一）、email_verified_at（→ `emailVerified`）、phone（可空，E.164，唯一）、password_hash（可空，→ `hasPassword`）、display_name、avatar_file_id（→ `files`，`ON DELETE SET NULL`，输出为 `avatarUrl`）、status（`active` / `disabled`）、last_login_at、created_at、updated_at、deleted_at | identity |
 | `user_roles` | user_id、role（`text`，取值由代码常量校验）；复合主键 | identity |
-| `user_identities` | user_id、provider、openid（支付宝为 user_id）、union_id（可空）、created_at；（provider, openid）唯一；微信两个 provider 的 union_id 部分唯一索引 | identity |
+| `user_identities` | user_id、provider、openid（支付宝为 `open_id`，旧应用为 `user_id`）、union_id（可空）、created_at；（provider, openid）唯一；微信两个 provider 的 union_id 部分唯一索引 | identity |
 | `sessions` | user_id、user_agent、ip（`inet`）、auth_time、created_at、last_active_at、expires_at（登录时确定）、revoked_at | identity |
 | `refresh_tokens` | session_id、token_hash（唯一）、created_at、rotated_at、grace_ciphertext（可空） | identity |
 | `verification_tokens` | user_id、purpose（`verify_email` / `reset_password`）、token_hash、password_fingerprint、expires_at；（user_id, purpose）唯一 | identity |
@@ -299,8 +299,8 @@ REDIS_URL=redis://redis:6379/0
 | `DATABASE_POOL_SIZE` / `DATABASE_POOL_TIMEOUT` | `10` / `10s` | 每进程连接池 |
 | `WEB_CONCURRENCY` | `1` | Granian worker 数；`OTEL_METRICS_EXPORTER=prometheus` 时只能为 1 |
 | `PASSWORD_HASH_CONCURRENCY` | `2` | 约定 §5.4 |
-| `SMS_PROVIDER` / `SMS_ALIYUN_*` | `log` | |
-| `WECHAT_MINIAPP_APP_ID` / `_SECRET`、`WECHAT_APP_APP_ID` / `_SECRET`、`ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` | 空 | 配齐即启用对应 provider |
+| `SMS_PROVIDER` / `SMS_ALIYUN_*` | `log` | `aliyun` 时 `SMS_ALIYUN_*` 必填 |
+| `WECHAT_MINIAPP_APP_ID` / `WECHAT_MINIAPP_SECRET`、`WECHAT_APP_APP_ID` / `WECHAT_APP_SECRET`、`ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` | 空 | 配齐即启用对应 provider |
 | `STORAGE_DRIVER` / `STORAGE_LOCAL_DIR` / `STORAGE_URL_TTL` / `STORAGE_URL_SECRET` / `S3_*` | 空 / `./var/files` / `10m` / 空 | `local` / `s3`；签发方必填，验证方为空时不挂载 `files`；`local` 在生产必须设置 `STORAGE_URL_SECRET` |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USER` / `MAIL_PASSWORD` / `MAIL_FROM` / `MAIL_TLS` | 空 / 587 | |
 | `RATE_LIMIT_DEFAULT` | `10/s,burst=20` | 私有默认规则；共享规则不可配置 |
@@ -437,10 +437,15 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `src/app/integrations/{sms,wechat,alipay}/` | 迁到 `identity/providers/`，实现 `ProviderClient` 与错误映射 |
-| `migrations/versions/identity/` | 新增 `user_identities` 表（B4 的 identity 初始迁移不含该表）；注销时删除 `user_identities` |
-| `src/app/config/sms.py` | `SMS_MOCK_MODE`、`SMS_ACCESS_KEY_*`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`、`SMS_ENDPOINT` → `SMS_PROVIDER`、`SMS_ALIYUN_*`；删除 `SMS_CODE_LENGTH`、`SMS_CODE_EXPIRES`、`SMS_MAX_ATTEMPTS`、`SMS_RESEND_INTERVAL`（规则由约定 §11.1 固定） |
-| `src/app/config/{wechat,alipay}.py` | `WECHAT_MINI_APP_ID` / `_SECRET` → `WECHAT_MINIAPP_APP_ID` / `_SECRET`；`WECHAT_APP_ID` / `_SECRET` → `WECHAT_APP_APP_ID` / `_SECRET`；删除 `WECHAT_MINI_PROGRAM_STATE`；支付宝增加 `ALIPAY_PUBLIC_KEY` |
+| `src/app/integrations/{sms,wechat,alipay}/` | 迁到 `identity/providers/`（`sms/`、`wechat/`、`alipay/`、`registry.py`、`accounts.py`），实现 `ProviderClient` 与错误映射；删除 `integrations/` 包，`tests/unit/test_login_integrations.py` 改为 `test_providers.py` |
+| `migrations/versions/identity/` | 新增 `identity_0002`：`user_identities` 表（B4 的 identity 初始迁移不含该表）；注销时删除 `user_identities` |
+| `src/app/config/sms.py` | `SMS_MOCK_MODE`、`SMS_ACCESS_KEY_*`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`、`SMS_ENDPOINT` → `SMS_PROVIDER`、`SMS_ALIYUN_ACCESS_KEY_ID` / `_ACCESS_KEY_SECRET` / `_SIGN_NAME` / `_TEMPLATE_CODE` / `_ENDPOINT`；删除 `SMS_CODE_LENGTH`、`SMS_CODE_EXPIRES`、`SMS_MAX_ATTEMPTS`、`SMS_RESEND_INTERVAL`（规则由约定 §11.1 固定） |
+| `src/app/config/{wechat,alipay}.py` | `WECHAT_MINI_APP_ID` / `WECHAT_MINI_APP_SECRET` → `WECHAT_MINIAPP_APP_ID` / `WECHAT_MINIAPP_SECRET`；`WECHAT_APP_ID` → `WECHAT_APP_APP_ID`（`WECHAT_APP_SECRET` 不变）；删除 `WECHAT_MINI_PROGRAM_STATE`；支付宝增加 `ALIPAY_PUBLIC_KEY`（响应验签），`ALIPAY_GATEWAY` / `_SIGN_TYPE` / `_CHARSET` / `_SANDBOX` 保留；密钥在启动时校验 |
+| 短信 Redis 键 | 暂为 `sms:*`，B6 由 `redis.key()` 加 `{OTEL_SERVICE_NAME}:` 前缀，并以 `{phone}` 为 hash tag（`CHECK_CODE` 同时操作验证码与计次两个键） |
+| 身份接口限流 | `sendSmsCode`、`loginWithSms`、`loginWithProvider` 沿用 v1 按路由计数（`Throttle`），取约定 §11.6 的突发值；`auth-sms`、`auth-login`、`auth-login-account` 在 B6 |
+| `src/app/infrastructure/health/indicators.py` | 微信、支付宝探测按新配置判断是否启用（健康检查在 B6 改写） |
+| `src/app/infrastructure/observability/` | 出站 httpx span（`url.full` / `http.url`）与 Sentry 面包屑去掉查询串，Sentry `include_local_variables=False`；B6 合并为 `telemetry/` 时保留 |
+| 分层 | `config/alipay.py` 依赖 `identity/providers/alipay/keys.py`、`common/context.py` 依赖 `identity/providers/sms/store.py`；B6 重做 `redis/` 与 context 时调整 |
 
 **B6 基础设施**
 

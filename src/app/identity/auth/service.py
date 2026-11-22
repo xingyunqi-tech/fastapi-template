@@ -1,11 +1,14 @@
-"""约定 §11.1 邮箱部分、refresh 与登出。"""
+"""约定 §11.1：邮箱、短信、第三方登录、refresh 与登出。"""
 
 from typing import TYPE_CHECKING
 
 from app.common.errors import AppError
 from app.identity.auth.models import TokenPurpose
 from app.identity.auth.tokens import VerificationTokens, password_fingerprint
-from app.identity.sessions.service import Login, SessionService, utcnow
+from app.identity.providers.accounts import ProviderAccounts
+from app.identity.providers.registry import provider_client
+from app.identity.providers.sms import SmsScene, sms_codes
+from app.identity.sessions.service import Login, SessionService, can_sign_in, utcnow
 from app.identity.users.models import UserStatus
 from app.identity.users.repository import UserRepository
 from app.infrastructure.database.session import after_commit
@@ -16,7 +19,11 @@ if TYPE_CHECKING:
 
     from app.common.client import ClientInfo
     from app.common.context import AppContext
-    from app.identity.auth.schemas import LoginWithEmailRequest, RegisterWithEmailRequest
+    from app.identity.auth.schemas import (
+        LoginWithEmailRequest,
+        LoginWithSmsRequest,
+        RegisterWithEmailRequest,
+    )
     from app.identity.users.models import UserModel
     from app.security.jwt import Principal
 
@@ -66,6 +73,34 @@ class AuthService:
             raise AppError("auth.accountDisabled")
         if result.updated_hash is not None and user.password_hash is not None:
             await self.users.rehash_password(user, user.password_hash, result.updated_hash)
+        return await self.sessions.sign_in(user, client)
+
+    async def send_sms_code(self, phone: str, scene: SmsScene) -> None:
+        await sms_codes(self.context).send(phone, scene)
+
+    async def login_with_sms(self, body: LoginWithSmsRequest, client: ClientInfo) -> Login:
+        """未注册的手机号自动注册；账号被禁用时 403。"""
+        await sms_codes(self.context).verify(body.phone, SmsScene.LOGIN, body.code)
+        user = await self.users.find_by_phone(body.phone)
+        if user is None:
+            user = await self.users.create(
+                email=None, phone=body.phone, password_hash=None, display_name=None
+            )
+        if not can_sign_in(user):
+            raise AppError("auth.accountDisabled")
+        return await self.sessions.sign_in(user, client)
+
+    async def login_with_provider(self, provider: str, code: str, client: ClientInfo) -> Login:
+        """未知或未启用的 provider 404；首次登录自动注册。"""
+        provider_api = provider_client(self.context, provider)
+        if provider_api is None:
+            raise AppError("auth.providerDisabled")
+        identity = await provider_api.exchange(code)
+        user = await ProviderAccounts(self.session).resolve(provider_api.id, identity)
+        if user is None:
+            raise AppError("common.conflict")
+        if not can_sign_in(user):
+            raise AppError("auth.accountDisabled")
         return await self.sessions.sign_in(user, client)
 
     async def verify_email(self, token: str) -> None:
