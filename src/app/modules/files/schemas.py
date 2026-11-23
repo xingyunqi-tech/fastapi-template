@@ -1,44 +1,33 @@
-"""文件上传请求与响应模型。"""
-
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import Field
-
-from app.common.types import ApiModel
+from app.common.types import ApiModel, UtcDatetime
+from app.modules.files.purposes import Purpose
 
 if TYPE_CHECKING:
     from app.modules.files.models import FileModel
     from app.modules.files.urls import FileUrls
 
 
-class FileInfo(ApiModel):
+class File(ApiModel):
+    """约定 §11.4。"""
+
     id: UUID
-    path: str
-    visibility: str
-    mime_type: str | None
-    size: int | None
+    name: str
+    size: int
+    content_type: str
+    purpose: Purpose
+    url: str
+    created_at: UtcDatetime
 
     @classmethod
-    def from_model(cls, file: FileModel, urls: FileUrls) -> FileInfo:
+    def from_model(cls, file: FileModel, urls: FileUrls) -> File:
         return cls(
             id=file.id,
-            path=urls.build(file),
-            visibility=file.visibility or "PUBLIC",
-            mime_type=file.mime_type,
+            name=file.name,
             size=file.size,
+            content_type=file.content_type,
+            purpose=Purpose(file.purpose),
+            url=urls.build(file),
+            created_at=file.created_at,
         )
-
-
-class UploadedFile(ApiModel):
-    file: FileInfo
-
-
-class PresignedUploadRequest(ApiModel):
-    file_name: str = Field(min_length=1)
-    file_size: int = Field(ge=0)
-
-
-class PresignedUpload(ApiModel):
-    file: FileInfo
-    upload_signed_url: str

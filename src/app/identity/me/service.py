@@ -1,7 +1,7 @@
 """约定 §11.2 当前用户。"""
 
 import time
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from app.common.errors import AppError, FieldError, ValidationFailed, field_error
 from app.common.types import normalize_phone
@@ -11,6 +11,10 @@ from app.identity.providers.registry import miniapp_client
 from app.identity.providers.sms import SmsScene, sms_codes
 from app.identity.sessions.service import SessionService
 from app.identity.users.repository import UserRepository
+from app.infrastructure.throttler import user_subject
+from app.infrastructure.throttler.rules import AUTH_PASSWORD_VERIFY
+from app.infrastructure.throttler.storage import Mode
+from app.modules.files.purposes import Purpose
 from app.modules.files.service import FilesService
 from app.security.deps import RECENT_LOGIN_SECONDS
 
@@ -22,8 +26,6 @@ if TYPE_CHECKING:
     from app.identity.sessions.models import SessionModel
     from app.identity.users.models import UserModel
     from app.security.jwt import Principal
-
-AVATAR_CONTENT_TYPES: Final = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 
 class MeService:
@@ -40,16 +42,12 @@ class MeService:
         return user
 
     async def update(self, principal: Principal, body: UpdateMeRequest) -> UserModel:
-        """`avatarFileId` 须为本人上传的图片，否则 422 `exists`。"""
+        """`avatarFileId` 须为本人上传、用途为 `avatar` 的文件，否则 422 `exists`。"""
         user = await self.get(principal)
         fields = body.model_fields_set
         if "avatar_file_id" in fields and body.avatar_file_id is not None:
             file = await FilesService(self.session).find_by_id(body.avatar_file_id)
-            if (
-                file is None
-                or file.owner_user_id != user.id
-                or file.mime_type not in AVATAR_CONTENT_TYPES
-            ):
+            if file is None or file.owner_id != str(user.id) or file.purpose != Purpose.AVATAR:
                 raise field_error("avatarFileId", "exists")
         if "display_name" in fields:
             user.display_name = body.display_name
@@ -66,11 +64,16 @@ class MeService:
         if user.password_hash is not None:
             if body.current_password is None:
                 raise ValidationFailed([FieldError("currentPassword", "required")])
+            limiter = self.context.rate_limiter
+            subject = user_subject(user.id)
+            await limiter.check(AUTH_PASSWORD_VERIFY, subject, mode=Mode.PEEK)
             result = await self.context.passwords.verify_async(
                 body.current_password, user.password_hash
             )
             if not result.valid:
+                await limiter.record_failure(AUTH_PASSWORD_VERIFY, subject)
                 raise AppError("auth.passwordIncorrect")
+            await limiter.reset(AUTH_PASSWORD_VERIFY, subject)
         elif time.time() - principal.auth_time > RECENT_LOGIN_SECONDS:
             raise AppError("auth.reauthRequired")
         user.password_hash = await self.context.passwords.hash_async(body.new_password)

@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import Path
 
 from app.common.context import Context
-from app.common.routing import ApiRouter, Auth, Throttle
+from app.common.routing import ApiRouter, Auth
 from app.identity.me.schemas import (
     BindPhoneRequest,
     BindPhoneWithWechatRequest,
@@ -48,7 +48,6 @@ async def delete_me(principal: RecentPrincipal, context: Context, session: DbSes
     "/password",
     operation_id="changePassword",
     auth=Auth.JWT,
-    throttle=Throttle(limit=5, ttl=900_000),
     summary="修改密码",
 )
 async def change_password(

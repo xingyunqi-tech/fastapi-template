@@ -1,4 +1,4 @@
-"""异步引擎与每请求一个 AsyncSession：成功提交、异常回滚，提交后执行登记的副作用。"""
+"""异步引擎与每请求一个 AsyncSession：成功提交、异常回滚，提交或回滚后执行登记的副作用。"""
 
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -22,6 +22,15 @@ logger = logging.getLogger("app.database")
 
 type AfterCommit = Callable[[], Awaitable[None]]
 _AFTER_COMMIT_KEY = "after_commit"
+_AFTER_ROLLBACK_KEY = "after_rollback"
+
+
+async def _run(callbacks: list[AfterCommit], label: str) -> None:
+    for callback in callbacks:
+        try:
+            await callback()
+        except Exception:
+            logger.exception("%s callback failed", label)
 
 
 class Database:
@@ -66,17 +75,20 @@ class Database:
                 yield session
             except AppError:
                 session.info.pop(_AFTER_COMMIT_KEY, None)
+                session.info.pop(_AFTER_ROLLBACK_KEY, None)
                 await session.commit()
                 raise
             except BaseException:
                 await session.rollback()
+                await _run(session.info.pop(_AFTER_ROLLBACK_KEY, []), "after-rollback")
                 raise
-            await session.commit()
-            for callback in session.info.pop(_AFTER_COMMIT_KEY, []):
-                try:
-                    await callback()
-                except Exception:
-                    logger.exception("after-commit callback failed")
+            try:
+                await session.commit()
+            except BaseException:
+                await _run(session.info.pop(_AFTER_ROLLBACK_KEY, []), "after-rollback")
+                raise
+            session.info.pop(_AFTER_ROLLBACK_KEY, None)
+            await _run(session.info.pop(_AFTER_COMMIT_KEY, []), "after-commit")
 
     async def dispose(self) -> None:
         if self.engine is not None:
@@ -86,6 +98,11 @@ class Database:
 def after_commit(session: AsyncSession, callback: AfterCommit) -> None:
     """登记在事务提交成功后执行的副作用（发邮件、投递任务等）。"""
     session.info.setdefault(_AFTER_COMMIT_KEY, []).append(callback)
+
+
+def after_rollback(session: AsyncSession, callback: AfterCommit) -> None:
+    """登记在事务回滚或提交失败后执行的补偿（删除已写入的外部对象等）。"""
+    session.info.setdefault(_AFTER_ROLLBACK_KEY, []).append(callback)
 
 
 async def _db_session(request: Request) -> AsyncIterator[AsyncSession]:

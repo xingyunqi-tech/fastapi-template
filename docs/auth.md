@@ -17,24 +17,24 @@
 
 路径均在 `/api/v1/` 下，`jwks.json` 除外。
 
-| 方法 | 路径 | operationId | 鉴权 | 权限 | 限流（次 / 窗口） |
+| 方法 | 路径 | operationId | 鉴权 | 权限 | 限流规则 |
 |---|---|---|---|---|---|
-| POST | `auth/email/register` | registerWithEmail | 公开 | | 3 / 1h |
-| POST | `auth/email/login` | loginWithEmail | 公开 | | 10 / 60s |
+| POST | `auth/email/register` | registerWithEmail | 公开 | | `auth-register` |
+| POST | `auth/email/login` | loginWithEmail | 公开 | | `auth-login`、`auth-login-account` |
 | POST | `auth/email/verify` | verifyEmail | 公开 | | 默认 |
-| POST | `auth/email/verify/resend` | resendVerificationEmail | JWT | | 3 / 1h |
-| POST | `auth/password/forgot` | forgotPassword | 公开 | | 3 / 1h |
+| POST | `auth/email/verify/resend` | resendVerificationEmail | JWT | | `auth-mail`（按用户） |
+| POST | `auth/password/forgot` | forgotPassword | 公开 | | `auth-mail`、`auth-mail-account` |
 | POST | `auth/password/reset` | resetPassword | 公开 | | 默认 |
-| POST | `auth/sms/send` | sendSmsCode | `login` 公开，`bind_phone` 需 JWT | | 5 / 1h |
-| POST | `auth/sms/login` | loginWithSms | 公开 | | 10 / 60s |
+| POST | `auth/sms/send` | sendSmsCode | `login` 公开，`bind_phone` 需 JWT | | `auth-sms` |
+| POST | `auth/sms/login` | loginWithSms | 公开 | | `auth-login`、`auth-login-account` |
 | GET | `auth/providers` | listAuthProviders | 公开 | | 默认 |
-| POST | `auth/providers/{provider}/login` | loginWithProvider | 公开 | | 10 / 60s |
-| POST | `auth/refresh` | refreshToken | 公开 | | 10 / 60s |
+| POST | `auth/providers/{provider}/login` | loginWithProvider | 公开 | | `auth-login` |
+| POST | `auth/refresh` | refreshToken | 公开 | | `auth-refresh` |
 | POST | `auth/logout` | logout | JWT | | 默认 |
 | GET | `me` | getMe | JWT | | 默认 |
 | PATCH | `me` | updateMe | JWT | | 默认 |
 | DELETE | `me` | deleteMe | JWT，10 分钟内登录 | | 默认 |
-| PUT | `me/password` | changePassword | JWT | | 5 / 15min |
+| PUT | `me/password` | changePassword | JWT | | `auth-password-verify` |
 | PUT | `me/phone` | bindPhone | JWT | | 默认 |
 | PUT | `me/phone/wechat` | bindPhoneWithWechat | JWT | | 默认 |
 | GET | `me/sessions` | listMySessions | JWT | | 默认 |
@@ -50,7 +50,7 @@
 | GET | `permissions` | listPermissions | JWT | `role:read` | 默认 |
 | GET | `/.well-known/jwks.json` | getJwks | 公开 | | 默认 |
 
-「默认」指 `THROTTLE_TTL` / `THROTTLE_LIMIT`（60s / 100 次），`THROTTLE_ENABLED=false` 时不限流。限流仍按路由计数，约定 §7 的 GCRA 共享规则尚未接入。
+共享规则的配额与主体见约定 §11.6，定义在 `infrastructure/throttler/rules.py`；`auth-login-account`、`auth-password-verify` 只计失败，成功后清除；`auth-refresh` 按会话计数，会话不存在时按 IP。「默认」指私有规则 `{OTEL_SERVICE_NAME}-default`（`RATE_LIMIT_DEFAULT`，默认 `10/s,burst=20`），JWT 路由按用户、其余按 IP。
 
 ## 鉴权方式
 
@@ -61,7 +61,7 @@
 | `PUBLIC` | — | 不校验，携带的 `Authorization` 被忽略 |
 | `JWT` | `CurrentPrincipal` | 校验 access 令牌与吊销键，失败 401；签发方另更新会话 `last_active_at` |
 | `OPTIONAL_JWT` | `OptionalPrincipal` | 令牌缺失、无效、过期或已吊销时为 `None` |
-| `MONITORING` | `monitoring_token` | `/api/v1/health`、`/metrics`：配置 `METRICS_TOKEN` 时校验 Bearer；未配置时非生产放行、生产拒绝 |
+| `MONITORING` | `monitoring_token` | `/metrics`：配置 `METRICS_TOKEN` 时校验 Bearer，失败 401；未配置时非生产放行、生产拒绝 |
 
 `RecentPrincipal` 额外要求 `auth_time` 在 10 分钟内，否则 403 `auth.reauthRequired`。
 
@@ -92,7 +92,7 @@
 | 项 | 实现 |
 |---|---|
 | 规则 | 6 位数字，有效 5 分钟，与 `(phone, scene)` 绑定，单个验证码最多尝试 5 次；同一手机号冷却 60 秒、每个 UTC 日最多 10 条；1 小时内累计失败 10 次锁定 1 小时（失败按手机号计，未发过验证码的号码同样计入） |
-| 存储 | Redis 键 `sms:code:*`、`sms:attempts:*`、`sms:cooldown:*`、`sms:daily:*`、`sms:failures:*`、`sms:locked:*`，只存验证码的 HMAC-SHA256（密钥由 `AUTH_SIGNING_KEY` 经 HKDF 派生）；比对与计次在 Lua 脚本内原子完成；未配置 Redis 时用进程内实现；Redis 出错时 503 |
+| 存储 | Redis 键 `{OTEL_SERVICE_NAME}:sms:{code,attempts,cooldown,daily,failures,locked}:…:{手机号}`（手机号为 hash tag），只存验证码的 HMAC-SHA256（密钥由 `AUTH_SIGNING_KEY` 经 HKDF 派生）；比对与计次在 Lua 脚本内原子完成；未配置 Redis 时用进程内实现；Redis 出错时 503 |
 | 渠道 | `SMS_PROVIDER=log`（默认）只写日志，生产环境不输出验证码；`aliyun` 以表单 body 调用 Dysmsapi `SendSms`，模板参数为 `{"code": "..."}`，需配齐 `SMS_ALIYUN_*` |
 | 失败 | 渠道调用失败 502 `common.badGateway`，并撤销本次冷却与当日计数 |
 | 登录 | `loginWithSms` 对未注册手机号自动注册（无邮箱、无密码）；`bindPhone` 只接受 `scene=bind_phone` 的验证码 |

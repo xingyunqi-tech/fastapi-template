@@ -1,4 +1,4 @@
-"""带过期时间的互斥锁：Redis 键 `lock:<key>` 跨实例生效，Redis 未启用或不可用时仅本进程生效。"""
+"""服务键前缀与互斥锁：锁键 `{service}:lock:<key>`，Redis 未配置或不可用时仅本进程生效。"""
 
 import asyncio
 import logging
@@ -10,7 +10,6 @@ lazy from redis.asyncio import Redis
 
 logger = logging.getLogger("app.lock")
 
-KEY_PREFIX: Final = "lock:"
 COMMAND_TIMEOUT_S: Final = 1.0
 RELEASE_SCRIPT: Final = (
     "if redis.call('get', KEYS[1]) == ARGV[1] then "
@@ -18,9 +17,15 @@ RELEASE_SCRIPT: Final = (
 )
 
 
+def key(service: str, *parts: str) -> str:
+    """约定 §10：服务私有键 `{OTEL_SERVICE_NAME}:<parts>`。"""
+    return ":".join((service, *parts))
+
+
 class LockService:
-    def __init__(self, redis: Redis | None) -> None:
+    def __init__(self, redis: Redis | None, service: str) -> None:
         self.redis = redis
+        self.prefix = key(service, "lock", "")
         self._local: dict[str, tuple[str, float]] = {}
 
     async def try_acquire(self, key: str, ttl_ms: int) -> str | None:
@@ -29,7 +34,7 @@ class LockService:
         if self.redis is not None:
             try:
                 async with asyncio.timeout(COMMAND_TIMEOUT_S):
-                    acquired = await self.redis.set(KEY_PREFIX + key, token, px=ttl_ms, nx=True)
+                    acquired = await self.redis.set(self.prefix + key, token, px=ttl_ms, nx=True)
                 return token if acquired else None
             except Exception as error:
                 logger.warning("Redis lock unavailable, using local lock for %s: %s", key, error)
@@ -43,7 +48,7 @@ class LockService:
         if self.redis is not None:
             try:
                 async with asyncio.timeout(COMMAND_TIMEOUT_S):
-                    await self.redis.eval(RELEASE_SCRIPT, 1, KEY_PREFIX + key, token)
+                    await self.redis.eval(RELEASE_SCRIPT, 1, self.prefix + key, token)
             except Exception as error:
                 logger.warning("Failed to release lock %s: %s", key, error)
 

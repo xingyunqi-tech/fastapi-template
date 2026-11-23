@@ -50,8 +50,8 @@ PostgreSQL 18、SQLAlchemy 2.1 async + asyncpg、Alembic。
 
 | 分支 | 表 |
 |---|---|
-| `platform` | `file`、`audit_logs` |
-| `identity` | `user`、`role`、`status`、`session`、`permission`、`role_permission`、`account_cleanup` |
+| `platform` | `files`、`audit_logs` |
+| `identity` | `users`、`user_roles`、`sessions`、`refresh_tokens`、`verification_tokens`、`user_identities`、`account_deletions` |
 | `modules` | 生成器产出的业务模块 |
 
 ## 事务

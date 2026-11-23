@@ -78,7 +78,7 @@ def random_client_ip() -> str:
 
 @pytest.fixture
 def api(stack: Stack) -> Iterator[httpx.Client]:
-    """每个用例使用独立的 X-Forwarded-For（TRUST_PROXY=1），限流计数互不影响。"""
+    """每个用例使用独立的 X-Forwarded-For（TRUSTED_PROXIES=1），限流计数互不影响。"""
     with httpx.Client(
         base_url=stack.api_url,
         headers={"X-Forwarded-For": random_client_ip()},

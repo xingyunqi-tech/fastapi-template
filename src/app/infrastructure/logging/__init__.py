@@ -1,32 +1,47 @@
-"""structlog：生产 JSON、开发彩色单行；标准库 logging 统一经 structlog 渲染。"""
+"""structlog：约定 §8 的 JSON 行（`LOG_FORMAT=json`）或彩色单行（`text`），含标准库日志。"""
 
 import logging
 import sys
+from collections.abc import Mapping
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import structlog
 from opentelemetry import trace
 lazy from structlog.typing import EventDict, Processor, WrappedLogger
 
+from app.common.masking import mask_email, mask_phone
 from app.common.middleware import current_request_id
-from app.config import LogLevel
+from app.config import LogFormat, LogLevel
 lazy from app.config import Settings
 
-REDACTED: Final = "[REDACTED]"
-REDACT_HEADERS: Final = frozenset({"authorization", "cookie"})
-REDACT_BODY: Final = frozenset({"password", "oldPassword", "newPassword", "code", "phone", "email"})
-REDACT_QUERY: Final = frozenset({"hash", "token"})
-SILENT_LEVEL: Final = logging.CRITICAL + 10
 STDLIB_LEVELS: Final = {
-    LogLevel.FATAL: logging.CRITICAL,
-    LogLevel.ERROR: logging.ERROR,
-    LogLevel.WARN: logging.WARNING,
-    LogLevel.INFO: logging.INFO,
     LogLevel.DEBUG: logging.DEBUG,
-    LogLevel.TRACE: 5,
-    LogLevel.SILENT: SILENT_LEVEL,
+    LogLevel.INFO: logging.INFO,
+    LogLevel.WARN: logging.WARNING,
+    LogLevel.ERROR: logging.ERROR,
 }
+LEVEL_NAMES: Final = {"warning": "warn", "critical": "error", "exception": "error"}
+SECRET_FIELDS: Final = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "password",
+        "currentpassword",
+        "newpassword",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "access_token",
+        "refresh_token",
+        "code",
+        "signature",
+    }
+)
+"""小写比较。"""
+MASKED_FIELDS: Final = {"email": mask_email, "phone": mask_phone}
+MAX_DEPTH: Final = 5
 QUIET_LOGGERS: Final = ("httpx", "httpcore", "urllib3")
 
 _HANDLER_MARK: Final = "_app_structlog_handler"
@@ -56,6 +71,17 @@ def reset_user_id(token: Any) -> None:
     _user_id.reset(token)
 
 
+def add_timestamp(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+    event_dict["ts"] = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return event_dict
+
+
+def normalize_level(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+    level = str(event_dict.get("level", "info")).lower()
+    event_dict["level"] = LEVEL_NAMES.get(level, level)
+    return event_dict
+
+
 def add_request_context(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
     request_id = current_request_id()
     if request_id is not None:
@@ -70,46 +96,60 @@ def add_request_context(_: WrappedLogger, __: str, event_dict: EventDict) -> Eve
     return event_dict
 
 
-def _redact(values: Any, keys: frozenset[str]) -> Any:
-    if not isinstance(values, dict):
-        return values
-    return {k: REDACTED if k in keys else v for k, v in values.items()}
+def _scrub(value: Any, depth: int) -> Any:
+    if depth > MAX_DEPTH:
+        return value
+    if isinstance(value, list | tuple):
+        return [_scrub(item, depth + 1) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    scrubbed: dict[str, Any] = {}
+    for key, item in value.items():
+        name = str(key).lower()
+        if name in SECRET_FIELDS:
+            continue
+        mask = MASKED_FIELDS.get(name)
+        if mask is not None and isinstance(item, str):
+            scrubbed[key] = mask(item)
+        else:
+            scrubbed[key] = _scrub(item, depth + 1)
+    return scrubbed
 
 
-def redact_request(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
-    """nestjs pino `redact.paths`：req.headers / req.body / req.query 下的敏感字段。"""
-    request = event_dict.get("req")
-    if isinstance(request, dict):
-        event_dict["req"] = {
-            **request,
-            **{
-                part: _redact(request[part], keys)
-                for part, keys in (
-                    ("headers", REDACT_HEADERS),
-                    ("body", REDACT_BODY),
-                    ("query", REDACT_QUERY),
-                )
-                if part in request
-            },
-        }
-    return event_dict
+def scrub_secrets(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+    """丢弃令牌、密码、验证码字段，邮箱与手机号掩码。"""
+    result: EventDict = _scrub(event_dict, 0)
+    return result
 
 
-def _shared_processors() -> list[Processor]:
+class _Service:
+    def __init__(self, service: str, env: str) -> None:
+        self.service = service
+        self.env = env
+
+    def __call__(self, _: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+        event_dict.setdefault("service", self.service)
+        event_dict.setdefault("env", self.env)
+        return event_dict
+
+
+def _shared_processors(settings: Settings) -> list[Processor]:
     return [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", utc=True, key="time"),
+        normalize_level,
+        add_timestamp,
+        _Service(settings.telemetry.service_name, settings.app.env.value),
         add_request_context,
-        redact_request,
+        scrub_secrets,
         structlog.processors.StackInfoRenderer(),
     ]
 
 
-def _renderers(pretty: bool) -> list[Processor]:
-    if pretty:
-        return [structlog.dev.ConsoleRenderer(colors=True)]
+def _renderers(log_format: LogFormat) -> list[Processor]:
+    if log_format is LogFormat.TEXT:
+        return [structlog.dev.ConsoleRenderer(colors=True, timestamp_key="ts")]
     return [
         structlog.processors.format_exc_info,
         structlog.processors.EventRenamer("msg"),
@@ -120,12 +160,12 @@ def _renderers(pretty: bool) -> list[Processor]:
 def configure_logging(settings: Settings) -> None:
     production = settings.app.is_production
     level = STDLIB_LEVELS[settings.log.resolved_level(production)]
-    shared = _shared_processors()
+    shared = _shared_processors(settings)
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
-            *shared,
             structlog.stdlib.PositionalArgumentsFormatter(),
+            *shared,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -133,10 +173,10 @@ def configure_logging(settings: Settings) -> None:
         cache_logger_on_first_use=False,
     )
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=[*shared, structlog.stdlib.ExtraAdder()],
+        foreign_pre_chain=[structlog.stdlib.ExtraAdder(), *shared],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            *_renderers(settings.log.resolved_pretty(production)),
+            *_renderers(settings.log.resolved_format(production)),
         ],
     )
     handler = _StdoutHandler()

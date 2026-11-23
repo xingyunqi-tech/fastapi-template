@@ -11,9 +11,9 @@ from urllib.parse import quote
 
 lazy import httpx
 
+from app.common.masking import mask_phone
 from app.identity.providers import bad_gateway
 from app.identity.providers.http import json_object, request
-from app.identity.providers.sms.masking import mask_phone
 lazy from app.config import SmsSettings
 
 logger = logging.getLogger("app.sms")

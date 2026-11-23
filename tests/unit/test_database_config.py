@@ -178,6 +178,7 @@ async def test_pool_follows_pool_size_and_timeout(monkeypatch: pytest.MonkeyPatc
 
 async def test_pool_size_is_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
     context = build_context(Settings.load())
 
     assert _pool(context.database).size() == 10
@@ -192,7 +193,8 @@ async def test_explicit_pool_size_overrides_setting() -> None:
 
 
 async def test_worker_process_uses_database_pool_size(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REDIS_ENABLED", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "none")
     monkeypatch.setenv("DATABASE_POOL_SIZE", "3")
     get_settings.cache_clear()
     monkeypatch.delitem(sys.modules, "app.infrastructure.queue.worker", raising=False)

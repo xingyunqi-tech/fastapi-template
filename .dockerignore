@@ -8,7 +8,6 @@
 !alembic.ini
 !src/
 !migrations/
-!openapi/
 !scripts/
 !tests/
 

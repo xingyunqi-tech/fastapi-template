@@ -5,8 +5,8 @@ lazy from uuid import UUID
 
 from sqlalchemy import delete
 
+from app.identity.account_deletion.cleanup import AccountDataCleaner, register_account_cleaner
 from app.identity.sessions.models import SessionModel
-from app.infrastructure.account_cleanup import AccountDataCleaner, register_account_cleaner
 
 if TYPE_CHECKING:
     from app.common.context import AppContext

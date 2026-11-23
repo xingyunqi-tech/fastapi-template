@@ -50,13 +50,15 @@ async def make_admin(client: httpx.AsyncClient, admin: dict[str, str], user_id: 
     assert response.status_code == 200, response.text
 
 
-async def add_file(connection: AsyncConnection, owner: str | None, mime_type: str) -> UUID:
+async def add_file(
+    connection: AsyncConnection, owner: str, content_type: str, purpose: str = "avatar"
+) -> UUID:
     file_id: UUID = await connection.scalar(
         text(
-            "INSERT INTO file (path, owner_user_id, mime_type) "
-            "VALUES ('/a.png', :owner, :mime) RETURNING id"
+            "INSERT INTO files (owner_id, purpose, storage_key, name, content_type, size) "
+            "VALUES (:owner, :purpose, md5(random()::text), 'a.png', :type, 1) RETURNING id"
         ),
-        {"owner": owner, "mime": mime_type},
+        {"owner": owner, "purpose": purpose, "type": content_type},
     )
     return file_id
 
@@ -79,10 +81,10 @@ class TestMe:
         data = await login(client, USER_EMAIL)
         headers = bearer(data["accessToken"])
         mine = await add_file(connection, data["user"]["id"], "image/png")
-        others = await add_file(connection, None, "image/png")
-        document = await add_file(connection, data["user"]["id"], "application/pdf")
+        others = await add_file(connection, str(UUID(int=2)), "image/png")
+        attachment = await add_file(connection, data["user"]["id"], "image/png", "attachment")
 
-        for file_id in (others, document, UUID(int=1)):
+        for file_id in (others, attachment, UUID(int=1)):
             response = await client.patch(
                 "/api/v1/me", json={"avatarFileId": str(file_id)}, headers=headers
             )
@@ -90,7 +92,7 @@ class TestMe:
         response = await client.patch(
             "/api/v1/me", json={"avatarFileId": str(mine)}, headers=headers
         )
-        assert response.json()["data"]["avatarUrl"].endswith("/a.png")
+        assert response.json()["data"]["avatarUrl"].startswith(f"/api/v1/files/{mine}/content?")
         cleared = await client.patch("/api/v1/me", json={"avatarFileId": None}, headers=headers)
         assert cleared.json()["data"]["avatarUrl"] is None
 
@@ -353,7 +355,7 @@ class TestUserManagement:
         assert {"user:read", "user:write", "role:read", "role:write", "audit:read"} <= set(codes)
         assert [r["code"] for r in roles] == ["admin", "user"]
         assert roles[0]["permissions"] == codes
-        assert roles[1]["permissions"] == []
+        assert roles[1]["permissions"] == ["file:write"]
 
 
 @pytest.mark.committed
@@ -502,7 +504,7 @@ class TestRedisFailure:
 async def test_invalid_forwarded_ip_is_stored_as_null(
     app: FastAPI, connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(app.state.context.settings.app, "trust_proxy", 1)
+    monkeypatch.setattr(app.state.context.settings.app, "trusted_proxies", 1)
     async with client_for(app) as client:
         response = await client.post(
             "/api/v1/auth/email/login",

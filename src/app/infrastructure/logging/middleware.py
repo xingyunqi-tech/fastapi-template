@@ -1,13 +1,12 @@
-"""pino-http 自动请求日志：`<METHOD> <url> <status>`，≥500 error、≥400 warn，其余 info。"""
+"""访问日志（约定 §8）：≥500 error、≥400 warn，其余 info。"""
 
+import logging
 import re
 import time
 from typing import TYPE_CHECKING, Any, Final
-from urllib.parse import parse_qsl
 
 from starlette.datastructures import Headers
 
-from app.common.middleware import current_request_id
 from app.infrastructure.logging import bind_user_id, get_logger, reset_user_id
 
 if TYPE_CHECKING:
@@ -17,12 +16,12 @@ logger = get_logger("app.http.access")
 _WHITESPACE: Final = re.compile(r"\s+")
 
 
-def level_for(status: int, failed: bool = False) -> str:
+def level_for(status: int, failed: bool = False) -> int:
     if status >= 500 or failed:
-        return "error"
+        return logging.ERROR
     if status >= 400:
-        return "warning"
-    return "info"
+        return logging.WARNING
+    return logging.INFO
 
 
 def _user_id(scope: Scope, authorization: str | None) -> Any:
@@ -35,11 +34,9 @@ def _user_id(scope: Scope, authorization: str | None) -> Any:
     return context.verifier.subject(parts[1])
 
 
-def _original_url(scope: Scope) -> str:
-    raw_path = scope.get("raw_path")
-    path = raw_path.decode("latin-1") if raw_path else scope["path"]
-    query = scope.get("query_string", b"").decode("latin-1")
-    return f"{path}?{query}" if query else path
+def route_template(scope: Scope) -> str | None:
+    path = getattr(scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
 
 
 class RequestLoggingMiddleware:
@@ -61,42 +58,19 @@ class RequestLoggingMiddleware:
                 status = message["status"]
             await send(message)
 
-        error: BaseException | None = None
+        failed = False
         try:
             await self.app(scope, receive, tracking_send)
-        except BaseException as exc:
-            error = exc
+        except BaseException:
+            failed = True
             raise
         finally:
-            self._log(scope, headers, status, started, error)
+            logger.log(
+                level_for(status, failed),
+                "http request",
+                method=scope["method"],
+                route=route_template(scope),
+                status=status,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
             reset_user_id(token)
-
-    @staticmethod
-    def _log(
-        scope: Scope,
-        headers: Headers,
-        status: int,
-        started: float,
-        error: BaseException | None,
-    ) -> None:
-        method = scope["method"]
-        url = _original_url(scope)
-        client = scope.get("client")
-        message = f"{method} {url} {status}"
-        if error is not None:
-            message = f"{message} - {error}"
-        logger.log(
-            {"error": 40, "warning": 30, "info": 20}[level_for(status, error is not None)],
-            message,
-            context="HTTP",
-            req={
-                "id": current_request_id() or headers.get("x-request-id"),
-                "method": method,
-                "url": url,
-                "query": dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"))),
-                "headers": dict(headers.items()),
-                "remoteAddress": client[0] if client else None,
-            },
-            res={"statusCode": status},
-            responseTime=round((time.perf_counter() - started) * 1000),
-        )

@@ -19,19 +19,6 @@ x-app: &app
     MAIL_PORT: '1025'
 
 services:
-  # api 与 worker 共用的 PID 命名空间，保证共享 PROMETHEUS_MULTIPROC_DIR 中按 PID 命名的文件不冲突
-  pidns:
-    build: *app-build
-    image: fastapi-temp:local
-    command: ['python', '-c', 'import signal, sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); signal.pause()']
-    network_mode: none
-    healthcheck:
-      test: ['CMD', 'true']
-      interval: 30s
-      start_period: 10s
-      start_interval: 1s
-    restart: unless-stopped
-
   mailpit:
     image: axllent/mailpit:v1.27
     ports:
@@ -55,14 +42,8 @@ services:
 
   api:
     <<: *app
-    pid: service:pidns
     ports:
       - '${APP_PORT:-3000}:3000'
-    environment:
-      <<: *app-env
-      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
-    volumes:
-      - prometheus-multiproc:/tmp/prometheus
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -72,13 +53,10 @@ services:
       test:
         [
           'CMD-SHELL',
-          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${APP_PORT:-3000}/$${API_PREFIX:-api}/v1/health/live', timeout=5)\"",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${APP_PORT:-3000}/health/live', timeout=5)\"",
         ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
       start_interval: 2s
-
-volumes:
-  prometheus-multiproc:

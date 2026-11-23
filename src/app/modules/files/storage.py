@@ -1,44 +1,67 @@
-"""文件存储位置：本地 `./files` 目录或 S3 兼容对象存储。"""
+"""文件存储：`STORAGE_DRIVER=local` 写入 `STORAGE_LOCAL_DIR`，`s3` 写入 S3 兼容对象存储。"""
 
 import asyncio
 import logging
 import secrets
+import shutil
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+from urllib.parse import quote
+lazy from pathlib import Path
 
 lazy import aioboto3
 lazy from botocore.config import Config
 lazy from botocore.session import get_session
 
-from app.config import FileDriver
-from app.modules.files.purposes import file_extension
-lazy from app.config import FileSettings
+from app.config import StorageDriver
+lazy from app.config import StorageSettings
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
     from typing import IO
 
-
 logger = logging.getLogger("app.files")
 
-LOCAL_FILES_ROOT: Final = Path("files")
-API_PREFIX: Final = "api"
-SIGNED_URL_EXPIRES_IN: Final = 3600
+KEY_BYTES: Final = 16
 
 
-def local_file_url_path(api_prefix: str, file_name: str) -> str:
-    return f"/{api_prefix}/v1/files/{file_name}"
+def new_key() -> str:
+    return secrets.token_hex(KEY_BYTES)
 
 
-def local_disk_path(path: str) -> Path:
-    return LOCAL_FILES_ROOT / PurePosixPath(path).name
+def content_disposition(name: str) -> str:
+    return f"attachment; filename*=UTF-8''{quote(name, safe='')}"
 
 
-def random_key(file_name: str) -> str:
-    return f"{secrets.token_hex(11)[:21]}.{file_extension(file_name)}"
+class Storage(Protocol):
+    async def put(self, key: str, body: IO[bytes], content_type: str) -> None: ...
+
+    async def delete(self, key: str) -> None: ...
+
+
+class LocalStorage:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def path(self, key: str) -> Path:
+        """`key` 为 `new_key()` 生成的十六进制串。"""
+        if not key.isalnum():
+            raise ValueError("invalid storage key")
+        return self.root / key
+
+    async def put(self, key: str, body: IO[bytes], content_type: str) -> None:
+        def write() -> None:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with self.path(key).open("wb") as target:
+                shutil.copyfileobj(body, target)
+
+        await asyncio.to_thread(write)
+
+    async def delete(self, key: str) -> None:
+        with suppress(FileNotFoundError):
+            await asyncio.to_thread(self.path(key).unlink)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,32 +70,33 @@ class S3Options:
     region: str
     endpoint: str | None
     force_path_style: bool
-    access_key_id: str
-    secret_access_key: str
+    access_key_id: str | None
+    secret_access_key: str | None
 
     @classmethod
-    def from_settings(cls, settings: FileSettings) -> S3Options:
-        secret = settings.secret_access_key
+    def from_settings(cls, settings: StorageSettings) -> S3Options:
+        secret = settings.s3_secret_access_key
         return cls(
-            bucket=settings.bucket or "",
-            region=settings.region or "",
-            endpoint=settings.endpoint,
-            force_path_style=settings.force_path_style,
-            access_key_id=settings.access_key_id or "",
-            secret_access_key=secret.get_secret_value() if secret else "",
+            bucket=settings.s3_bucket or "",
+            region=settings.s3_region or "",
+            endpoint=settings.s3_endpoint,
+            force_path_style=settings.s3_force_path_style,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=secret.get_secret_value() if secret else None,
         )
 
     def client_kwargs(self) -> dict[str, Any]:
-        path_style = bool(self.endpoint) and self.force_path_style
+        """未配置访问密钥时使用默认凭据链。"""
         kwargs: dict[str, Any] = {
             "region_name": self.region,
-            "aws_access_key_id": self.access_key_id,
-            "aws_secret_access_key": self.secret_access_key,
             "config": Config(
                 signature_version="s3v4",
-                s3={"addressing_style": "path"} if path_style else {"addressing_style": "virtual"},
+                s3={"addressing_style": "path" if self.force_path_style else "virtual"},
             ),
         }
+        if self.access_key_id and self.secret_access_key:
+            kwargs["aws_access_key_id"] = self.access_key_id
+            kwargs["aws_secret_access_key"] = self.secret_access_key
         if self.endpoint:
             kwargs["endpoint_url"] = self.endpoint
         return kwargs
@@ -122,10 +146,6 @@ class S3Clients:
 _S3_CLIENTS: Final = S3Clients()
 
 
-async def s3_client(options: S3Options) -> Any:
-    return await _S3_CLIENTS.get(options)
-
-
 async def close_s3_clients() -> None:
     await _S3_CLIENTS.close()
 
@@ -135,66 +155,32 @@ def _signing_client(options: S3Options) -> Any:
     return get_session().create_client("s3", **options.client_kwargs())
 
 
-def presigned_get_url(options: S3Options, key: str) -> str:
-    return str(
-        _signing_client(options).generate_presigned_url(
-            "get_object",
-            Params={"Bucket": options.bucket, "Key": key},
-            ExpiresIn=SIGNED_URL_EXPIRES_IN,
-        )
-    )
-
-
-def presigned_put_url(options: S3Options, key: str, content_length: int | float) -> str:
-    return str(
-        _signing_client(options).generate_presigned_url(
-            "put_object",
-            Params={"Bucket": options.bucket, "Key": key, "ContentLength": content_length},
-            ExpiresIn=SIGNED_URL_EXPIRES_IN,
-        )
-    )
-
-
-class FileStorage:
-    """按 FILE_DRIVER 读写、删除存储对象；`path` 为 file 表中的值。"""
-
-    def __init__(self, settings: FileSettings) -> None:
-        self.settings = settings
-
-    @property
-    def is_local(self) -> bool:
-        return self.settings.driver is FileDriver.LOCAL
-
-    def s3_options(self) -> S3Options:
-        return S3Options.from_settings(self.settings)
+class S3Storage:
+    def __init__(self, options: S3Options) -> None:
+        self.options = options
 
     async def put(self, key: str, body: IO[bytes], content_type: str) -> None:
-        options = self.s3_options()
-        client = await s3_client(options)
+        client = await _S3_CLIENTS.get(self.options)
         await client.upload_fileobj(
-            body, options.bucket, key, ExtraArgs={"ContentType": content_type}
+            body, self.options.bucket, key, ExtraArgs={"ContentType": content_type}
         )
 
-    async def read(self, path: str) -> bytes:
-        if self.is_local:
-            return local_disk_path(path).read_bytes()
-        options = self.s3_options()
-        client = await s3_client(options)
-        output = await client.get_object(Bucket=options.bucket, Key=path)
-        body: bytes = await output["Body"].read()
-        return body
+    async def delete(self, key: str) -> None:
+        client = await _S3_CLIENTS.get(self.options)
+        await client.delete_object(Bucket=self.options.bucket, Key=key)
 
-    async def delete(self, path: str) -> None:
-        if self.is_local:
-            with suppress(OSError):
-                local_disk_path(path).unlink()
-            return
-        options = self.s3_options()
-        client = await s3_client(options)
-        await client.delete_object(Bucket=options.bucket, Key=path)
+    def presigned_get(self, key: str, ttl_seconds: int, disposition: str | None) -> str:
+        params: dict[str, Any] = {"Bucket": self.options.bucket, "Key": key}
+        if disposition is not None:
+            params["ResponseContentDisposition"] = disposition
+        return str(
+            _signing_client(self.options).generate_presigned_url(
+                "get_object", Params=params, ExpiresIn=ttl_seconds
+            )
+        )
 
-    async def delete_quietly(self, path: str) -> None:
-        try:
-            await self.delete(path)
-        except Exception as error:
-            logger.warning("Failed to delete stored file %s: %s", path, error)
+
+def build_storage(settings: StorageSettings) -> LocalStorage | S3Storage:
+    if settings.driver is StorageDriver.S3:
+        return S3Storage(S3Options.from_settings(settings))
+    return LocalStorage(settings.local_dir)

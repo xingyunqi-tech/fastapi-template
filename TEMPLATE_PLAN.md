@@ -251,7 +251,7 @@ REDIS_URL=redis://redis:6379/0
 | 表 | 主要列 | 分支 |
 |---|---|---|
 | `files` | owner_id（`sub`）、purpose、storage_key、name、content_type、size、created_at | platform |
-| `audit_logs` | actor_id（`sub`）、action、resource_type、resource_id、request_id、ip、user_agent、changes（jsonb，已脱敏）、created_at；created_at 索引 | platform |
+| `audit_logs` | actor_id（`sub`）、action、resource_type、resource_id、request_id、ip、user_agent、changes（jsonb，键名含 password / secret / token / code / key 的值替换为 `[REDACTED]`，邮箱与手机号不掩码）、created_at；created_at 索引 | platform |
 | `users` | email（可空，唯一）、email_verified_at（→ `emailVerified`）、phone（可空，E.164，唯一）、password_hash（可空，→ `hasPassword`）、display_name、avatar_file_id（→ `files`，`ON DELETE SET NULL`，输出为 `avatarUrl`）、status（`active` / `disabled`）、last_login_at、created_at、updated_at、deleted_at | identity |
 | `user_roles` | user_id、role（`text`，取值由代码常量校验）；复合主键 | identity |
 | `user_identities` | user_id、provider、openid（支付宝为 `open_id`，旧应用为 `user_id`）、union_id（可空）、created_at；（provider, openid）唯一；微信两个 provider 的 union_id 部分唯一索引 | identity |
@@ -284,7 +284,7 @@ REDIS_URL=redis://redis:6379/0
 | 队列 | Taskiq + `RedisStreamBroker`，stream `{service}:tasks`；重试中间件指数退避；未配置 Redis 时 `InMemoryBroker`（仅开发 / 测试） |
 | 定时任务 | Taskiq scheduler 独立进程，锁 `{service}:lock:cron:{name}`：清理过期会话及其 refresh 记录与过期一次性令牌、账号注销补偿 |
 | 邮件 | aiosmtplib + Jinja2，模板 `verify-email`、`reset-password` 中英双语，链接基于 `APP_FRONTEND_URL`；提交后入队发送；未配置 `MAIL_HOST` 时只记日志 |
-| 文件 | 接口与用途规则见约定 §11.5；签发方必挂，验证方配置数据库与存储时挂载（§7.5）。`STORAGE_DRIVER=local|s3`；用途表 `avatar`（约定）与 `attachment`（本服务追加）；上传路由豁免 `BODY_LIMIT`，以所有用途的最大上限作为流式读取上限，解析出 `purpose` 后按该用途上限判定 `file.tooLarge`；类型按文件头魔数识别（只需覆盖白名单内类型，不引入依赖）。`File.url`：s3 为预签名 GET；local 为 `GET /files/{id}/content?expires=&signature=`（`getFileContent`，HMAC-SHA256，密钥 `STORAGE_URL_SECRET`，不包信封，`FileResponse` 输出，响应头按约定 §11.5） |
+| 文件 | 接口与用途规则见约定 §11.5；签发方必挂，验证方配置数据库与存储时挂载（§7.5）。`STORAGE_DRIVER=local|s3`；用途表 `avatar`（约定）与 `attachment`（本服务追加：jpeg / png / webp / gif / pdf，≤ 20 MiB）；上传路由豁免 `BODY_LIMIT`，以所有用途的最大上限作为流式读取上限，解析出 `purpose` 后按该用途上限判定 `file.tooLarge`；类型按文件头魔数识别（只需覆盖白名单内类型，不引入依赖）。`File.url`：s3 为预签名 GET；local 为相对路径 `/api/v1/files/{id}/content?expires=&signature=`（`getFileContent`，HMAC-SHA256，密钥 `STORAGE_URL_SECRET`，未设置时由 `AUTH_SIGNING_KEY` 经 HKDF 派生，签名无效或过期 404，不包信封，`FileResponse` 输出，响应头按约定 §11.5） |
 | 审计 | `endpoint(audit=Audit("user.update", resource="user"))`；请求成功后独立事务写 `audit_logs`，失败只记日志；`GET /audit-logs`（`listAuditLogs`，`audit:read`，游标分页） |
 | 账号注销 | `deleteMe` / `deleteUser`：同一事务内做 `role.lastAdmin` 检查，软删用户并清空 email / phone / password_hash / avatar_file_id（约定 §11.3 立即释放），删除 `user_roles`、`user_identities`、`verification_tokens`，吊销全部会话（写约定 §5.1 的吊销键），写 `account_deletions`；提交后入队清理任务并发布 `user.deleted`。清理器用 `register_account_cleaner(order)` 登记（files、notes），按 `sub` 清理且幂等；签发方删除 `sessions` / `refresh_tokens`；失败重试 5 次后记 error 并上报 Sentry；定时补偿未完成记录；`app users cleanup <id>` 手动重跑。验证方配置数据库时消费 `user.deleted` 并执行同一组本地清理器 |
 | 进程 | api（Granian）、worker、scheduler、migrate（一次性） |
@@ -329,7 +329,7 @@ REDIS_URL=redis://redis:6379/0
 | 层（marker） | 内容 | 依赖 |
 |---|---|---|
 | unit | 错误登记表与约定 §2.4 逐条一致、Pydantic 错误映射（每个 rule）、分页与游标、GCRA 计算、JWT 签发 / 校验、JWKS 缓存与刷新节流、宽限期加解密、Email / Phone / 时间 / UUID 类型、配置校验、生成器渲染 | 无 |
-| integration | 每个接口的正常与错误路径；refresh 轮换、宽限期、重用吊销、并发刷新（`committed`）；`role.lastAdmin` 并发；限流（共享与私有规则、Redis 出错策略）；幂等键；队列与定时任务；邮件（Mailpit）；文件（local + MinIO，魔数识别、按用途上限）；账号注销链路与 `user.deleted`；`DATABASE_SCHEMA` 隔离；验证方三种挂载组合（无数据库、有数据库、有数据库与存储） | testcontainers（PG 18、Redis 8、MinIO、Mailpit） |
+| integration | 每个接口的正常与错误路径；refresh 轮换、宽限期、重用吊销、并发刷新（`committed`）；`role.lastAdmin` 并发；限流（共享与私有规则、Redis 出错策略）；幂等键；队列与定时任务；邮件（Mailpit）；文件（local + MinIO，魔数识别、按用途上限）；账号注销链路与 `user.deleted`；`DATABASE_SCHEMA` 隔离；验证方三种挂载组合（无数据库、有数据库、有数据库与存储） | testcontainers（PG 18、Redis 8、MinIO、Mailpit；Docker Hub 的 `minio/minio` 已不可拉取，MinIO 用按 digest 固定的 `chainguard/minio`） |
 | conventions | `tests/conventions/`：逐条断言约定 §1–§8 与 §11 的可观察行为；平台部分用测试专用应用挂载探针路由，不依赖业务接口 | testcontainers |
 | OpenAPI（unit） | `app openapi export --check` 与入库文件一致；operationId 规则；约定 §11 的 operationId 与字段全部存在；错误响应与 `bearerAuth` 声明 | 无 |
 | api | schemathesis 按 `openapi/openapi.json` 对运行中的服务发请求，检查状态码与响应 schema | testcontainers |
@@ -451,12 +451,12 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `src/app/infrastructure/{logging,metrics,observability}/`、`src/app/__main__.py`、`infrastructure/queue/worker.py` | 合并为 `logging/` + `telemetry/`；`__main__` 去掉 `prepare_multiprocess`，校验 `WEB_CONCURRENCY` 与 `OTEL_METRICS_EXPORTER`；worker 改用 `telemetry`、`identity/account_deletion` |
+| `src/app/infrastructure/{logging,metrics,observability}/`、`src/app/__main__.py`、`infrastructure/queue/worker.py` | 合并为 `logging/` + `telemetry/`；`__main__` 去掉 `prepare_multiprocess`；`WEB_CONCURRENCY` 与 `OTEL_METRICS_EXPORTER` 的组合在 `Settings.cross_check()` 校验，`app worker --workers` 同样受限；worker 改用 `telemetry`、`identity/account_deletion` |
 | `src/app/infrastructure/{throttler,health,queue,scheduler,audit,cache,redis}/` | 按 §9；`redis/` 增加 `key()` 前缀函数 |
 | `src/app/common/client.py` | `TRUSTED_PROXIES` 支持层数与 CIDR 列表 |
 | `src/app/infrastructure/account_cleanup/` | 迁到 `identity/account_deletion/`，增加 `user.deleted` 发布；新增 `infrastructure/events/` |
-| `src/app/modules/files/`（router、service、storage、urls、uploads、purposes、models） | 按约定 §11.5 与 §9「文件」 |
-| `src/app/config/{redis,file,log,metrics,observability,throttler,app}.py` | `REDIS_HOST` / `PORT` / `DB` / `PASSWORD` / `ENABLED` → `REDIS_URL`；`FILE_DRIVER`、`FILE_*_MAX_SIZE`、`ACCESS_KEY_ID`、`SECRET_ACCESS_KEY`、`AWS_*` → `STORAGE_*`、`S3_*`；`LOG_PRETTY_PRINT` → `LOG_FORMAT`；删除 `METRICS_ENABLED`、`METRICS_PATH`、`APP_NAME`（指标标签）；`OTEL_ENABLED` → 标准 `OTEL_*`，新增必填 `OTEL_SERVICE_NAME`；`THROTTLE_*` → `RATE_LIMIT_DEFAULT`；`TRUST_PROXY` → `TRUSTED_PROXIES`；删除 `BACKEND_DOMAIN` |
+| `src/app/modules/files/`（router、service、storage、urls、purposes、models、schemas；删除 uploads、send） | 按约定 §11.5 与 §9「文件」 |
+| `src/app/config/{redis,file,log,metrics,observability,throttler,app}.py` | `REDIS_HOST` / `PORT` / `DB` / `PASSWORD` / `ENABLED` → `REDIS_URL`；`FILE_DRIVER`、`FILE_*_MAX_SIZE`、`ACCESS_KEY_ID`、`SECRET_ACCESS_KEY`、`AWS_*` → `STORAGE_*`、`S3_*`；`LOG_PRETTY_PRINT` → `LOG_FORMAT`；删除 `METRICS_ENABLED`、`METRICS_PATH`、`APP_NAME`（指标标签；邮件中的应用名改取 `OTEL_SERVICE_NAME`）；`OTEL_ENABLED` → 标准 `OTEL_*`，新增必填 `OTEL_SERVICE_NAME`；`THROTTLE_*` → `RATE_LIMIT_DEFAULT`；`TRUST_PROXY` → `TRUSTED_PROXIES`；删除 `BACKEND_DOMAIN` |
 | `pyproject.toml` | 新增 `opentelemetry-exporter-prometheus`、`cloudevents`；删除直接依赖 `prometheus-client`、`psutil`；dev 依赖删 `aiosmtpd`（`test_background_jobs` 的 SMTP 用例改用 Mailpit 容器） |
 | `Dockerfile`、`docker/docker-compose.{base,redis,ecs}.yaml`、`.dockerignore`、`.gitignore` | Dockerfile 去掉 `/tmp/prometheus` 与 `COPY openapi`，`/app/files` 改 `/app/var/files`，加 `ENV OTEL_SEMCONV_STABILITY_OPT_IN=http`；compose 去掉 `PROMETHEUS_MULTIPROC_DIR`、共享 PID 命名空间、`prometheus-multiproc` 卷，`uploaded-files` 卷改挂 `/app/var/files`；`.dockerignore` 去掉 `!openapi/`、`!db/`；`.gitignore` 的 `/files/` 改 `/var/` |
 | `Dockerfile`（HEALTHCHECK）、`docker/docker-compose.base.yaml`（healthcheck）、`deploy/manage.sh`、`.github/workflows/deploy.yml`、`tests/e2e/test_stack.py` | 健康检查路径改为 `/health/live`、`/health/ready` |
@@ -466,6 +466,7 @@ REDIS_URL=redis://redis:6379/0
 | 路径 | 改写要点 |
 |---|---|
 | `src/app/cli/{generate.py,templates/resource/*}` | 模板对齐 `notes` |
+| `src/app/identity/account_deletion/`、`infrastructure/events/` | `user.deleted` 发布可补偿：B6 只在提交后发布一次、失败只记日志；改为在 `account_deletions` 记录发布状态，由清理任务或定时补偿重发 |
 | `.github/workflows/check.yml` | migrations job 改为签发方与验证方两种角色 |
 
 **B8 交付**

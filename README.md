@@ -27,18 +27,18 @@ FastAPI 后端模板。对外行为以 [docs/platform-conventions.md](docs/platf
 
 ```bash
 make install                  # uv sync + 安装 prek 钩子
-cp .env.example .env          # 要单独运行 worker 时把 REDIS_ENABLED 改为 true
+cp .env.example .env          # 要单独运行 worker 时设置 REDIS_URL
 uv run --frozen app keys generate  # 私钥填入 .env 的 AUTH_SIGNING_KEY
 make infra                    # Postgres 18 :5432、Redis 8 :6379、Mailpit（SMTP :1025，UI :8025）
 make migrate                  # alembic upgrade heads
 make seed                     # 管理员账号
 make dev                      # 热重载，http://localhost:3000
-uv run --frozen app worker    # 队列 worker（需 REDIS_ENABLED=true）
+uv run --frozen app worker    # 队列 worker（需 REDIS_URL）
 uv run --frozen app scheduler # 定时任务调度
 ```
 
 - 生产方式启动 API：`make serve`（`python -m app`，Granian，进程数取 `WEB_CONCURRENCY`）
-- `REDIS_ENABLED=false` 时任务在 API 进程内执行，无需 worker；生产强制 `REDIS_ENABLED=true`
+- 未设置 `REDIS_URL` 时任务在 API 进程内执行，无需 worker；生产必须设置 `REDIS_URL`
 - 非生产环境 seed 账号：`admin@example.com` / `Secret00`
 
 ## Make 目标

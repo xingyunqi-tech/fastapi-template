@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     MALLOC_MMAP_THRESHOLD_=131072 \
+    OTEL_SEMCONV_STABILITY_OPT_IN=http \
     PATH="/app/.venv/bin:${PATH}"
 WORKDIR /app
 
@@ -41,15 +42,14 @@ RUN apt-get update \
     && rm -f /usr/local/bin/pip* \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /app/files /tmp/prometheus \
-    && chown app:app /app/files /tmp/prometheus
+    && mkdir -p /app/var/files \
+    && chown -R app:app /app/var
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
 COPY alembic.ini ./
 COPY migrations ./migrations
-COPY openapi ./openapi
 USER 10001:10001
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 --start-interval=2s \
-    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('APP_PORT') or '3000'}/{os.environ.get('API_PREFIX', 'api')}/v1/health/live\", timeout=5)"]
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('APP_PORT') or '3000'}/health/live\", timeout=5)"]
 CMD ["python", "-m", "app"]

@@ -19,7 +19,7 @@ from tests.integration.conftest import ROOT, PgServer, _execute
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-PLATFORM_TABLES = {"file", "audit_logs"}
+PLATFORM_TABLES = {"files", "audit_logs"}
 
 type Alembic = Callable[..., Awaitable[None]]
 
@@ -101,6 +101,17 @@ async def test_all_branches_match_models(
         await engine.dispose()
 
 
+def _file(name: str) -> FileModel:
+    return FileModel(
+        owner_id="u",
+        purpose="avatar",
+        storage_key=name,
+        name=name,
+        content_type="image/png",
+        size=1,
+    )
+
+
 async def test_two_schemas_coexist_in_one_database(
     alembic: Alembic, pg_server: PgServer, empty_db: str
 ) -> None:
@@ -110,16 +121,16 @@ async def test_two_schemas_coexist_in_one_database(
     second = Database.from_settings(pg_server.settings(empty_db, db_schema="svc_b"))
     try:
         async with first.transaction() as session:
-            created = FileModel(path="a.png")
+            created = _file("a.png")
             session.add(created)
         assert created.id.version == 7
         async with second.transaction() as session:
-            session.add(FileModel(path="b.png"))
+            session.add(_file("b.png"))
 
         async with first.transaction() as session:
-            assert list(await session.scalars(select(FileModel.path))) == ["a.png"]
+            assert list(await session.scalars(select(FileModel.name))) == ["a.png"]
         async with second.transaction() as session:
-            assert list(await session.scalars(select(FileModel.path))) == ["b.png"]
+            assert list(await session.scalars(select(FileModel.name))) == ["b.png"]
         assert first.engine is not None
         assert second.engine is not None
         assert "users" in await _tables(first.engine, "svc_a")
@@ -146,7 +157,10 @@ async def test_primary_keys_are_uuid_v7_and_timestamps_have_time_zone(
     try:
         async with engine.begin() as connection:
             server_id = await connection.scalar(
-                text("INSERT INTO file (path) VALUES ('x') RETURNING id")
+                text(
+                    "INSERT INTO files (owner_id, purpose, storage_key, name, content_type, size) "
+                    "VALUES ('u', 'avatar', 'k', 'x', 'image/png', 1) RETURNING id"
+                )
             )
             types = set(
                 await connection.scalars(

@@ -19,9 +19,8 @@ from app.identity.providers.sms import (
     digest_key,
 )
 from app.identity.providers.sms.aliyun import aliyun_phone, sign_request
-from app.identity.providers.sms.masking import mask_phone
 from app.identity.providers.sms.store import MemorySmsStore
-from app.infrastructure.observability import strip_breadcrumb_query, strip_span_query
+from app.infrastructure.telemetry import strip_breadcrumb_query, strip_span_query
 from tests import keys
 
 PHONE = "+8613800138000"
@@ -57,13 +56,6 @@ def test_aliyun_signature_matches_sdk() -> None:
 )
 def test_aliyun_phone_format(phone: str, expected: str) -> None:
     assert aliyun_phone(phone) == expected
-
-
-@pytest.mark.parametrize(
-    ("phone", "masked"), [("13800138000", "138****8000"), ("123", "***"), ("", "[invalid]")]
-)
-def test_mask_phone(phone: str, masked: str) -> None:
-    assert mask_phone(phone) == masked
 
 
 class TestAlipay:
@@ -138,7 +130,7 @@ def store() -> MemorySmsStore:
 
 @pytest.fixture
 def codes(store: MemorySmsStore, sender: RecordingSender) -> SmsCodes:
-    return SmsCodes(store, sender, b"k" * 32)
+    return SmsCodes(store, sender, b"k" * 32, "api")
 
 
 async def error_key(awaitable: Any) -> tuple[str, dict[str, str]]:
@@ -175,7 +167,7 @@ class TestSmsCodes:
     async def test_daily_limit(self, codes: SmsCodes, store: MemorySmsStore) -> None:
         for _ in range(DAILY_LIMIT):
             await codes.send(PHONE, SmsScene.LOGIN)
-            await store.delete(f"sms:cooldown:{PHONE}")
+            await store.delete(f"api:sms:cooldown:{{{PHONE}}}")
         key, headers = await error_key(codes.send(PHONE, SmsScene.LOGIN))
         assert key == "auth.sendTooFrequent"
         assert int(headers["Retry-After"]) > 0
@@ -186,8 +178,8 @@ class TestSmsCodes:
         sender.fail = True
         key, _ = await error_key(codes.send(PHONE, SmsScene.LOGIN))
         assert key == "common.badGateway"
-        assert await store.ttl_ms(f"sms:cooldown:{PHONE}") is None
-        daily = f"sms:daily:{datetime.now(UTC):%Y%m%d}:{PHONE}"
+        assert await store.ttl_ms(f"api:sms:cooldown:{{{PHONE}}}") is None
+        daily = f"api:sms:daily:{datetime.now(UTC):%Y%m%d}:{{{PHONE}}}"
         assert await store.increment(daily, 60_000) == 1
 
     async def test_code_is_invalidated_after_max_attempts(
@@ -200,7 +192,7 @@ class TestSmsCodes:
             await error_key(codes.verify(PHONE, SmsScene.LOGIN, wrong))
         await codes.verify(PHONE, SmsScene.LOGIN, code)
 
-        await codes.store.delete(f"sms:cooldown:{PHONE}")
+        await codes.store.delete(f"api:sms:cooldown:{{{PHONE}}}")
         await codes.send(PHONE, SmsScene.LOGIN)
         code = sender.codes[-1]
         wrong = "000000" if code != "000000" else "111111"
@@ -227,11 +219,11 @@ async def test_log_sender_hides_code_in_production(caplog: pytest.LogCaptureFixt
 
 
 def test_code_digest_is_keyed_and_bound_to_phone_and_scene() -> None:
-    codes = SmsCodes(MemorySmsStore(), RecordingSender(), digest_key(keys.SIGNING_KEY))
-    other = SmsCodes(MemorySmsStore(), RecordingSender(), digest_key(keys.OTHER_SIGNING_KEY))
+    codes = SmsCodes(MemorySmsStore(), RecordingSender(), digest_key(keys.SIGNING_KEY), "api")
+    other = SmsCodes(MemorySmsStore(), RecordingSender(), digest_key(keys.OTHER_SIGNING_KEY), "api")
     digest = codes._digest(PHONE, SmsScene.LOGIN, "123456")
     assert digest == SmsCodes(
-        MemorySmsStore(), RecordingSender(), digest_key(keys.SIGNING_KEY)
+        MemorySmsStore(), RecordingSender(), digest_key(keys.SIGNING_KEY), "api"
     )._digest(PHONE, SmsScene.LOGIN, "123456")
     assert digest != other._digest(PHONE, SmsScene.LOGIN, "123456")
     assert digest != codes._digest(PHONE, SmsScene.BIND_PHONE, "123456")

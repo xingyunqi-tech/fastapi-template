@@ -47,6 +47,10 @@ def _invalid(field: str, error_type: str, message: str, **ctx: Any) -> RequestVa
     )
 
 
+def invalid_cursor() -> RequestValidationError:
+    return _invalid("cursor", "format", "invalid cursor")
+
+
 def encode_cursor(sort_key: Any, row_id: Any) -> str:
     raw = json.dumps([sort_key, row_id], default=str, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()

@@ -17,7 +17,7 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 
 ## 环境隔离
 
-- 会话开始与每个用例前清除全部配置相关环境变量，写入固定的测试密钥（`THROTTLE_ENABLED=false`），并 `chdir` 到临时目录，工作目录下的 `.env` 不生效
+- 会话开始与每个用例前清除全部配置相关环境变量，写入固定的测试密钥（`RATE_LIMIT_DEFAULT` 放宽到不触发），并 `chdir` 到临时目录，工作目录下的 `.env` 不生效
 - 需要生产配置的用例使用 `tests.conftest.use_production`
 
 ## 集成测试
@@ -43,7 +43,7 @@ uv run --frozen pytest -m committed
 
 `make test-e2e` 以 base + postgres + redis + ci 组合（项目名 `E2E_PROJECT`，默认 `fastapi-e2e`）`up --build --wait` 起完整服务栈，宿主端口随机分配，结束后 `down --volumes`；启动或用例失败时输出最近 200 行日志。`E2E_KEEP_STACK=1` 保留服务栈；设置 `CI` 时失败的服务栈不 down，由 workflow 收集容器日志。
 
-覆盖：`/health/ready`、邮箱注册全流程（Mailpit 收信）、公开 / 私有文件往返、限流头与 429、`/metrics` 同时包含 api 与 worker 的样本、`/openapi.json` 可访问。
+覆盖：`/health/ready`、邮箱注册全流程（Mailpit 收信）、文件上传与签名地址下载、限流头与 429、`/metrics` 的 HTTP 指标按稳定语义约定、`/openapi.json` 可访问。
 
 ## 编写约定
 

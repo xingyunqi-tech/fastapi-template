@@ -14,7 +14,7 @@ from app.common.errors import AppError
 from app.identity.sessions.repository import SessionRepository
 from app.identity.users.repository import UserRepository
 from app.infrastructure.database.errors import find_unique_violation
-from app.infrastructure.database.session import Database, after_commit
+from app.infrastructure.database.session import Database, after_commit, after_rollback
 from tests.integration.conftest import (
     PgServer,
     _build_app,
@@ -160,3 +160,27 @@ async def test_authenticated_request_needs_one_connection(
         assert response.status_code == 200
     finally:
         await database.dispose()
+
+
+class TestAfterRollback:
+    async def test_runs_only_when_transaction_rolls_back(self, connection: AsyncConnection) -> None:
+        calls: list[str] = []
+        database = Database.bound_to(connection)
+
+        async def record() -> None:
+            calls.append("rolled back")
+
+        async def run(error: BaseException | None) -> None:
+            async with database.transaction() as session:
+                after_rollback(session, record)
+                if error is not None:
+                    raise error
+
+        await run(None)
+        with pytest.raises(AppError):
+            await run(AppError("common.notFound"))
+        assert calls == []
+
+        with pytest.raises(RuntimeError):
+            await run(RuntimeError("boom"))
+        assert calls == ["rolled back"]

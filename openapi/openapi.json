@@ -1792,26 +1792,63 @@
         ]
       }
     },
-    "/api/v1/files/upload": {
+    "/api/v1/files": {
       "post": {
         "tags": [
           "Files"
         ],
         "summary": "上传文件",
         "operationId": "uploadFile",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "avatar",
+                      "attachment"
+                    ]
+                  }
+                },
+                "type": "object",
+                "required": [
+                  "file",
+                  "purpose"
+                ]
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UploadedFileResponse"
+                  "$ref": "#/components/schemas/FileResponse"
                 }
               }
             }
           },
           "401": {
             "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
             "content": {
               "application/json": {
                 "schema": {
@@ -1855,42 +1892,253 @@
           {
             "bearerAuth": []
           }
+        ]
+      }
+    },
+    "/api/v1/files/{id}": {
+      "get": {
+        "tags": [
+          "Files"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "file": {
-                    "type": "string",
-                    "format": "binary"
-                  }
-                },
-                "required": [
-                  "file"
-                ]
+        "summary": "文件信息",
+        "operationId": "getFile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/{id}/content": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "文件内容（签名地址）",
+        "description": "`File.url` 指向本服务时使用；签名无效或过期 404。",
+        "operationId": "getFileContent",
         "parameters": [
           {
-            "name": "purpose",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Id"
+            }
+          },
+          {
+            "name": "expires",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "image",
-                "private-image",
-                "content-image",
-                "audio",
-                "import",
-                "export"
-              ]
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires"
             }
+          },
+          {
+            "name": "signature",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Signature"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit-logs": {
+      "get": {
+        "tags": [
+          "Audit"
+        ],
+        "summary": "审计日志",
+        "operationId": "listAuditLogs",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLogCursorPageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "无权限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
           }
         ]
       }
@@ -1898,6 +2146,154 @@
   },
   "components": {
     "schemas": {
+      "AuditLog": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "actorId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actorid"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "resourceType": {
+            "type": "string",
+            "title": "Resourcetype"
+          },
+          "resourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resourceid"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
+          },
+          "ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip"
+          },
+          "userAgent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Useragent"
+          },
+          "changes": {
+            "title": "Changes"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "actorId",
+          "action",
+          "resourceType",
+          "resourceId",
+          "requestId",
+          "ip",
+          "userAgent",
+          "changes",
+          "createdAt"
+        ],
+        "title": "AuditLog"
+      },
+      "AuditLogCursorPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLog"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextcursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "title": "AuditLogCursorPage"
+      },
+      "AuditLogCursorPageResponse": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "const": 0,
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "const": "ok",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuditLogCursorPage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "AuditLogCursorPageResponse"
+      },
       "AuthProvider": {
         "properties": {
           "id": {
@@ -2127,53 +2523,76 @@
         ],
         "title": "FieldErrorItem"
       },
-      "FileInfo": {
+      "File": {
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid",
             "title": "Id"
           },
-          "path": {
+          "name": {
             "type": "string",
-            "title": "Path"
-          },
-          "visibility": {
-            "type": "string",
-            "title": "Visibility"
-          },
-          "mimeType": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mimetype"
+            "title": "Name"
           },
           "size": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
             "title": "Size"
+          },
+          "contentType": {
+            "type": "string",
+            "title": "Contenttype"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
           }
         },
         "type": "object",
         "required": [
           "id",
-          "path",
-          "visibility",
-          "mimeType",
-          "size"
+          "name",
+          "size",
+          "contentType",
+          "purpose",
+          "url",
+          "createdAt"
         ],
-        "title": "FileInfo"
+        "title": "File",
+        "description": "约定 §11.4。"
+      },
+      "FileResponse": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "const": 0,
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "const": "ok",
+            "title": "Message",
+            "default": "ok"
+          },
+          "data": {
+            "$ref": "#/components/schemas/File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "FileResponse"
       },
       "ForgotPasswordRequest": {
         "properties": {
@@ -2373,6 +2792,14 @@
           "data"
         ],
         "title": "PermissionInfoListResponse"
+      },
+      "Purpose": {
+        "type": "string",
+        "enum": [
+          "avatar",
+          "attachment"
+        ],
+        "title": "Purpose"
       },
       "RefreshTokenRequest": {
         "properties": {
@@ -2670,44 +3097,6 @@
         },
         "type": "object",
         "title": "UpdateUserRequest"
-      },
-      "UploadedFile": {
-        "properties": {
-          "file": {
-            "$ref": "#/components/schemas/FileInfo"
-          }
-        },
-        "type": "object",
-        "required": [
-          "file"
-        ],
-        "title": "UploadedFile"
-      },
-      "UploadedFileResponse": {
-        "properties": {
-          "code": {
-            "type": "integer",
-            "const": 0,
-            "title": "Code",
-            "default": 0
-          },
-          "message": {
-            "type": "string",
-            "const": "ok",
-            "title": "Message",
-            "default": "ok"
-          },
-          "data": {
-            "$ref": "#/components/schemas/UploadedFile"
-          }
-        },
-        "type": "object",
-        "required": [
-          "code",
-          "message",
-          "data"
-        ],
-        "title": "UploadedFileResponse"
       },
       "User": {
         "properties": {

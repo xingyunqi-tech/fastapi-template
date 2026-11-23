@@ -5,15 +5,9 @@ import logging
 from typing import Annotated, Any, Final
 
 from app.common.i18n import current_language, get_i18n
-from app.infrastructure.mail import MailComposer, MailMessage, SmtpTransport, mask_email
-from app.infrastructure.queue import (
-    APP_CONTEXT,
-    DEFAULT_RETRY,
-    MAIL_QUEUE,
-    run_job,
-    stream_name,
-    tasks,
-)
+from app.common.masking import mask_email
+from app.infrastructure.mail import MailComposer, MailMessage, SmtpTransport
+from app.infrastructure.queue import APP_CONTEXT, DEFAULT_RETRY, run_job, tasks
 lazy from app.common.context import AppContext
 lazy from app.config import Settings
 lazy from app.infrastructure.queue import TaskQueue
@@ -21,23 +15,26 @@ lazy from app.infrastructure.queue import TaskQueue
 logger = logging.getLogger("app.queue.mail")
 
 SEND_MAIL_TASK: Final = "mail:send-mail"
+MAIL_JOB: Final = "mail"
 ENQUEUE_TIMEOUT_S: Final = 2.0
 
 
 async def deliver_mail(job: dict[str, Any], settings: Settings) -> None:
     """渲染模板并经 SMTP 发送，失败按 DEFAULT_RETRY 重试。"""
     message = MailMessage(job["template"], job["to"], job.get("data") or {})
-    composer = MailComposer(settings.app, get_i18n(settings.app.default_locale))
+    composer = MailComposer(
+        settings.app, get_i18n(settings.app.default_locale), settings.telemetry.service_name
+    )
     transport = SmtpTransport(settings.mail)
 
     async def deliver() -> None:
         await transport.send(composer.compose(message, job.get("lang")))
 
     logger.info("Processing mail %s to %s", message.template, mask_email(message.to))
-    await run_job(MAIL_QUEUE, DEFAULT_RETRY, deliver)
+    await run_job(MAIL_JOB, DEFAULT_RETRY, deliver)
 
 
-@tasks.task(task_name=SEND_MAIL_TASK, queue_name=stream_name(MAIL_QUEUE))
+@tasks.task(task_name=SEND_MAIL_TASK)
 async def send_mail(job: dict[str, Any], context: Annotated[AppContext, APP_CONTEXT]) -> None:
     await deliver_mail(job, context.settings)
 

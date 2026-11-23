@@ -1,3 +1,4 @@
+import ipaddress
 from enum import StrEnum
 from typing import Annotated, Any, Self
 
@@ -21,10 +22,33 @@ def _split_origins(value: Any) -> Any:
 
 Origins = Annotated[list[str], NoDecode, BeforeValidator(_split_origins)]
 
+type Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _parse_proxies(value: Any) -> Any:
+    """层数（`2`）或逗号分隔的 CIDR 列表（`10.0.0.0/8,fd00::/8`）。"""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        return int(text)
+    try:
+        return tuple(
+            ipaddress.ip_network(part.strip(), strict=False)
+            for part in text.split(",")
+            if part.strip()
+        )
+    except ValueError:
+        raise ValueError("must be a hop count or a comma separated list of CIDR") from None
+
+
+TrustedProxies = Annotated[int | tuple[Network, ...], NoDecode, BeforeValidator(_parse_proxies)]
+
 
 class AppSettings(SettingsGroup):
     env: Environment = Field(default=Environment.DEVELOPMENT, validation_alias="APP_ENV")
-    name: str = Field(default="app", validation_alias="APP_NAME")
     port: int = Field(
         default=3000, ge=0, le=65535, validation_alias=AliasChoices("APP_PORT", "PORT")
     )
@@ -33,8 +57,7 @@ class AppSettings(SettingsGroup):
     )
     frontend_url: str | None = Field(default=None, validation_alias="APP_FRONTEND_URL")
     cors_origins: Origins = Field(default_factory=list, validation_alias="CORS_ORIGINS")
-    backend_domain: str = Field(default="http://localhost", validation_alias="BACKEND_DOMAIN")
-    trust_proxy: int = Field(default=0, ge=0, validation_alias="TRUST_PROXY")
+    trusted_proxies: TrustedProxies = Field(default=0, validation_alias="TRUSTED_PROXIES")
     docs_enabled: EnvFlag | None = Field(default=None, validation_alias="DOCS_ENABLED")
     body_limit: ByteSize = Field(default=ByteSize(1024 * 1024), validation_alias="BODY_LIMIT")
     web_concurrency: int = Field(default=1, ge=1, validation_alias="WEB_CONCURRENCY")

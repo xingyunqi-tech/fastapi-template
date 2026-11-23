@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 import aiosmtplib
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
+from app.common.masking import mask_email
 from app.config import MailTls
 lazy from app.common.i18n import I18n
 lazy from app.config import AppSettings, MailSettings
@@ -34,14 +35,6 @@ class MailMessage:
 
 class Mailer(Protocol):
     async def send(self, message: MailMessage) -> None: ...
-
-
-def mask_email(address: str) -> str:
-    """约定 §8：`a***@example.com`。"""
-    local, at, domain = address.partition("@")
-    if not at:
-        return "***"
-    return f"{local[:1]}***@{domain}"
 
 
 class LoggingMailer:
@@ -74,11 +67,12 @@ TEMPLATES: Final = {
 
 
 class MailComposer:
-    """按语言取主题与正文，链接为 `APP_FRONTEND_URL` + 路径 + `?token=`。"""
+    """链接为 `APP_FRONTEND_URL` + 路径 + `?token=`；`{app}` 为 `OTEL_SERVICE_NAME`。"""
 
-    def __init__(self, app: AppSettings, i18n: I18n) -> None:
+    def __init__(self, app: AppSettings, i18n: I18n, app_name: str) -> None:
         self.app = app
         self.i18n = i18n
+        self.app_name = app_name
         self.environment = Environment(
             loader=FileSystemLoader(TEMPLATES_DIR),
             autoescape=select_autoescape(["html"]),
@@ -87,7 +81,7 @@ class MailComposer:
 
     def _text(self, key: str, lang: str) -> str:
         text = self.i18n.translate(f"mail.{key}", lang) or key
-        return text.replace("{app}", self.app.name)
+        return text.replace("{app}", self.app_name)
 
     def link(self, template: str, token: str) -> str:
         if not self.app.frontend_url:
@@ -106,7 +100,7 @@ class MailComposer:
         }
         url = self.link(message.template, str(message.data["token"]))
         html = self.environment.get_template(f"{message.template}.html").render(
-            lang=language, app_name=self.app.name, url=url, **texts
+            lang=language, app_name=self.app_name, url=url, **texts
         )
         text = f"{texts['body']}\n\n{url}\n\n{texts['expires']}\n"
         return OutgoingMail(to=message.to, subject=texts["subject"], text=text, html=html)

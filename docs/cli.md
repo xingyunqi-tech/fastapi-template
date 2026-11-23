@@ -10,7 +10,7 @@ uv run --frozen app --help
 |---|---|---|
 | `app migrate` | 在 `DATABASE_SCHEMA` 中执行 `alembic upgrade heads` | `make migrate` |
 | `app seed` | 无 active admin 时创建管理员，见 [auth.md](auth.md#种子数据) | `make seed` |
-| `app worker [--workers N]` | 启动 Taskiq worker（默认 1 个进程）；`REDIS_ENABLED=false` 或 Redis 不可达时退出码 1 | – |
+| `app worker [--workers N]` | 启动 Taskiq worker（默认 1 个进程）；未设置 `REDIS_URL` 时提示无需 worker；Redis 不可达，或 `OTEL_METRICS_EXPORTER=prometheus` 时 `--workers` 大于 1，退出码 1 | – |
 | `app scheduler` | 启动 Taskiq scheduler，按 cron 投递定时任务 | – |
 | `app keys generate` | 输出新的 Ed25519 私钥与公钥（PEM），不读取配置 | – |
 | `app users cleanup <id>` | 重新执行该用户的注销数据清理 | – |
@@ -26,7 +26,7 @@ uv run --frozen app --help
 | worker | Redis Stream `taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler` |
 | scheduler | `scheduler:cleanup-old-sessions`（`0 3 * * *` UTC）、`scheduler:account-cleanup-compensation`（`25 * * * *` Asia/Shanghai） |
 
-多实例运行 scheduler 时，任务执行由 `lock:scheduler:<name>` 互斥。worker 需与 API 共用 `PROMETHEUS_MULTIPROC_DIR`，其指标才会出现在 API 的 `/metrics`。
+多实例运行 scheduler 时，任务执行由 `{OTEL_SERVICE_NAME}:lock:cron:<name>` 互斥。worker 的指标由其自身的 `OTEL_EXPORTER_PROMETHEUS_PORT` 输出。
 
 ## 代码生成器
 
@@ -64,6 +64,5 @@ uv run --frozen app generate resource product-category --plural product-categori
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/gen_nest_handlers.py` | 生成 operationId → nestjs `Controller-handler` 映射（限流键） |
 | `scripts/check_commit_msg.py` | commit-msg 钩子 |
 | `scripts/audit_severity.py` | 过滤 pip-audit 结果（`make security`） |

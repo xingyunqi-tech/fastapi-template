@@ -250,7 +250,7 @@ jobs:
               compose+=(--env-file .env.image)
             fi
             compose+=(-f docker/docker-compose.ecs.yaml)
-            HEALTH_PROBE='import os, urllib.request as r; t = os.environ.get("METRICS_TOKEN"); r.urlopen(r.Request("http://localhost:" + os.environ.get("APP_PORT", "3000") + "/" + os.environ.get("API_PREFIX", "api") + "/v1/health/ready", headers={"Authorization": "Bearer " + t} if t else {}), timeout=5)'
+            HEALTH_PROBE='import os, urllib.request as r; r.urlopen("http://localhost:" + os.environ.get("APP_PORT", "3000") + "/health/ready", timeout=5)'
 
             echo "Running migrations..."
             "${compose[@]}" run --rm migrate

@@ -1,4 +1,4 @@
-"""定时任务：scheduler 进程按 cron 投递，执行时持有 `lock:scheduler:<name>` 防止多实例并发执行。"""
+"""定时任务：scheduler 进程按 cron 投递，执行时持有 `{service}:lock:cron:<name>`。"""
 
 import logging
 from dataclasses import dataclass
@@ -9,16 +9,16 @@ lazy from collections.abc import Awaitable, Callable
 from sqlalchemy import text
 from taskiq import ScheduledTask, ScheduleSource, TaskiqScheduler
 
-from app.infrastructure.account_cleanup import AccountCleanupProducer, AccountCleanupRepository
+from app.identity.account_deletion.cleanup import AccountCleanupProducer, AccountCleanupRepository
 from app.infrastructure.database.session import affected_rows
-from app.infrastructure.queue import APP_CONTEXT, SCHEDULER_QUEUE, stream_name, tasks
+from app.infrastructure.queue import APP_CONTEXT, tasks
 lazy from app.common.context import AppContext
 lazy from app.infrastructure.queue import TaskQueue
 lazy from app.infrastructure.redis import LockService
 
 logger = logging.getLogger("app.scheduler")
 
-LOCK_PREFIX: Final = "scheduler:"
+LOCK_PREFIX: Final = "cron:"
 DEFAULT_LOCK_TTL_MS: Final = 10 * 60 * 1000
 ACCOUNT_CLEANUP_GRACE: Final = timedelta(minutes=30)
 ACCOUNT_CLEANUP_BATCH_SIZE: Final = 200
@@ -90,10 +90,7 @@ def _schedule(cron: str, cron_offset: str) -> dict[str, Any]:
     return {"schedule": [{"cron": cron, "cron_offset": cron_offset}]}
 
 
-_QUEUE: Final = {"queue_name": stream_name(SCHEDULER_QUEUE)}
-
-
-@tasks.task(task_name="scheduler:cleanup-old-sessions", **_QUEUE, **_schedule("0 3 * * *", "UTC"))
+@tasks.task(task_name="scheduler:cleanup-old-sessions", **_schedule("0 3 * * *", "UTC"))
 async def cleanup_old_sessions_task(context: Annotated[AppContext, APP_CONTEXT]) -> None:
     await _run_task(
         context,
@@ -105,7 +102,6 @@ async def cleanup_old_sessions_task(context: Annotated[AppContext, APP_CONTEXT])
 
 @tasks.task(
     task_name="scheduler:account-cleanup-compensation",
-    **_QUEUE,
     **_schedule("25 * * * *", "Asia/Shanghai"),
 )
 async def account_cleanup_compensation_task(

@@ -10,18 +10,17 @@ from uuid import UUID
 lazy from collections.abc import AsyncIterator
 
 import pytest
-from redis.asyncio import Redis
 
 from app.common.i18n import get_i18n
 from app.config import AppSettings, MailSettings, RedisSettings, Settings
-from app.infrastructure import queue as queue_module
-from app.infrastructure.account_cleanup import (
+from app.identity.account_deletion.cleanup import (
     AccountCleanupError,
     AccountCleanupRunner,
     register_account_cleaner,
     registered_cleaners,
 )
-from app.infrastructure.audit import Auditable, AuditAction, _param_id, _response_id, sanitize
+from app.infrastructure import queue as queue_module
+from app.infrastructure.audit import Audit, resource_id_of, sanitize
 from app.infrastructure.mail import (
     MailComposer,
     MailMessage,
@@ -48,7 +47,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 class TestLock:
     async def test_local_lock_is_exclusive_until_released(self) -> None:
-        locks = LockService(None)
+        locks = LockService(None, "api")
         token = await locks.try_acquire("job", 60_000)
         assert token is not None
         assert await locks.try_acquire("job", 60_000) is None
@@ -58,18 +57,18 @@ class TestLock:
         assert await locks.try_acquire("job", 60_000) is not None
 
     async def test_local_lock_expires_after_ttl(self) -> None:
-        locks = LockService(None)
+        locks = LockService(None, "api")
         assert await locks.try_acquire("job", 5) is not None
         await asyncio.sleep(0.02)
         assert await locks.try_acquire("job", 5) is not None
 
     async def test_run_exclusive_skips_when_held_and_releases_after_failure(self) -> None:
-        locks = LockService(None)
-        held = await locks.try_acquire("scheduler:stats", 60_000)
+        locks = LockService(None, "api")
+        held = await locks.try_acquire("cron:stats", 60_000)
         assert held is not None
         skipped = await run_exclusive(locks, "stats", 60_000, _answer)
         assert (skipped.executed, skipped.result) == (False, None)
-        await locks.release("scheduler:stats", held)
+        await locks.release("cron:stats", held)
 
         async def boom() -> int:
             raise RuntimeError("boom")
@@ -150,9 +149,7 @@ class TestRetry:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        monkeypatch.setenv("REDIS_ENABLED", "true")
-        monkeypatch.setenv("REDIS_HOST", "127.0.0.1")
-        monkeypatch.setenv("REDIS_PORT", str(port))
+        monkeypatch.setenv("REDIS_URL", f"redis://127.0.0.1:{port}/0")
         queue = TaskQueue.from_settings(Settings.load())
         assert queue.distributed is True
         with caplog.at_level(logging.ERROR, logger="app.queue"):
@@ -160,37 +157,31 @@ class TestRetry:
         assert "Redis is unavailable" in caplog.text
         await queue.shutdown()
 
-    def test_redis_stream_is_not_trimmed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REDIS_ENABLED", "true")
+    def test_redis_stream_is_prefixed_and_not_trimmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         queue = TaskQueue.from_settings(Settings.load())
         assert getattr(queue.broker, "maxlen", "missing") is None
+        assert getattr(queue.broker, "queue_name", None) == "api:tasks"
+        assert getattr(queue.broker, "consumer_group_name", None) == "api"
 
 
 class TestRedisSettings:
-    def test_url_escapes_password(self) -> None:
-        password = "p@ss/w:rd#1 %"
-        settings = RedisSettings.model_validate(
-            {"REDIS_HOST": "cache", "REDIS_PORT": "6380", "REDIS_PASSWORD": password, "REDIS_DB": 2}
-        )
-        url = settings.url()
-        assert url == "redis://:p%40ss%2Fw%3Ard%231%20%25@cache:6380/2"
-        kwargs = Redis.from_url(url).connection_pool.connection_kwargs
-        assert (kwargs["password"], kwargs["host"], kwargs["port"], kwargs["db"]) == (
-            password,
-            "cache",
-            6380,
-            2,
-        )
+    def test_url_is_taken_verbatim(self) -> None:
+        url = "redis://:p%40ss@cache:6380/2"
+        settings = RedisSettings.model_validate({"REDIS_URL": url})
+        assert (settings.enabled, settings.url()) == (True, url)
 
-    def test_url_without_password(self) -> None:
-        assert RedisSettings.model_validate({}).url() == "redis://localhost:6379/0"
+    def test_unset_url_disables_redis(self) -> None:
+        assert RedisSettings.model_validate({}).enabled is False
 
 
 class TestMailComposer:
     @staticmethod
     def composer() -> MailComposer:
-        app = AppSettings.model_validate({"APP_NAME": "Demo", "APP_FRONTEND_URL": "http://x/"})
-        return MailComposer(app, get_i18n("en"))
+        app = AppSettings.model_validate({"APP_FRONTEND_URL": "http://x/"})
+        return MailComposer(app, get_i18n("en"), "Demo")
 
     @pytest.mark.parametrize(
         ("template", "lang", "subject", "path"),
@@ -251,20 +242,17 @@ class TestAudit:
             "name": "x",
             "password": "p",
             "accessToken": "t",
-            "hash": "h",
-            "hashed": "kept",
+            "code": "123456",
             "nested": {"apiKey": "k", "items": [{"clientSecret": "s", "n": 1}]},
         }
         assert sanitize(value) == {
             "name": "x",
             "password": "[REDACTED]",
             "accessToken": "[REDACTED]",
-            "hash": "[REDACTED]",
-            "hashed": "kept",
+            "code": "[REDACTED]",
             "nested": {"apiKey": "[REDACTED]", "items": [{"clientSecret": "[REDACTED]", "n": 1}]},
         }
         assert sanitize(None) is None
-        assert sanitize({}) == {}
 
     def test_sanitize_truncates_deep_values(self) -> None:
         value: dict[str, Any] = {}
@@ -273,17 +261,16 @@ class TestAudit:
             node["child"] = {}
             node = node["child"]
         result = sanitize(value)
-        for _ in range(11):
+        for _ in range(10):
             result = result["child"]
-        assert result == {"__truncated": True}
+        assert result == {"child": "[REDACTED]"}
 
-    def test_entity_id_sources(self) -> None:
-        assert _param_id({"id": "7"}, "id") == "7"
-        assert _param_id({"id": "7", "date": "2026-01-01"}, ("id", "date")) == "7:2026-01-01"
-        assert _param_id({"id": ""}, "id") is None
-        assert _response_id({"code": 0, "message": "ok", "data": {"id": 9}}) == "9"
-        assert _response_id({"id": True}) is None
-        assert Auditable(AuditAction.UPDATE, "User").entity_id_from == "param"
+    def test_resource_id_prefers_path_parameter(self) -> None:
+        assert resource_id_of({"id": "7"}, "id", {"id": 9}) == "7"
+        assert resource_id_of({}, "id", {"id": 9}) == "9"
+        assert resource_id_of({}, "id", {"id": True}) is None
+        assert resource_id_of({}, "id", None) is None
+        assert Audit("user.update", resource="user").include_body is True
 
 
 USER_ID = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
@@ -335,7 +322,7 @@ class TestAccountCleanupRunner:
 
     async def test_report_failure_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
         runner = AccountCleanupRunner(None, [])  # type: ignore[arg-type]
-        with caplog.at_level(logging.ERROR, logger="app.account_cleanup"):
+        with caplog.at_level(logging.ERROR, logger="app.account_deletion"):
             await runner.report_failure(
                 USER_ID, AccountCleanupError(USER_ID, ["files"], [RuntimeError("s3")])
             )
@@ -344,7 +331,7 @@ class TestAccountCleanupRunner:
         assert record.getMessage() == f"Account cleanup for user {USER_ID} failed: files (s3)"
 
     def test_registered_cleaners_run_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.infrastructure import account_cleanup
+        from app.identity.account_deletion import cleanup as account_cleanup
 
         monkeypatch.setattr(account_cleanup, "_CLEANERS", [])
         calls: list[str] = []

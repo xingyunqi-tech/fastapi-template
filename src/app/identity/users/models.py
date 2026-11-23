@@ -42,7 +42,7 @@ class UserModel(Base):
     password_hash: Mapped[str | None] = mapped_column(String)
     display_name: Mapped[str | None] = mapped_column(String(64))
     avatar_file_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("file.id", ondelete="SET NULL")
+        Uuid, ForeignKey("files.id", ondelete="SET NULL")
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'active'"))
     last_login_at: Mapped[datetime | None] = timestamp(nullable=True)

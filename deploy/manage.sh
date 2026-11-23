@@ -13,7 +13,7 @@ NC='\033[0m'
 
 CONTAINER_NAME="fastapi-api"
 COMPOSE_FILE="docker/docker-compose.ecs.yaml"
-HEALTH_PROBE='import os, urllib.request; urllib.request.urlopen("http://localhost:3000/" + os.environ.get("API_PREFIX", "api") + "/v1/health/ready", timeout=5)'
+HEALTH_PROBE='import urllib.request; urllib.request.urlopen("http://localhost:3000/health/ready", timeout=5)'
 HEALTH_TIMEOUT=30
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
@@ -208,7 +208,7 @@ ${GREEN}Examples:${NC}
 ${GREEN}Configuration:${NC}
   Container:    $CONTAINER_NAME
   Compose file: $COMPOSE_FILE
-  Health probe: in-container GET http://localhost:3000/\${API_PREFIX:-api}/v1/health/ready
+  Health probe: in-container GET http://localhost:3000/health/ready
 "
 }
 

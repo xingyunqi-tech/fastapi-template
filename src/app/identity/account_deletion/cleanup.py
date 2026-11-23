@@ -1,4 +1,4 @@
-"""注销账号后的数据清理：清理器登记与执行、`account_deletions` 进度记录、失败日志、入队。"""
+"""注销后的数据清理：清理器登记与执行、`account_deletions` 进度记录、失败日志、入队。"""
 
 import asyncio
 import logging
@@ -10,20 +10,15 @@ lazy from uuid import UUID
 from sqlalchemy import text
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.queue import (
-    ACCOUNT_CLEANUP_QUEUE,
-    APP_CONTEXT,
-    RetryPolicy,
-    run_job,
-    stream_name,
-    tasks,
-)
+from app.infrastructure.queue import APP_CONTEXT, RetryPolicy, run_job, tasks
+from app.infrastructure.redis import key as redis_key
 lazy from app.common.context import AppContext
 lazy from app.infrastructure.database.session import Database
 
-logger = logging.getLogger("app.account_cleanup")
+logger = logging.getLogger("app.account_deletion")
 
-CLEAN_ACCOUNT_TASK: Final = "account-cleanup:clean-account"
+CLEAN_ACCOUNT_TASK: Final = "account-deletion:clean-account"
+CLEANUP_JOB: Final = "account-cleanup"
 ACCOUNT_CLEANUP_RETRY: Final = RetryPolicy(attempts=5, delay_ms=10_000)
 PENDING_KEY_TTL_MS: Final = 24 * 60 * 60 * 1000
 RUN_LOCK_TTL_MS: Final = 60 * 60 * 1000
@@ -58,12 +53,13 @@ def registered_cleaners(context: AppContext) -> list[AccountDataCleaner]:
     return [factory(context) for _, factory in sorted(_CLEANERS, key=lambda item: item[0])]
 
 
-def pending_key(user_id: UUID) -> str:
-    return f"{stream_name(ACCOUNT_CLEANUP_QUEUE)}:user-{user_id}"
+def pending_key(service: str, user_id: UUID) -> str:
+    """任务排队或执行中的去重键。"""
+    return redis_key(service, "account-cleanup", "pending", str(user_id))
 
 
 def run_lock_key(user_id: UUID) -> str:
-    return f"{ACCOUNT_CLEANUP_QUEUE}:user-{user_id}"
+    return f"account-cleanup:{user_id}"
 
 
 class AccountCleanupError(Exception):
@@ -164,12 +160,12 @@ class AccountCleanupRunner:
 _serial = asyncio.Lock()
 
 
-@tasks.task(task_name=CLEAN_ACCOUNT_TASK, queue_name=stream_name(ACCOUNT_CLEANUP_QUEUE))
+@tasks.task(task_name=CLEAN_ACCOUNT_TASK)
 async def clean_account(
     job: dict[str, Any],
     context: Annotated[AppContext, APP_CONTEXT],
 ) -> None:
-    """持 `lock:account-cleanup:user-<id>` 执行，锁被占用时跳过；失败重试，最终失败记日志。"""
+    """持 `{service}:lock:account-cleanup:<id>` 执行，锁被占用时跳过；失败重试，最终失败记日志。"""
     user_id = UUID(job["userId"])
     runner = AccountCleanupRunner.from_context(context)
     async with _serial:
@@ -179,7 +175,7 @@ async def clean_account(
             return
         try:
             await run_job(
-                ACCOUNT_CLEANUP_QUEUE,
+                CLEANUP_JOB,
                 ACCOUNT_CLEANUP_RETRY,
                 lambda: runner.run(user_id),
                 on_final_failure=lambda error: runner.report_failure(user_id, error),
@@ -187,7 +183,9 @@ async def clean_account(
         finally:
             await context.locks.release(run_lock_key(user_id), token)
             if context.redis is not None:
-                await context.redis.delete(pending_key(user_id))
+                await context.redis.delete(
+                    pending_key(context.settings.telemetry.service_name, user_id)
+                )
 
 
 class AccountCleanupProducer:
@@ -202,16 +200,17 @@ class AccountCleanupProducer:
             logger.warning("No account cleanup runner for user %s", user_id)
             return
         redis = self.context.redis if queue.distributed else None
+        pending = pending_key(self.context.settings.telemetry.service_name, user_id)
         try:
             if redis is not None and not await redis.set(
-                pending_key(user_id), "1", px=PENDING_KEY_TTL_MS, nx=True
+                pending, "1", px=PENDING_KEY_TTL_MS, nx=True
             ):
                 return
             try:
                 await queue.enqueue(clean_account, {"userId": str(user_id)})
             except BaseException:
                 if redis is not None:
-                    await redis.delete(pending_key(user_id))
+                    await redis.delete(pending)
                 raise
         except Exception as error:
             log_account_cleanup_failure(user_id, error)

@@ -29,7 +29,8 @@ from app.common.errors import AppError
 from app.common.middleware import limit_body
 lazy from app.common.handlers import i18n_of, render_error
 lazy from app.common.idempotency import IdempotentReplay, claim_of, idempotency_guard
-lazy from app.infrastructure.audit import Auditable, record_audit
+lazy from app.infrastructure.audit import Audit, record_audit
+lazy from app.infrastructure.throttler.rules import Rule
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Sequence
@@ -78,15 +79,7 @@ class Auth(StrEnum):
 
 AUTH_DEPENDENCIES: dict[Auth, Callable[..., Any]] = {}
 PERMISSION_GUARDS: list[Callable[..., Callable[..., Any]]] = []
-THROTTLE_GUARDS: list[Callable[[Request], Awaitable[None]]] = []
-
-
-@dataclass(frozen=True, slots=True)
-class Throttle:
-    """路由级限流规则，ttl 为毫秒。"""
-
-    limit: int
-    ttl: int
+RATE_LIMIT_GUARDS: list[Callable[[Request], Awaitable[None]]] = []
 
 
 def register_auth(
@@ -97,12 +90,12 @@ def register_auth(
     PERMISSION_GUARDS[:] = [permission_guard]
 
 
-def register_throttle_guard(guard: Callable[[Request], Awaitable[None]]) -> None:
-    THROTTLE_GUARDS[:] = [guard]
+def register_rate_limit_guard(guard: Callable[[Request], Awaitable[None]]) -> None:
+    RATE_LIMIT_GUARDS[:] = [guard]
 
 
-async def _throttle(request: Request) -> None:
-    for guard in THROTTLE_GUARDS:
+async def _rate_limit(request: Request) -> None:
+    for guard in RATE_LIMIT_GUARDS:
         await guard(request)
 
 
@@ -110,8 +103,9 @@ async def _throttle(request: Request) -> None:
 class RouteMeta:
     auth: Auth
     envelope: bool = True
-    throttle: Throttle | None = None
-    audit: Auditable | None = None
+    rate_limit: tuple[Rule, ...] | None = None
+    """None 为私有默认规则，空元组为不限流。"""
+    audit: Audit | None = None
     idempotent: bool = False
     upload: bool = False
     permissions: tuple[str, ...] = ()
@@ -140,7 +134,7 @@ _INFER: Final[Any] = object()
 
 
 def _guards(meta: RouteMeta) -> list[Any]:
-    dependencies: list[Any] = [Depends(_throttle)]
+    dependencies: list[Any] = [Depends(_rate_limit)]
     if meta.auth is not Auth.PUBLIC:
         dependency = AUTH_DEPENDENCIES.get(meta.auth)
         if dependency is None:
@@ -269,8 +263,8 @@ class ApiRoute(APIRoute):
         return self.meta.auth
 
     @property
-    def throttle(self) -> Throttle | None:
-        return self.meta.throttle
+    def rate_limit(self) -> tuple[Rule, ...] | None:
+        return self.meta.rate_limit
 
     async def _check_json_body(self, request: Request) -> None:
         """JSON 请求体：非 JSON `Content-Type` 为 415，非 UTF-8 或含 NaN / Infinity 为 400。"""
@@ -374,8 +368,8 @@ class ApiRouter:
         include_in_schema: bool = True,
         permissions: Sequence[str] = (),
         any_permissions: Sequence[str] = (),
-        throttle: Throttle | None = None,
-        audit: Auditable | None = None,
+        rate_limit: Sequence[Rule] | None = None,
+        audit: Audit | None = None,
         idempotent: bool = False,
         upload: bool = False,
         request_body: dict[str, Any] | None = None,
@@ -385,7 +379,7 @@ class ApiRouter:
         meta = RouteMeta(
             auth=auth,
             envelope=envelope,
-            throttle=throttle,
+            rate_limit=None if rate_limit is None else tuple(rate_limit),
             audit=audit,
             idempotent=idempotent,
             upload=upload,

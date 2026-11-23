@@ -51,7 +51,7 @@
 | `src/app/config/` | Settings 分组 |
 | `src/app/security/` | 密钥、JWT、吊销、角色与权限、密码、鉴权依赖 |
 | `src/app/identity/` | auth、sessions、me、users、providers（sms、wechat、alipay）、account_deletion、keys |
-| `src/app/infrastructure/` | database、cache、redis 锁、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup、mail |
+| `src/app/infrastructure/` | database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail |
 | `src/app/modules/` | files |
 | `src/app/cli/` | `app` 命令、seed 数据、代码生成模板 |
 | `migrations/` | Alembic |

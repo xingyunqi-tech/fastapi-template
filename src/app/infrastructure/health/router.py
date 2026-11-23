@@ -1,83 +1,77 @@
+"""约定 §1：`/health/live` 恒 200；`/health/ready` 检查已配置的数据库与 Redis，失败 503。"""
+
 import asyncio
-import json
 import logging
-from collections.abc import Awaitable
+from collections.abc import Coroutine
 from typing import Any, Final
 
+from sqlalchemy import text
 from starlette.responses import JSONResponse, Response
 
-from app.common.context import Context
+from app.common.context import AppContext, Context
 from app.common.routing import ApiRouter, Auth
-from app.infrastructure.health import indicators
-from app.infrastructure.health.indicators import IndicatorResult
-from app.infrastructure.metrics.guard import monitoring_token as _monitoring_token  # noqa: F401
 
-NO_CACHE: Final = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+CHECK_TIMEOUT_S: Final = 2.0
+RETRY_AFTER_S: Final = "5"
+NO_CACHE: Final = {"Cache-Control": "no-store"}
+
 logger = logging.getLogger("app.health")
 
 
-async def run_checks(checks: list[Awaitable[IndicatorResult]]) -> Response:
-    """全部 up 时 200 返回明细；任一项 down 时 503 只返回 `{"status": "error"}`，明细写日志。"""
-    info: dict[str, Any] = {}
-    error: dict[str, Any] = {}
-    for result in await asyncio.gather(*checks):
-        for key, value in result.items():
-            (info if value["status"] == "up" else error)[key] = value
-    if error:
-        logger.error("Health Check has failed! %s", json.dumps(error, ensure_ascii=False))
-        return JSONResponse({"status": "error"}, status_code=503, headers=NO_CACHE)
-    body = {"status": "ok", "info": info, "error": error, "details": info}
-    return JSONResponse(body, headers=NO_CACHE)
+async def _database(context: AppContext) -> None:
+    async with context.database.sessionmaker() as session:
+        await session.execute(text("SELECT 1"))
 
 
-router = ApiRouter(prefix="/v1/health", tags=["Health"])
+async def _redis(context: AppContext) -> None:
+    if context.redis is not None:
+        await context.redis.ping()
 
 
-@router.endpoint(
-    "GET",
-    "",
-    operation_id="healthCheck",
-    auth=Auth.MONITORING,
-    envelope=False,
-    include_in_schema=False,
-    summary="完整健康检查（需监控令牌）",
-)
-async def health_check(context: Context) -> Response:
-    lock = asyncio.Lock()
-    checks: list[Awaitable[IndicatorResult]] = [
-        indicators.memory_heap("memory_heap"),
-        indicators.disk("disk"),
-        indicators.database_ping("database", context, lock),
-        indicators.database_pool("database_pool", context, lock),
-    ]
-    if context.settings.redis.enabled:
-        checks.append(indicators.redis("redis", context))
-    checks.append(indicators.wechat_api("wechat_api", context))
-    checks.append(indicators.alipay_api("alipay_api", context))
-    return await run_checks(checks)
+async def _check(name: str, check: Coroutine[Any, Any, None]) -> str | None:
+    try:
+        async with asyncio.timeout(CHECK_TIMEOUT_S):
+            await check
+    except Exception as error:
+        logger.error("Readiness check %s failed: %s", name, str(error) or type(error).__name__)
+        return name
+    return None
+
+
+router = ApiRouter(prefix="/health", tags=["Health"])
 
 
 @router.endpoint(
     "GET",
     "/live",
-    operation_id="livenessProbe",
+    operation_id="getLiveness",
     auth=Auth.PUBLIC,
     envelope=False,
     include_in_schema=False,
-    summary="存活探针（Kubernetes）",
+    rate_limit=(),
 )
 async def liveness() -> Response:
-    return await run_checks([indicators.memory_heap("memory_heap")])
+    return JSONResponse({"status": "ok"}, headers=NO_CACHE)
 
 
 @router.endpoint(
     "GET",
     "/ready",
-    operation_id="readinessProbe",
+    operation_id="getReadiness",
     auth=Auth.PUBLIC,
     envelope=False,
     include_in_schema=False,
-    summary="就绪探针（Kubernetes）",
+    rate_limit=(),
 )
 async def readiness(context: Context) -> Response:
-    return await run_checks([indicators.database_ping("database", context, asyncio.Lock())])
+    checks = [_check("database", _database(context))]
+    if context.redis is not None:
+        checks.append(_check("redis", _redis(context)))
+    failed = [name for name in await asyncio.gather(*checks) if name is not None]
+    if failed:
+        return JSONResponse(
+            {"status": "error"},
+            status_code=503,
+            headers={**NO_CACHE, "Retry-After": RETRY_AFTER_S},
+        )
+    return JSONResponse({"status": "ok"}, headers=NO_CACHE)

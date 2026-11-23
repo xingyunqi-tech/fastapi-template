@@ -15,6 +15,8 @@ from app.identity.sessions.grace import hash_token, new_refresh_token, seal, uns
 from app.identity.sessions.repository import SessionRepository
 from app.identity.users.models import UserStatus
 from app.identity.users.repository import UserRepository
+from app.infrastructure.throttler import session_subject
+from app.infrastructure.throttler.rules import AUTH_REFRESH
 lazy from app.common.client import ClientInfo
 lazy from app.common.context import AppContext
 lazy from app.identity.sessions.models import SessionModel
@@ -84,9 +86,11 @@ class SessionService:
         tokens, _ = await self._issue(user, record)
         return Login(tokens, await self.users.reload(user))
 
-    async def refresh(self, refresh_token: str) -> Login:
-        """约定 §5.2；会话行加锁，并发刷新只产生一对新令牌。"""
+    async def refresh(self, refresh_token: str, ip_subject: str) -> Login:
+        """约定 §5.2；会话行加锁，并发刷新只产生一对新令牌；`auth-refresh` 查不到会话时按 IP。"""
         row = await self.repository.find_refresh_token(hash_token(refresh_token))
+        subject = session_subject(row.session_id) if row is not None else ip_subject
+        await self.context.rate_limiter.check(AUTH_REFRESH, subject)
         if row is None:
             raise AppError("auth.refreshTokenInvalid")
         now = utcnow()

@@ -1,7 +1,8 @@
-"""Taskiq 队列：启用 Redis 时经 Redis Stream 交给 worker，未启用时本进程内执行（仅开发 / 测试）。"""
+"""Taskiq 队列：配置 Redis 时经 Stream `{service}:tasks` 交给 worker，否则在本进程内执行。"""
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
 lazy from collections.abc import Awaitable, Callable
@@ -12,25 +13,21 @@ from taskiq.brokers.shared_broker import AsyncSharedBroker
 from taskiq_redis import RedisStreamBroker
 lazy from taskiq.decor import AsyncTaskiqDecoratedTask
 
-from app.infrastructure.metrics import record_queue_job
+from app.infrastructure.redis import key as redis_key
+from app.infrastructure.telemetry import record_queue_job
 lazy from app.common.context import AppContext
 lazy from app.config import Settings
 
 logger = logging.getLogger("app.queue")
 
-STREAM_PREFIX: Final = "taskiq:"
-MAIL_QUEUE: Final = "mail"
-ACCOUNT_CLEANUP_QUEUE: Final = "account-cleanup"
-SCHEDULER_QUEUE: Final = "scheduler"
-QUEUES: Final = (MAIL_QUEUE, ACCOUNT_CLEANUP_QUEUE, SCHEDULER_QUEUE)
 STARTUP_TIMEOUT_S: Final = 5.0
 
 tasks = AsyncSharedBroker()
 """所有任务登记在此，投递时由 TaskQueue 指定实际 broker。"""
 
 
-def stream_name(queue: str) -> str:
-    return STREAM_PREFIX + queue
+def stream_name(service: str) -> str:
+    return redis_key(service, "tasks")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,13 +57,14 @@ async def run_job[T](
     *,
     on_final_failure: Callable[[BaseException], Awaitable[None]] | None = None,
 ) -> T:
-    """按重试策略执行任务体，最后一次仍失败时调用 on_final_failure 并抛出。"""
+    """按重试策略执行任务体，最后一次仍失败时调用 on_final_failure 并抛出；`queue` 为指标标签。"""
+    started = time.perf_counter()
     for attempt in range(1, policy.attempts + 1):
         try:
             result = await job()
         except Exception as error:
             if attempt >= policy.attempts or isinstance(error, UnrecoverableError):
-                record_queue_job(queue, "failed")
+                record_queue_job(queue, "failed", time.perf_counter() - started)
                 logger.error("Job of queue %s failed after %d attempts: %s", queue, attempt, error)
                 if on_final_failure is not None:
                     await on_final_failure(error)
@@ -82,7 +80,7 @@ async def run_job[T](
             )
             await sleep(delay)
         else:
-            record_queue_job(queue, "completed")
+            record_queue_job(queue, "completed", time.perf_counter() - started)
             return result
     raise AssertionError("unreachable")
 
@@ -104,16 +102,13 @@ class TaskQueue:
     @classmethod
     def from_settings(cls, settings: Settings) -> TaskQueue:
         if not settings.redis.enabled:
-            if settings.app.is_production:
-                raise RuntimeError("REDIS_ENABLED must be true in production")
             return cls(InMemoryBroker(propagate_exceptions=False), distributed=False)
-        main, *others = (stream_name(queue) for queue in QUEUES)
+        service = settings.telemetry.service_name
         broker = RedisStreamBroker(
             settings.redis.url(),
-            queue_name=main,
-            consumer_group_name="taskiq",
+            queue_name=stream_name(service),
+            consumer_group_name=service,
             consumer_id="0",
-            additional_streams=dict.fromkeys(others, ">"),
         )
         return cls(broker, distributed=True)
 

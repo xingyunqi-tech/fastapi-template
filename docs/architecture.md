@@ -12,7 +12,7 @@ src/app/
 ├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、i18n
 ├── security/            # 密钥与 kid、JWT、吊销键、角色与权限、密码哈希、鉴权依赖
 ├── identity/            # 签发方：auth、sessions、me、users、providers（短信、微信、支付宝）、account_deletion、keys（JWKS）
-├── infrastructure/      # database、cache、redis（锁）、throttler、logging、metrics、health、observability、queue、scheduler、audit、account_cleanup、mail
+├── infrastructure/      # database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail
 └── modules/             # files
 ```
 
@@ -20,9 +20,9 @@ src/app/
 
 | 目录 | 内容 |
 |---|---|
-| `openapi/` | `openapi.json`（`app openapi export` 由代码导出，`--check` 校验一致）、`nest_handlers.json`（限流键映射） |
+| `openapi/` | `openapi.json`（`app openapi export` 由代码导出，`--check` 校验一致） |
 | `migrations/` | Alembic（async env.py） |
-| `scripts/` | `gen_nest_handlers.py`（限流 handler 映射）、`check_commit_msg.py`、`audit_severity.py` |
+| `scripts/` | `check_commit_msg.py`、`audit_severity.py` |
 | `tests/` | `unit`、`conventions`、`integration`、`e2e`，见 [testing.md](testing.md) |
 | `docker/`、`deploy/`、`.github/workflows/` | 见 [deploy.md](deploy.md) |
 
@@ -59,7 +59,7 @@ src/app/
 | `status_code` | 默认 200；只有 `POST files/upload` 为 201 |
 | `wrap` | 默认包装为信封；`/metrics` 等为 `False` |
 | `throttle` | 路由级限流规则（ttl 毫秒） |
-| `audit` | `Auditable(...)`，请求成功后写 `audit_logs` |
+| `audit` | `Audit(action, resource=...)`，请求成功后写 `audit_logs` |
 
 `finalize_routes` 把所有路由改为不区分大小写、尾斜杠可选（Express 语义）；方法不符返回 404 信封而非 405。
 
@@ -72,10 +72,9 @@ src/app/
 | 1 | `CatchAllMiddleware` | 未处理异常转 500 `common.internalError` |
 | 2 | `SecurityHeadersMiddleware` | 安全响应头 |
 | 3 | `RateLimitHeadersMiddleware` | 写 `X-RateLimit-*` / `Retry-After` |
-| 4 | `MetricsMiddleware` | `METRICS_ENABLED=true` 时挂载 |
-| 5 | `RequestLoggingMiddleware` | 请求日志 |
-| 6 | `CORSMiddleware` | 生产按 `CORS_ORIGINS` 白名单，其它环境允许任意来源；不发送 credentials |
-| 7 | `RequestContextMiddleware` | Request ID（入站 `X-Request-Id` 合法则沿用，否则 UUIDv7）、`Accept-Language` 解析 |
+| 4 | `RequestLoggingMiddleware` | 请求日志 |
+| 5 | `CORSMiddleware` | 生产按 `CORS_ORIGINS` 白名单，其它环境允许任意来源；不发送 credentials |
+| 6 | `RequestContextMiddleware` | Request ID（入站 `X-Request-Id` 合法则沿用，否则 UUIDv7）、`Accept-Language` 解析 |
 
 路由内顺序：`BODY_LIMIT` 计数（上传路由除外）→ 限流守卫 → 鉴权 → 权限守卫 → 幂等键 → Pydantic 解析与校验 → handler → 信封包装。
 
@@ -97,30 +96,29 @@ src/app/
 | 进程 | 命令 | 说明 |
 |---|---|---|
 | api | `python -m app` | Granian ASGI，`WEB_CONCURRENCY` 个 worker 进程 |
-| worker | `app worker` | Taskiq worker，消费 Redis Stream；需 `REDIS_ENABLED=true`，Redis 不可达时退出 |
+| worker | `app worker` | Taskiq worker，消费 Redis Stream `{OTEL_SERVICE_NAME}:tasks`；需 `REDIS_URL`，Redis 不可达时退出 |
 | scheduler | `app scheduler` | Taskiq scheduler，按 cron 投递定时任务 |
 | migrate | `app migrate [&& app seed]` | compose 中的一次性服务，api 依赖其成功完成 |
 
-`REDIS_ENABLED=false` 时队列任务在 API 进程内执行（仅开发 / 测试）。
+未设置 `REDIS_URL` 时队列任务在 API 进程内执行（仅开发 / 测试）。
 
 ## 基础设施
 
 | 能力 | 位置 | 要点 |
 |---|---|---|
-| 缓存 | `infrastructure/cache` | 键 `cache::<key>`、值 `{"value","expires"}`（与 Keyv 互通）；未启用 Redis 时用进程内存 |
-| 锁 | `infrastructure/redis` | `lock:<key>`，Redis 不可用时退回进程内锁 |
-| 限流 | `infrastructure/throttler` | GCRA（Redis Lua），键 `throttle:<sha256>:default:gcra`；JWT 路由按用户、其余按 IP（`TRUST_PROXY` 跳数）；Redis 故障时回落内存，计入 `throttler_storage_fallback_total` 并记 error 日志 |
-| 队列 | `infrastructure/queue` | Taskiq + Redis Stream：`taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler` |
-| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 删除已过期或吊销超过 7 天的会话与过期的一次性令牌、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `lock:scheduler:<name>` |
+| 缓存 | `infrastructure/cache` | 键 `{OTEL_SERVICE_NAME}:cache:<key>`、值 `{"value","expires"}`；未设置 `REDIS_URL` 时用进程内存 |
+| 锁 | `infrastructure/redis` | `{OTEL_SERVICE_NAME}:lock:<key>`，Redis 不可用时退回进程内锁；`key()` 生成约定 §10 的服务键前缀 |
+| 限流 | `infrastructure/throttler` | 约定 §7 的 GCRA（Redis Lua，键 `rl:{规则}:{主体}`）；路由 `rate_limit=` 声明共享规则，未声明用私有默认规则；客户端 IP 按 `TRUSTED_PROXIES`；Redis 出错时共享规则 503，私有规则放行并计入 `ratelimit.fallback` |
+| 队列 | `infrastructure/queue` | Taskiq + Redis Stream `{OTEL_SERVICE_NAME}:tasks`（消费组同服务名） |
+| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 删除已过期或吊销超过 7 天的会话与过期的一次性令牌、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `{OTEL_SERVICE_NAME}:lock:cron:<name>` |
 | 日志 | `infrastructure/logging` | structlog；生产 JSON、开发彩色单行；带 request_id、trace_id / span_id、user_id，敏感字段脱敏 |
-| 指标 | `infrastructure/metrics` | `/metrics`（`METRICS_PATH`），指标名、标签、桶同 nestjs；多进程共享 `PROMETHEUS_MULTIPROC_DIR` |
-| 健康检查 | `infrastructure/health` | `/api/v1/health`（监控令牌）、`/health/live`、`/health/ready` |
-| 链路 / 错误上报 | `infrastructure/observability` | `OTEL_ENABLED`（OTLP/HTTP）、`SENTRY_DSN`，默认关闭；出站 httpx span 与 Sentry 面包屑的 URL 去掉查询串，Sentry 不采集局部变量 |
-| 审计 | `infrastructure/audit` | `audit=Auditable(...)` 的路由成功后写 `audit_logs` |
-| 账号清理 | `infrastructure/account_cleanup` | 注销后入队，按 order 执行各模块清理器（sessions、files），结果记入 `account_deletions`，最终失败记 error 日志 |
+| 指标与链路 | `infrastructure/telemetry` | OpenTelemetry；HTTP 指标按稳定语义约定（`http.server.request.duration`）；`OTEL_METRICS_EXPORTER=prometheus` 时 API 挂 `/metrics`、worker 监听 `OTEL_EXPORTER_PROMETHEUS_PORT`，此时 `WEB_CONCURRENCY` 须为 1；`otlp` 时推送；配置 OTLP 端点时开启链路；`SENTRY_DSN` 可选，不采集局部变量；出站 httpx span 与 Sentry 面包屑的 URL 去掉查询串 |
+| 健康检查 | `infrastructure/health` | `/health/live` 恒 200；`/health/ready` 检查数据库与已配置的 Redis，失败 503 |
+| 审计 | `infrastructure/audit` | `audit=Audit(...)` 的路由成功后写 `audit_logs`（请求体脱敏）；`GET /api/v1/audit-logs`（`audit:read`） |
+| 账号清理 | `identity/account_deletion` | 注销提交后发布 `user.deleted`（`infrastructure/events`，`EVENTS_TRANSPORT`）并入队，按 order 执行各模块清理器（sessions、files），结果记入 `account_deletions`，最终失败记 error 日志 |
 | 邮件 | `infrastructure/mail`、`queue/mail.py` | 模板 `verify-email`、`reset-password`（zh / en），链接为 `APP_FRONTEND_URL` + 路径 + `?token=`；设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |
-| 文件 | `modules/files` | `FILE_DRIVER`：`local`（`./files`）、`s3`、`s3-presigned` |
+| 文件 | `modules/files` | 约定 §11.5；`STORAGE_DRIVER`：`local`（`STORAGE_LOCAL_DIR`，签名地址由本服务输出）、`s3`（预签名地址）；类型按魔数识别，大小按用途上限 |
 
 ## 配置
 
-`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），变量名与 nestjs `env-example-relational` 一致，全部变量见 `.env.example`。`AUTH_ISSUER`、`AUTH_AUDIENCE`、`AUTH_SIGNING_KEY` 始终必填；生产环境另要求 `REDIS_ENABLED=true`、`APP_FRONTEND_URL`、`MAIL_HOST`、`MAIL_FROM`。
+`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），公共变量见约定 §9，全部变量见 `.env.example`。`AUTH_ISSUER`、`AUTH_AUDIENCE`、`AUTH_SIGNING_KEY` 始终必填；`OTEL_SERVICE_NAME`、`STORAGE_DRIVER` 始终必填；生产环境另要求 `REDIS_URL`、`APP_FRONTEND_URL`、`CORS_ORIGINS`、`MAIL_HOST`、`MAIL_FROM`，Prometheus 拉取时要求 `METRICS_TOKEN`，本地存储时要求 `STORAGE_URL_SECRET`。

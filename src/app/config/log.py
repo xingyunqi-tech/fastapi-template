@@ -1,37 +1,34 @@
 from enum import StrEnum
-from typing import Annotated, Any
 
-from pydantic import BeforeValidator, Field
+from pydantic import Field
 
 from app.config.base import SettingsGroup
 
 
 class LogLevel(StrEnum):
-    FATAL = "fatal"
-    ERROR = "error"
-    WARN = "warn"
-    INFO = "info"
     DEBUG = "debug"
-    TRACE = "trace"
-    SILENT = "silent"
+    INFO = "info"
+    WARN = "warn"
+    ERROR = "error"
 
 
-def _is_true(value: Any) -> Any:
-    return value == "true" if isinstance(value, str) else value
+class LogFormat(StrEnum):
+    JSON = "json"
+    TEXT = "text"
 
 
 class LogSettings(SettingsGroup):
-    """nestjs logger.config：未设置时生产 info + JSON，其它环境 debug + 彩色单行。"""
+    """未设置时生产 `info` + `json`，其他环境 `debug` + `text`。"""
 
     level: LogLevel | None = Field(default=None, validation_alias="LOG_LEVEL")
-    pretty_print: Annotated[bool | None, BeforeValidator(_is_true)] = Field(
-        default=None, validation_alias="LOG_PRETTY_PRINT"
-    )
+    format: LogFormat | None = Field(default=None, validation_alias="LOG_FORMAT")
 
     def resolved_level(self, production: bool) -> LogLevel:
         if self.level is not None:
             return self.level
         return LogLevel.INFO if production else LogLevel.DEBUG
 
-    def resolved_pretty(self, production: bool) -> bool:
-        return self.pretty_print if self.pretty_print is not None else not production
+    def resolved_format(self, production: bool) -> LogFormat:
+        if self.format is not None:
+            return self.format
+        return LogFormat.JSON if production else LogFormat.TEXT

@@ -2,7 +2,7 @@ from fastapi import Request
 
 from app.common.client import client_info
 from app.common.context import AppContext, Context
-from app.common.routing import ApiRouter, Auth, Throttle
+from app.common.routing import ApiRouter, Auth
 from app.identity.auth.schemas import (
     AuthProvider,
     ForgotPasswordRequest,
@@ -21,6 +21,14 @@ from app.identity.providers.registry import enabled_providers
 from app.identity.providers.sms import SmsScene
 from app.identity.users.schemas import User
 from app.infrastructure.database.session import DbSession
+from app.infrastructure.throttler import ip_subject
+from app.infrastructure.throttler.rules import (
+    AUTH_LOGIN,
+    AUTH_MAIL_IP,
+    AUTH_MAIL_USER,
+    AUTH_REGISTER,
+    AUTH_SMS,
+)
 from app.security.deps import CurrentPrincipal, OptionalPrincipal, authenticate
 lazy from app.identity.sessions.service import Login
 
@@ -42,13 +50,13 @@ def login_response(login: Login, context: AppContext) -> LoginResponse:
     operation_id="registerWithEmail",
     auth=Auth.PUBLIC,
     status=201,
-    throttle=Throttle(limit=3, ttl=3_600_000),
+    rate_limit=[AUTH_REGISTER],
     summary="邮箱注册",
 )
 async def register_with_email(
     body: RegisterWithEmailRequest, request: Request, context: Context, session: DbSession
 ) -> LoginResponse:
-    client = client_info(request, context.settings.app.trust_proxy)
+    client = client_info(request, context.settings.app.trusted_proxies)
     return login_response(await AuthService(context, session).register(body, client), context)
 
 
@@ -57,13 +65,13 @@ async def register_with_email(
     "/email/login",
     operation_id="loginWithEmail",
     auth=Auth.PUBLIC,
-    throttle=Throttle(limit=10, ttl=60_000),
+    rate_limit=[AUTH_LOGIN],
     summary="邮箱登录",
 )
 async def login_with_email(
     body: LoginWithEmailRequest, request: Request, context: Context, session: DbSession
 ) -> LoginResponse:
-    client = client_info(request, context.settings.app.trust_proxy)
+    client = client_info(request, context.settings.app.trusted_proxies)
     return login_response(await AuthService(context, session).login(body, client), context)
 
 
@@ -80,7 +88,7 @@ async def verify_email(body: VerifyEmailRequest, context: Context, session: DbSe
     operation_id="resendVerificationEmail",
     auth=Auth.JWT,
     status=202,
-    throttle=Throttle(limit=3, ttl=3_600_000),
+    rate_limit=[AUTH_MAIL_USER],
     summary="重发验证邮件",
 )
 async def resend_verification_email(
@@ -95,7 +103,7 @@ async def resend_verification_email(
     operation_id="forgotPassword",
     auth=Auth.PUBLIC,
     status=202,
-    throttle=Throttle(limit=3, ttl=3_600_000),
+    rate_limit=[AUTH_MAIL_IP],
     summary="找回密码",
 )
 async def forgot_password(
@@ -121,7 +129,7 @@ async def reset_password(body: ResetPasswordRequest, context: Context, session: 
     operation_id="sendSmsCode",
     auth=Auth.OPTIONAL_JWT,
     status=202,
-    throttle=Throttle(limit=5, ttl=3_600_000),
+    rate_limit=[AUTH_SMS],
     summary="发送短信验证码",
     description="`scene=login` 公开；`scene=bind_phone` 需要 JWT。",
 )
@@ -142,13 +150,13 @@ async def send_sms_code(
     "/sms/login",
     operation_id="loginWithSms",
     auth=Auth.PUBLIC,
-    throttle=Throttle(limit=10, ttl=60_000),
+    rate_limit=[AUTH_LOGIN],
     summary="短信登录",
 )
 async def login_with_sms(
     body: LoginWithSmsRequest, request: Request, context: Context, session: DbSession
 ) -> LoginResponse:
-    client = client_info(request, context.settings.app.trust_proxy)
+    client = client_info(request, context.settings.app.trusted_proxies)
     return login_response(await AuthService(context, session).login_with_sms(body, client), context)
 
 
@@ -168,7 +176,7 @@ async def list_auth_providers(context: Context) -> list[AuthProvider]:
     "/providers/{provider}/login",
     operation_id="loginWithProvider",
     auth=Auth.PUBLIC,
-    throttle=Throttle(limit=10, ttl=60_000),
+    rate_limit=[AUTH_LOGIN],
     summary="第三方登录",
     description="`provider`：`wechat_miniapp`、`wechat_app`、`alipay`；未启用时 404。",
 )
@@ -179,7 +187,7 @@ async def login_with_provider(
     context: Context,
     session: DbSession,
 ) -> LoginResponse:
-    client = client_info(request, context.settings.app.trust_proxy)
+    client = client_info(request, context.settings.app.trusted_proxies)
     login = await AuthService(context, session).login_with_provider(provider, body.code, client)
     return login_response(login, context)
 
@@ -189,13 +197,16 @@ async def login_with_provider(
     "/refresh",
     operation_id="refreshToken",
     auth=Auth.PUBLIC,
-    throttle=Throttle(limit=10, ttl=60_000),
+    rate_limit=(),
     summary="刷新令牌",
 )
 async def refresh_token(
-    body: RefreshTokenRequest, context: Context, session: DbSession
+    body: RefreshTokenRequest, request: Request, context: Context, session: DbSession
 ) -> LoginResponse:
-    return login_response(await AuthService(context, session).refresh(body.refresh_token), context)
+    ip = ip_subject(request, context.settings)
+    return login_response(
+        await AuthService(context, session).refresh(body.refresh_token, ip), context
+    )
 
 
 @router.endpoint("POST", "/logout", operation_id="logout", auth=Auth.JWT, summary="退出登录")

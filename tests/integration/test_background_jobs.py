@@ -1,20 +1,19 @@
 import asyncio
 import contextlib
 import email
+import json
 import os
 import signal
 import socket
 import sys
-import threading
 import time
-import warnings
 from email.message import EmailMessage
 from email.policy import default as default_policy
 from typing import Any
-from urllib.parse import urlparse
 from uuid import UUID
-lazy from collections.abc import AsyncIterator, Iterator
+lazy from collections.abc import AsyncIterator
 
+import httpx as httpx_lib
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy import select, text
@@ -24,17 +23,20 @@ lazy from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.common.context import AppContext
 from app.common.errors import field_error
+from app.common.pagination import encode_cursor
 from app.common.routing import ApiRouter, Auth
 from app.config import Settings, get_settings
 from app.factory import build_tokens, create_app
+from app.identity.account_deletion import cleanup as account_cleanup
+from app.identity.account_deletion.cleanup import AccountCleanupProducer, pending_key
 from app.identity.sessions.account_cleaner import SessionsAccountCleaner
-from app.infrastructure import account_cleanup, metrics
+from app.infrastructure import audit as audit_module
 from app.infrastructure import queue as queue_module
-from app.infrastructure.account_cleanup import AccountCleanupProducer, pending_key
-from app.infrastructure.audit import Auditable, AuditAction, AuditService
+from app.infrastructure.audit import Audit, write_audit_log
 from app.infrastructure.audit.models import AuditLogModel
 from app.infrastructure.cache import MemoryCache
 from app.infrastructure.database.session import Database
+from app.infrastructure.events import USER_DELETED, decode
 from app.infrastructure.mail import MailMessage, SmtpTransport
 from app.infrastructure.queue import TaskQueue, stream_name
 from app.infrastructure.queue import mail as mail_queue
@@ -47,17 +49,13 @@ from app.infrastructure.scheduler import (
     enqueue_pending_account_cleanups,
 )
 from app.security.passwords import Passwords
-from tests.integration.conftest import client_for
-from tests.integration.identity import PASSWORD, USER_EMAIL, bearer, login
+from tests.integration.conftest import Mailpit, _build_app, client_for
+from tests.integration.identity import ADMIN_EMAIL, PASSWORD, USER_EMAIL, bearer, login
 from tests.tokens import access_token
 lazy from app.identity.me.schemas import UpdateMeRequest
 
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    from aiosmtpd.controller import Controller
-
-
 USER_ID = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
+SERVICE = "api"
 
 
 def _free_port() -> int:
@@ -67,58 +65,49 @@ def _free_port() -> int:
         return port
 
 
-class SmtpSink:
-    def __init__(self) -> None:
+class MailpitSink:
+    def __init__(self, server: Mailpit) -> None:
+        self.server = server
         self.messages: list[EmailMessage] = []
-        self.condition = threading.Condition()
 
-    async def handle_DATA(self, server: Any, session: Any, envelope: Any) -> str:  # noqa: N802
-        message = email.message_from_bytes(envelope.content, policy=default_policy)
-        assert isinstance(message, EmailMessage)
-        with self.condition:
-            self.messages.append(message)
-            self.condition.notify_all()
-        return "250 OK"
-
-    def _wait(self, count: int, seconds: float) -> bool:
-        with self.condition:
-            return self.condition.wait_for(lambda: len(self.messages) >= count, seconds)
+    def clear(self) -> None:
+        httpx_lib.delete(f"{self.server.api}/api/v1/messages", trust_env=False).raise_for_status()
 
     async def wait_for(self, count: int, seconds: float = 30) -> None:
-        assert await asyncio.to_thread(self._wait, count, seconds), self.messages
-
-    def html(self, index: int = 0) -> str:
-        part = self.messages[index].get_body(("html",))
-        assert part is not None
-        return str(part.get_content()).replace("\r\n", "\n")
+        async with httpx_lib.AsyncClient(base_url=self.server.api, trust_env=False) as http:
+            async with asyncio.timeout(seconds):
+                while True:
+                    listed = (await http.get("/api/v1/messages")).json()["messages"]
+                    if len(listed) >= count:
+                        break
+                    await asyncio.sleep(0.1)
+            self.messages = []
+            for item in reversed(listed):
+                raw = (await http.get(f"/api/v1/message/{item['ID']}/raw")).content
+                message = email.message_from_bytes(raw, policy=default_policy)
+                assert isinstance(message, EmailMessage)
+                self.messages.append(message)
 
 
 @pytest.fixture
-def smtp(monkeypatch: pytest.MonkeyPatch) -> Iterator[SmtpSink]:
-    sink = SmtpSink()
-    port = _free_port()
-    controller = Controller(sink, hostname="127.0.0.1", port=port)
-    controller.start()
+def smtp(mailpit_server: Mailpit, monkeypatch: pytest.MonkeyPatch) -> MailpitSink:
+    sink = MailpitSink(mailpit_server)
+    sink.clear()
     for name, value in {
-        "MAIL_HOST": "127.0.0.1",
-        "MAIL_PORT": str(port),
+        "MAIL_HOST": mailpit_server.host,
+        "MAIL_PORT": str(mailpit_server.smtp_port),
         "MAIL_FROM": "Api <noreply@example.com>",
         "MAIL_TLS": "none",
-        "APP_NAME": "Tom's <App> & Co",
         "APP_FRONTEND_URL": "https://app.example.com",
     }.items():
         monkeypatch.setenv(name, value)
     get_settings.cache_clear()
-    yield sink
-    controller.stop()
+    return sink
 
 
 @pytest.fixture
 async def redis(redis_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Redis]:
-    parsed = urlparse(redis_url)
-    monkeypatch.setenv("REDIS_ENABLED", "true")
-    monkeypatch.setenv("REDIS_HOST", parsed.hostname or "localhost")
-    monkeypatch.setenv("REDIS_PORT", str(parsed.port))
+    monkeypatch.setenv("REDIS_URL", redis_url)
     get_settings.cache_clear()
     client = Redis.from_url(redis_url)
     await client.flushdb()
@@ -141,9 +130,7 @@ async def blackhole_port() -> AsyncIterator[int]:
 
 
 def use_redis_port(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
-    monkeypatch.setenv("REDIS_ENABLED", "true")
-    monkeypatch.setenv("REDIS_HOST", "127.0.0.1")
-    monkeypatch.setenv("REDIS_PORT", str(port))
+    monkeypatch.setenv("REDIS_URL", f"redis://127.0.0.1:{port}/0")
     get_settings.cache_clear()
 
 
@@ -194,11 +181,6 @@ async def consume(queue: TaskQueue, count: int) -> None:
                 return
 
 
-def counter(metric: Any, **labels: str) -> float:
-    value: float = metric.labels(**labels)._value.get()
-    return value
-
-
 async def _user_id(database: Database, email_address: str) -> UUID:
     async with database.transaction() as session:
         value = await session.scalar(
@@ -221,23 +203,23 @@ async def _request_deletion(database: Database, user_id: UUID, minutes_ago: int 
 
 class TestLockWithRedis:
     async def test_only_one_instance_acquires(self, redis: Redis) -> None:
-        first, second = LockService(redis), LockService(redis)
+        first, second = LockService(redis, SERVICE), LockService(redis, SERVICE)
         tokens = await asyncio.gather(
             *(locks.try_acquire("job", 60_000) for locks in [first, second] * 5)
         )
         winners = [token for token in tokens if token is not None]
         assert len(winners) == 1
-        assert await redis.get("lock:job") == winners[0].encode()
-        assert 0 < await redis.pttl("lock:job") <= 60_000
+        assert await redis.get("api:lock:job") == winners[0].encode()
+        assert 0 < await redis.pttl("api:lock:job") <= 60_000
 
         await second.release("job", "not-the-owner")
-        assert await redis.exists("lock:job") == 1
+        assert await redis.exists("api:lock:job") == 1
         await second.release("job", winners[0])
-        assert await redis.exists("lock:job") == 0
+        assert await redis.exists("api:lock:job") == 0
 
     async def test_falls_back_to_local_lock_when_redis_is_down(self) -> None:
         broken = Redis(host="127.0.0.1", port=_free_port(), socket_connect_timeout=0.2)
-        locks = LockService(broken)
+        locks = LockService(broken, SERVICE)
         token = await locks.try_acquire("job", 60_000)
         assert token is not None
         assert await locks.try_acquire("job", 60_000) is None
@@ -249,7 +231,7 @@ class TestLockWithRedis:
 class TestMailQueue:
     async def test_in_process_retries_with_backoff(
         self,
-        smtp: SmtpSink,
+        smtp: MailpitSink,
         connection: AsyncConnection,
         monkeypatch: pytest.MonkeyPatch,
         no_sleep: list[float],
@@ -267,18 +249,14 @@ class TestMailQueue:
         monkeypatch.setattr(SmtpTransport, "send", flaky)
         context = make_context(Database.bound_to(connection))
         assert context.queue is not None
-        before = counter(metrics.queue_jobs_total, queue_name="mail", status="completed")
         await context.mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
         await context.queue.shutdown()
         await smtp.wait_for(1)
         assert no_sleep == [1.0, 2.0]
-        assert (
-            counter(metrics.queue_jobs_total, queue_name="mail", status="completed") == before + 1
-        )
 
     async def test_redis_stream_delivery_and_retry(
         self,
-        smtp: SmtpSink,
+        smtp: MailpitSink,
         redis: Redis,
         connection: AsyncConnection,
         monkeypatch: pytest.MonkeyPatch,
@@ -302,18 +280,18 @@ class TestMailQueue:
         await queue.startup()
         try:
             await context.mailer.send(MailMessage("verify-email", "to@example.com", {"token": "t"}))
-            assert await redis.xlen(stream_name("mail")) == 1
+            assert await redis.xlen(stream_name(SERVICE)) == 1
             assert smtp.messages == []
             await consume(queue, 1)
         finally:
             await queue.shutdown()
         await smtp.wait_for(1)
         assert no_sleep == [1.0]
-        pending = await redis.xpending(stream_name("mail"), "taskiq")
+        pending = await redis.xpending(stream_name(SERVICE), SERVICE)
         assert pending["pending"] == 0
 
     async def test_worker_process_delivers_mail(
-        self, smtp: SmtpSink, redis: Redis, connection: AsyncConnection
+        self, smtp: MailpitSink, redis: Redis, connection: AsyncConnection
     ) -> None:
         context = make_context(Database.bound_to(connection), redis)
         assert context.queue is not None
@@ -366,7 +344,7 @@ class TestMailQueue:
 
     async def test_falls_back_to_in_process_smtp_when_redis_refuses(
         self,
-        smtp: SmtpSink,
+        smtp: MailpitSink,
         connection: AsyncConnection,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
@@ -391,7 +369,7 @@ class TestMailQueue:
 
     async def test_register_does_not_hang_when_redis_blackholes(
         self,
-        smtp: SmtpSink,
+        smtp: MailpitSink,
         connection: AsyncConnection,
         monkeypatch: pytest.MonkeyPatch,
         blackhole_port: int,
@@ -428,6 +406,40 @@ class TestMailQueue:
         assert built.queue is not None
         await built.queue.broker.shutdown()
 
+    async def test_mail_language_follows_request(
+        self, smtp: MailpitSink, connection: AsyncConnection
+    ) -> None:
+        app = create_app(Settings.load())
+        built: AppContext = app.state.context
+        assert isinstance(built.mailer, QueueMailer)
+        app.state.context = AppContext(
+            settings=built.settings,
+            database=Database.bound_to(connection),
+            cache=MemoryCache(),
+            passwords=built.passwords,
+            mailer=built.mailer,
+            signer=built.signer,
+            verifier=built.verifier,
+            queue=built.queue,
+        )
+        async with client_for(app) as client:
+            for address, language in (("zh@example.com", "zh-CN"), ("en@example.com", "en")):
+                response = await client.post(
+                    "/api/v1/auth/email/register",
+                    json={"email": address, "password": PASSWORD},
+                    headers={"Accept-Language": language},
+                )
+                assert response.status_code == 201, response.text
+        await built.mailer.drain()
+        await smtp.wait_for(2)
+        subjects = {message["To"]: message["Subject"] for message in smtp.messages}
+        assert subjects == {"zh@example.com": "验证你的邮箱", "en@example.com": "Verify your email"}
+        html = smtp.messages[0].get_body(("html",))
+        assert html is not None
+        assert "https://app.example.com/verify-email?token=" in str(html.get_content())
+        assert built.queue is not None
+        await built.queue.shutdown()
+
 
 audit_router = ApiRouter(prefix="/v1/audit-probe", tags=["AuditProbe"])
 
@@ -437,7 +449,7 @@ audit_router = ApiRouter(prefix="/v1/audit-probe", tags=["AuditProbe"])
     "/items/{id}",
     operation_id="updateAuditProbe",
     auth=Auth.PUBLIC,
-    audit=Auditable(AuditAction.UPDATE, "Item"),
+    audit=Audit("item.update", resource="item"),
 )
 async def audit_probe_update(id: str, body: UpdateMeRequest) -> dict[str, Any]:
     return {"id": id, "updated": True}
@@ -448,7 +460,7 @@ async def audit_probe_update(id: str, body: UpdateMeRequest) -> dict[str, Any]:
     "/me/items/{id}",
     operation_id="updateAuditProbeMine",
     auth=Auth.JWT,
-    audit=Auditable(AuditAction.UPDATE, "Item"),
+    audit=Audit("item.update", resource="item"),
 )
 async def audit_probe_update_mine(id: str, body: UpdateMeRequest) -> dict[str, Any]:
     return {"id": id, "updated": True}
@@ -459,10 +471,10 @@ async def audit_probe_update_mine(id: str, body: UpdateMeRequest) -> dict[str, A
     "/items",
     operation_id="createAuditProbe",
     auth=Auth.PUBLIC,
-    audit=Auditable(AuditAction.CREATE, "Item", include_response=True),
+    audit=Audit("item.create", resource="item"),
 )
 async def audit_probe_create() -> dict[str, Any]:
-    return {"id": 99, "name": "n", "accessToken": "t"}
+    return {"id": 99, "name": "n"}
 
 
 @audit_router.endpoint(
@@ -470,7 +482,7 @@ async def audit_probe_create() -> dict[str, Any]:
     "/fail",
     operation_id="createAuditProbeFailure",
     auth=Auth.PUBLIC,
-    audit=Auditable(AuditAction.DELETE, "Item"),
+    audit=Audit("item.delete", resource="item"),
 )
 async def audit_probe_fail() -> None:
     raise field_error("item", "notFound")
@@ -500,7 +512,7 @@ async def _scalar(connection: AsyncConnection, sql: str, **params: Any) -> Any:
 
 async def _audit_logs(connection: AsyncConnection) -> list[AuditLogModel]:
     async with Database.bound_to(connection).transaction() as session:
-        return list(await session.scalars(select(AuditLogModel).order_by(AuditLogModel.id)))
+        return list(await session.scalars(select(AuditLogModel).order_by(AuditLogModel.created_at)))
 
 
 class TestAudit:
@@ -514,29 +526,23 @@ class TestAudit:
                 json={"displayName": "Ann", "currentPassword": PASSWORD, "unknown": 1},
                 headers={
                     **bearer(token),
-                    "X-Forwarded-For": "198.51.100.1, 10.0.0.1",
+                    "X-Forwarded-For": "198.51.100.1",
                     "User-Agent": "probe/1.0",
                 },
             )
         assert response.status_code == 200
         [log] = await _audit_logs(connection)
-        assert (log.action, log.entity_type, log.entity_id, log.user_id) == (
-            "UPDATE",
-            "Item",
+        assert (log.action, log.resource_type, log.resource_id, log.actor_id) == (
+            "item.update",
+            "item",
             "5",
             None,
         )
-        assert log.old_value is None
-        assert log.new_value == {"displayName": "Ann"}
-        assert (log.ip_address, log.user_agent) == ("198.51.100.1", "probe/1.0")
+        assert log.changes == {"displayName": "Ann"}
+        assert (str(log.ip), log.user_agent) == ("203.0.113.7", "probe/1.0")
         assert log.request_id == response.headers["x-request-id"]
-        assert await _scalar(
-            connection,
-            "SELECT old_value IS NULL AND user_id IS NULL FROM audit_logs WHERE id = :id",
-            id=log.id,
-        )
 
-    async def test_records_user_of_authenticated_route(
+    async def test_records_actor_of_authenticated_route(
         self, audit_app: FastAPI, connection: AsyncConnection
     ) -> None:
         async with client_for(audit_app) as client:
@@ -548,19 +554,22 @@ class TestAudit:
             )
         assert response.status_code == 200
         [log] = await _audit_logs(connection)
-        assert (log.entity_id, log.user_id) == ("5", str(tokens["user"]["id"]))
+        assert (log.resource_id, log.actor_id) == ("5", str(tokens["user"]["id"]))
 
-    async def test_null_values_are_stored_as_sql_null(self, connection: AsyncConnection) -> None:
-        log = await AuditService(Database.bound_to(connection)).log(
-            action=AuditAction.DELETE, entity_type="Item", entity_id=1
+    async def test_null_changes_are_stored_as_sql_null(
+        self, audit_app: FastAPI, connection: AsyncConnection
+    ) -> None:
+        await write_audit_log(
+            audit_app.state.context,
+            action="item.delete",
+            resource_type="item",
+            resource_id="1",
+            actor_id=None,
+            changes=None,
         )
-        assert await _scalar(
-            connection,
-            "SELECT old_value IS NULL AND new_value IS NULL FROM audit_logs WHERE id = :id",
-            id=log.id,
-        )
+        assert await _scalar(connection, "SELECT changes IS NULL AND ip IS NULL FROM audit_logs")
 
-    async def test_records_response_and_skips_failures(
+    async def test_resource_id_from_response_and_failures_skipped(
         self, audit_app: FastAPI, connection: AsyncConnection
     ) -> None:
         async with client_for(audit_app) as client:
@@ -568,25 +577,61 @@ class TestAudit:
             failed = await client.post("/api/v1/audit-probe/fail")
         assert (created.status_code, failed.status_code) == (200, 422)
         [log] = await _audit_logs(connection)
-        assert (log.action, log.entity_id, log.user_id, log.ip_address) == (
-            "CREATE",
+        assert (log.action, log.resource_id, log.actor_id, log.changes) == (
+            "item.create",
             "99",
             None,
-            "203.0.113.7",
+            None,
         )
-        assert log.new_value == {"id": 99, "name": "n", "accessToken": "[REDACTED]"}
 
     async def test_audit_failure_does_not_affect_response(
         self, audit_app: FastAPI, connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def broken(self: AuditService, **kwargs: Any) -> None:
+        async def broken(*args: Any, **kwargs: Any) -> None:
             raise RuntimeError("db down")
 
-        monkeypatch.setattr(AuditService, "log", broken)
+        monkeypatch.setattr(audit_module, "write_audit_log", broken)
         async with client_for(audit_app) as client:
             response = await client.post("/api/v1/audit-probe/items")
         assert response.status_code == 200
         assert await _audit_logs(connection) == []
+
+    async def test_admin_role_change_is_listed(
+        self, audit_app: FastAPI, connection: AsyncConnection
+    ) -> None:
+        async with client_for(audit_app) as client:
+            admin = await login(client, ADMIN_EMAIL)
+            user = await login(client, USER_EMAIL)
+            headers = bearer(admin["accessToken"])
+            forbidden = await client.get("/api/v1/audit-logs", headers=bearer(user["accessToken"]))
+            changed = await client.put(
+                f"/api/v1/users/{user['user']['id']}/roles",
+                json={"roles": ["user", "admin"]},
+                headers=headers,
+            )
+            assert changed.status_code == 200, changed.text
+            listed = await client.get("/api/v1/audit-logs?limit=1", headers=headers)
+        [item] = listed.json()["data"]["items"]
+        assert (item["action"], item["resourceType"], item["resourceId"], item["actorId"]) == (
+            "user.setRoles",
+            "user",
+            user["user"]["id"],
+            admin["user"]["id"],
+        )
+        assert item["changes"] == {"roles": ["user", "admin"]}
+        assert forbidden.status_code == 403
+
+    async def test_cursor_without_time_zone_is_rejected(self, audit_app: FastAPI) -> None:
+        cursor = encode_cursor("2026-01-01T00:00:00", str(USER_ID))
+        async with client_for(audit_app) as client:
+            admin = await login(client, ADMIN_EMAIL)
+            response = await client.get(
+                "/api/v1/audit-logs",
+                params={"cursor": cursor},
+                headers=bearer(admin["accessToken"]),
+            )
+        assert response.status_code == 422
+        assert response.json()["data"]["errors"][0]["field"] == "query.cursor"
 
 
 class TestAccountCleanup:
@@ -670,7 +715,7 @@ class TestAccountCleanup:
         context.queue.bind(context)
         user_id = await _user_id(context.database, USER_EMAIL)
         await _request_deletion(context.database, user_id)
-        with caplog.at_level("ERROR", logger="app.account_cleanup"):
+        with caplog.at_level("ERROR", logger="app.account_deletion"):
             await AccountCleanupProducer(context).enqueue_cleanup(user_id)
             await context.queue.shutdown()
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
@@ -707,7 +752,7 @@ class TestAccountCleanup:
 
             async def clean(self, user_id: UUID) -> None:
                 cleaners.append(("probe", user_id))
-                held.append(await redis.exists(f"lock:account-cleanup:user-{user_id}"))
+                held.append(await redis.exists(f"api:lock:account-cleanup:{user_id}"))
 
         app_context: AppContext = committed_app.state.context
         context = make_context(app_context.database, redis)
@@ -719,16 +764,16 @@ class TestAccountCleanup:
         try:
             await producer.enqueue_cleanup(user_id)
             await producer.enqueue_cleanup(user_id)
-            assert await redis.xlen(stream_name("account-cleanup")) == 1
-            assert await redis.exists(pending_key(user_id)) == 1
-            assert await redis.pttl(pending_key(user_id)) > 23 * 60 * 60 * 1000
+            assert await redis.xlen(stream_name(SERVICE)) == 1
+            assert await redis.exists(pending_key(SERVICE, user_id)) == 1
+            assert await redis.pttl(pending_key(SERVICE, user_id)) > 23 * 60 * 60 * 1000
             await consume(queue, 1)
         finally:
             await queue.shutdown()
         assert cleaners == [("probe", user_id)]
         assert held == [1]
-        assert await redis.exists(pending_key(user_id)) == 0
-        assert await redis.exists(f"lock:account-cleanup:user-{user_id}") == 0
+        assert await redis.exists(pending_key(SERVICE, user_id)) == 0
+        assert await redis.exists(f"api:lock:account-cleanup:{user_id}") == 0
 
     async def test_skips_user_locked_by_another_worker(
         self, committed_app: FastAPI, redis: Redis, cleaners: list[tuple[str, UUID]]
@@ -749,8 +794,8 @@ class TestAccountCleanup:
         assert queue is not None
         await queue.startup()
         user_id = await _user_id(context.database, USER_EMAIL)
-        other_worker = LockService(redis)
-        token = await other_worker.try_acquire(f"account-cleanup:user-{user_id}", 60_000)
+        other_worker = LockService(redis, SERVICE)
+        token = await other_worker.try_acquire(f"account-cleanup:{user_id}", 60_000)
         assert token is not None
         try:
             await AccountCleanupProducer(context).enqueue_cleanup(user_id)
@@ -758,10 +803,36 @@ class TestAccountCleanup:
         finally:
             await queue.shutdown()
         assert cleaners == []
-        assert await redis.exists(pending_key(user_id)) == 1
-        assert await redis.get(f"lock:account-cleanup:user-{user_id}") == token.encode()
-        await other_worker.release(f"account-cleanup:user-{user_id}", token)
-        await redis.delete(pending_key(user_id))
+        assert await redis.exists(pending_key(SERVICE, user_id)) == 1
+        assert await redis.get(f"api:lock:account-cleanup:{user_id}") == token.encode()
+        await other_worker.release(f"account-cleanup:{user_id}", token)
+        await redis.delete(pending_key(SERVICE, user_id))
+
+
+class TestUserDeletedEvent:
+    async def test_published_to_redis_stream_after_commit(
+        self,
+        committed_app: FastAPI,
+        redis: Redis,
+        cleaners: list[tuple[str, UUID]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("EVENTS_TRANSPORT", "redis_stream")
+        monkeypatch.setenv("EVENTS_REDIS_STREAM", "platform:events")
+        app = _build_app(committed_app.state.context.database, redis=redis)
+        async with client_for(app) as client:
+            tokens = await login(client, USER_EMAIL)
+            deleted = await client.delete("/api/v1/me", headers=bearer(tokens["accessToken"]))
+        assert deleted.status_code == 202
+        entries = await redis.xrange("platform:events")
+        assert entries is not None
+        [(_, fields)] = entries
+        assert fields is not None
+        event = decode(fields[b"event"])
+        payload = json.loads(fields[b"event"])
+        assert payload["type"] == USER_DELETED
+        assert payload["source"] == "/api"
+        assert event.get_data() == {"userId": tokens["user"]["id"]}
 
 
 class TestLifespan:
@@ -819,13 +890,13 @@ class TestScheduler:
 
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
-        token = await context.locks.try_acquire("scheduler:cleanup-old-sessions", 60_000)
+        token = await context.locks.try_acquire("cron:cleanup-old-sessions", 60_000)
         assert token is not None
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
         async with context.database.transaction() as session:
             assert await session.scalar(text("SELECT count(*) FROM sessions")) == 4
-        await context.locks.release("scheduler:cleanup-old-sessions", token)
+        await context.locks.release("cron:cleanup-old-sessions", token)
 
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()

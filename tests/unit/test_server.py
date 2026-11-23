@@ -22,6 +22,7 @@ def test_serves_app_on_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "Granian", FakeGranian)
     monkeypatch.setenv("APP_PORT", "3200")
     monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
 
     server.main()
 

@@ -1,8 +1,9 @@
 import pytest
 
+from app.common.masking import mask_email
 from app.infrastructure import cache as cache_module
 from app.infrastructure.cache import MemoryCache
-from app.infrastructure.mail import RECENT_LIMIT, LoggingMailer, MailMessage, mask_email
+from app.infrastructure.mail import RECENT_LIMIT, LoggingMailer, MailMessage
 
 
 @pytest.mark.parametrize(

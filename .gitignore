@@ -23,4 +23,4 @@ htmlcov/
 !.vscode/settings.json
 !.vscode/extensions.json
 
-/files/
+/var/

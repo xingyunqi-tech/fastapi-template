@@ -13,6 +13,9 @@ from app.identity.users.models import UserStatus
 from app.identity.users.repository import UserRepository
 from app.infrastructure.database.session import after_commit
 from app.infrastructure.mail import MailMessage
+from app.infrastructure.throttler import account_subject
+from app.infrastructure.throttler.rules import AUTH_LOGIN_ACCOUNT, AUTH_MAIL_ACCOUNT
+from app.infrastructure.throttler.storage import Mode
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,12 +66,17 @@ class AuthService:
 
     async def login(self, body: LoginWithEmailRequest, client: ClientInfo) -> Login:
         """账号不存在或无密码时校验固定假哈希；凭据正确但被禁用时 403。"""
+        limiter = self.context.rate_limiter
+        account = account_subject(body.email)
+        await limiter.check(AUTH_LOGIN_ACCOUNT, account, mode=Mode.PEEK)
         user = await self.users.find_by_email(body.email)
         result = await self.context.passwords.verify_async(
             body.password, user.password_hash if user is not None else None
         )
         if user is None or not result.valid:
+            await limiter.record_failure(AUTH_LOGIN_ACCOUNT, account)
             raise AppError("auth.invalidCredentials")
+        await limiter.reset(AUTH_LOGIN_ACCOUNT, account)
         if user.status != UserStatus.ACTIVE:
             raise AppError("auth.accountDisabled")
         if result.updated_hash is not None and user.password_hash is not None:
@@ -80,7 +88,16 @@ class AuthService:
 
     async def login_with_sms(self, body: LoginWithSmsRequest, client: ClientInfo) -> Login:
         """未注册的手机号自动注册；账号被禁用时 403。"""
-        await sms_codes(self.context).verify(body.phone, SmsScene.LOGIN, body.code)
+        limiter = self.context.rate_limiter
+        account = account_subject(body.phone)
+        await limiter.check(AUTH_LOGIN_ACCOUNT, account, mode=Mode.PEEK)
+        try:
+            await sms_codes(self.context).verify(body.phone, SmsScene.LOGIN, body.code)
+        except AppError as error:
+            if error.error_key == "auth.verificationCodeInvalid":
+                await limiter.record_failure(AUTH_LOGIN_ACCOUNT, account)
+            raise
+        await limiter.reset(AUTH_LOGIN_ACCOUNT, account)
         user = await self.users.find_by_phone(body.phone)
         if user is None:
             user = await self.users.create(
@@ -118,6 +135,7 @@ class AuthService:
 
     async def forgot_password(self, email: str) -> None:
         """邮箱不存在或账号被禁用时不发送，响应相同。"""
+        await self.context.rate_limiter.check(AUTH_MAIL_ACCOUNT, account_subject(email))
         user = await self.users.find_by_email(email)
         if user is None or user.email is None or user.status != UserStatus.ACTIVE:
             return
@@ -141,8 +159,8 @@ class AuthService:
         user.password_hash = await self.context.passwords.hash_async(password)
         await self.sessions.revoke(user.id)
 
-    async def refresh(self, refresh_token: str) -> Login:
-        return await self.sessions.refresh(refresh_token)
+    async def refresh(self, refresh_token: str, ip_subject: str) -> Login:
+        return await self.sessions.refresh(refresh_token, ip_subject)
 
     async def logout(self, principal: Principal) -> None:
         await self.sessions.revoke(principal.sub, only=[principal.sid])

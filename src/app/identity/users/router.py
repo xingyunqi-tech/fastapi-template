@@ -20,6 +20,7 @@ from app.identity.users.schemas import (
     UserPage,
 )
 from app.identity.users.service import UsersService
+from app.infrastructure.audit import Audit
 from app.infrastructure.database.session import DbSession
 from app.security import rbac
 from app.security.rbac import Permission
@@ -63,6 +64,7 @@ async def list_users(
     "POST",
     "/users",
     operation_id="createUser",
+    audit=Audit("user.create", resource="user"),
     auth=Auth.JWT,
     status=201,
     permissions=[Permission.USER_WRITE],
@@ -89,6 +91,7 @@ async def get_user(id: UserId, context: Context, session: DbSession) -> User:
     "PATCH",
     "/users/{id}",
     operation_id="updateUser",
+    audit=Audit("user.update", resource="user"),
     auth=Auth.JWT,
     permissions=[Permission.USER_WRITE],
     summary="更新用户",
@@ -104,6 +107,7 @@ async def update_user(
     "DELETE",
     "/users/{id}",
     operation_id="deleteUser",
+    audit=Audit("user.delete", resource="user"),
     auth=Auth.JWT,
     status=202,
     permissions=[Permission.USER_WRITE],
@@ -118,6 +122,7 @@ async def delete_user(id: UserId, context: Context, session: DbSession) -> None:
     "PUT",
     "/users/{id}/roles",
     operation_id="setUserRoles",
+    audit=Audit("user.setRoles", resource="user"),
     auth=Auth.JWT,
     permissions=[Permission.ROLE_WRITE],
     summary="设置用户角色",

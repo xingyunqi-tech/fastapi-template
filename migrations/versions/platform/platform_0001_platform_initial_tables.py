@@ -20,19 +20,16 @@ def upgrade() -> None:
     op.create_table(
         "audit_logs",
         sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
-        sa.Column("user_id", sa.String(), nullable=True),
-        sa.Column("action", sa.String(length=50), nullable=False),
-        sa.Column("entity_type", sa.String(length=100), nullable=False),
-        sa.Column("entity_id", sa.String(), nullable=False),
-        sa.Column(
-            "old_value", postgresql.JSONB(none_as_null=True, astext_type=sa.Text()), nullable=True
-        ),
-        sa.Column(
-            "new_value", postgresql.JSONB(none_as_null=True, astext_type=sa.Text()), nullable=True
-        ),
-        sa.Column("ip_address", sa.String(), nullable=True),
+        sa.Column("actor_id", sa.String(length=64), nullable=True),
+        sa.Column("action", sa.String(length=64), nullable=False),
+        sa.Column("resource_type", sa.String(length=64), nullable=False),
+        sa.Column("resource_id", sa.String(length=128), nullable=True),
+        sa.Column("request_id", sa.String(length=128), nullable=True),
+        sa.Column("ip", postgresql.INET(), nullable=True),
         sa.Column("user_agent", sa.Text(), nullable=True),
-        sa.Column("request_id", sa.String(), nullable=True),
+        sa.Column(
+            "changes", postgresql.JSONB(none_as_null=True, astext_type=sa.Text()), nullable=True
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -41,39 +38,30 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_logs")),
     )
-    op.create_index(op.f("ix_audit_logs_action"), "audit_logs", ["action"], unique=False)
     op.create_index(op.f("ix_audit_logs_created_at"), "audit_logs", ["created_at"], unique=False)
-    op.create_index(op.f("ix_audit_logs_entity_id"), "audit_logs", ["entity_id"], unique=False)
-    op.create_index(op.f("ix_audit_logs_entity_type"), "audit_logs", ["entity_type"], unique=False)
-    op.create_index(op.f("ix_audit_logs_request_id"), "audit_logs", ["request_id"], unique=False)
-    op.create_index(op.f("ix_audit_logs_user_id"), "audit_logs", ["user_id"], unique=False)
     op.create_table(
-        "file",
+        "files",
         sa.Column("id", sa.Uuid(), server_default=sa.text("uuidv7()"), nullable=False),
-        sa.Column("path", sa.String(), nullable=False),
-        sa.Column("owner_user_id", sa.Uuid(), nullable=True),
+        sa.Column("owner_id", sa.String(length=64), nullable=False),
+        sa.Column("purpose", sa.String(length=32), nullable=False),
+        sa.Column("storage_key", sa.String(length=255), nullable=False),
+        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("content_type", sa.String(length=100), nullable=False),
+        sa.Column("size", sa.BigInteger(), nullable=False),
         sa.Column(
-            "visibility", sa.String(length=10), server_default=sa.text("'PUBLIC'"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
-        sa.Column("mime_type", sa.String(length=100), nullable=True),
-        sa.Column("size", sa.Integer(), nullable=True),
-        sa.Column("sha256", sa.String(length=64), nullable=True),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_file")),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_files")),
+        sa.UniqueConstraint("storage_key", name=op.f("uq_files_storage_key")),
     )
-    op.create_index(op.f("ix_file_owner_user_id"), "file", ["owner_user_id"], unique=False)
-    op.create_index(op.f("ix_file_path"), "file", ["path"], unique=False)
-    op.create_index(op.f("ix_file_sha256"), "file", ["sha256"], unique=False)
+    op.create_index(op.f("ix_files_owner_id"), "files", ["owner_id"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_file_sha256"), table_name="file")
-    op.drop_index(op.f("ix_file_path"), table_name="file")
-    op.drop_index(op.f("ix_file_owner_user_id"), table_name="file")
-    op.drop_table("file")
-    op.drop_index(op.f("ix_audit_logs_user_id"), table_name="audit_logs")
-    op.drop_index(op.f("ix_audit_logs_request_id"), table_name="audit_logs")
-    op.drop_index(op.f("ix_audit_logs_entity_type"), table_name="audit_logs")
-    op.drop_index(op.f("ix_audit_logs_entity_id"), table_name="audit_logs")
+    op.drop_index(op.f("ix_files_owner_id"), table_name="files")
+    op.drop_table("files")
     op.drop_index(op.f("ix_audit_logs_created_at"), table_name="audit_logs")
-    op.drop_index(op.f("ix_audit_logs_action"), table_name="audit_logs")
     op.drop_table("audit_logs")

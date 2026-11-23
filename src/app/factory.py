@@ -26,21 +26,19 @@ from app.identity.me import router as me
 from app.identity.sessions import account_cleaner as _sessions_account_cleaner  # noqa: F401
 from app.identity.sessions import deps as _issuer_auth  # noqa: F401
 from app.identity.users import router as users
+from app.infrastructure.audit import router as audit
 from app.infrastructure.cache import Cache, MemoryCache, RedisCache
 from app.infrastructure.database.session import Database
 from app.infrastructure.health import router as health
 from app.infrastructure.logging import configure_logging
 from app.infrastructure.logging.middleware import RequestLoggingMiddleware
 from app.infrastructure.mail import LoggingMailer, Mailer
-from app.infrastructure.metrics import mark_process_dead
-from app.infrastructure.metrics import router as metrics
-from app.infrastructure.metrics.database import instrument_sqlalchemy
-from app.infrastructure.metrics.middleware import MetricsMiddleware
-from app.infrastructure.observability import setup_otel, setup_sentry
-from app.infrastructure.observability import shutdown as shutdown_otel
 from app.infrastructure.queue import TaskQueue
 from app.infrastructure.queue.mail import QueueMailer
-from app.infrastructure.throttler import RateLimitHeadersMiddleware, ThrottlerStorage
+from app.infrastructure.telemetry import instrument_app, setup_sentry
+from app.infrastructure.telemetry import router as metrics
+from app.infrastructure.telemetry import shutdown as shutdown_telemetry
+from app.infrastructure.throttler import RateLimitHeadersMiddleware
 from app.modules.files import account_cleaner as _files_account_cleaner  # noqa: F401
 from app.modules.files import router as files
 from app.modules.files.storage import close_s3_clients
@@ -71,7 +69,8 @@ def build_tokens(settings: Settings) -> tuple[TokenSigner, TokenVerifier]:
 def build_context(settings: Settings, *, pool_size: int | None = None) -> AppContext:
     """`pool_size` 覆盖本进程的 `DATABASE_POOL_SIZE`。"""
     redis = Redis.from_url(settings.redis.url()) if settings.redis.enabled else None
-    cache: Cache = RedisCache(redis) if redis is not None else MemoryCache()
+    service = settings.telemetry.service_name
+    cache: Cache = RedisCache(redis, service) if redis is not None else MemoryCache()
     queue = TaskQueue.from_settings(settings)
     signer, verifier = build_tokens(settings)
     context = AppContext(
@@ -110,8 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await context.database.dispose()
     if context.redis is not None:
         await context.redis.aclose()
-    shutdown_otel()
-    mark_process_dead()
+    shutdown_telemetry()
 
 
 def create_app(
@@ -121,10 +119,9 @@ def create_app(
     settings = settings or get_settings()
     configure_logging(settings)
     setup_sentry(settings)
-    instrument_sqlalchemy()
     i18n = get_i18n(settings.app.default_locale)
     app = FastAPI(
-        title=settings.app.name,
+        title=settings.telemetry.service_name,
         version=package_version(),
         openapi_url=None,
         docs_url=None,
@@ -136,7 +133,6 @@ def create_app(
     app.state.settings = settings
     app.state.i18n = i18n
     app.state.context = build_context(settings)
-    app.state.throttler = ThrottlerStorage()
     register_exception_handlers(app)
     install_openapi(app)
     if settings.app.docs_enabled:
@@ -146,10 +142,11 @@ def create_app(
     include_routes(app, me.router, API_PREFIX)
     include_routes(app, users.router, API_PREFIX)
     include_routes(app, keys.router)
-    for files_router in files.routers_for(settings.file.driver):
-        include_routes(app, files_router, API_PREFIX)
-    include_routes(app, health.router, API_PREFIX)
-    include_routes(app, metrics.build_router(settings.metrics.path))
+    include_routes(app, files.router, API_PREFIX)
+    include_routes(app, audit.router, API_PREFIX)
+    include_routes(app, health.router)
+    if settings.telemetry.prometheus_enabled:
+        include_routes(app, metrics.router)
     for router, prefix in extra_routers:
         include_routes(app, router, prefix)
     finalize_routes(app)
@@ -157,8 +154,6 @@ def create_app(
     app.add_middleware(CatchAllMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitHeadersMiddleware)
-    if settings.metrics.enabled:
-        app.add_middleware(MetricsMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -169,5 +164,5 @@ def create_app(
         allow_credentials=False,
     )
     app.add_middleware(RequestContextMiddleware, i18n=i18n)
-    setup_otel(app, settings, app.state.context.database.engine)
+    instrument_app(app, settings, app.state.context.database.engine)
     return app

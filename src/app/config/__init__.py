@@ -8,14 +8,14 @@ from app.config.app import AppSettings, Environment
 from app.config.auth import AuthSettings
 from app.config.base import SettingsGroup
 from app.config.database import DatabaseSettings
-from app.config.file import FileDriver, FileSettings
-from app.config.log import LogLevel, LogSettings
+from app.config.events import EventsSettings, EventsTransport
+from app.config.log import LogFormat, LogLevel, LogSettings
 from app.config.mail import MailSettings, MailTls
-from app.config.metrics import MetricsSettings
-from app.config.observability import ObservabilitySettings
+from app.config.rate_limit import Quota, RateLimitSettings
 from app.config.redis import RedisSettings
 from app.config.sms import SmsSettings
-from app.config.throttler import ThrottlerSettings
+from app.config.storage import StorageDriver, StorageSettings
+from app.config.telemetry import MetricsExporter, TelemetrySettings, TracesExporter
 from app.config.wechat import WechatSettings
 
 __all__ = [
@@ -24,19 +24,24 @@ __all__ = [
     "AuthSettings",
     "DatabaseSettings",
     "Environment",
-    "FileDriver",
-    "FileSettings",
+    "EventsSettings",
+    "EventsTransport",
+    "LogFormat",
     "LogLevel",
     "LogSettings",
     "MailSettings",
     "MailTls",
-    "MetricsSettings",
-    "ObservabilitySettings",
+    "MetricsExporter",
+    "Quota",
+    "RateLimitSettings",
     "RedisSettings",
     "Settings",
     "SettingsError",
     "SmsSettings",
-    "ThrottlerSettings",
+    "StorageDriver",
+    "StorageSettings",
+    "TelemetrySettings",
+    "TracesExporter",
     "WechatSettings",
     "get_settings",
 ]
@@ -71,11 +76,11 @@ class Settings:
     database: DatabaseSettings
     redis: RedisSettings
     mail: MailSettings
-    file: FileSettings
-    throttler: ThrottlerSettings
-    metrics: MetricsSettings
+    storage: StorageSettings
+    rate_limit: RateLimitSettings
     log: LogSettings
-    observability: ObservabilitySettings
+    telemetry: TelemetrySettings
+    events: EventsSettings
     sms: SmsSettings
     wechat: WechatSettings
     alipay: AlipaySettings
@@ -83,58 +88,57 @@ class Settings:
     @classmethod
     def load(cls) -> Settings:
         loader = _Loader()
-        app = loader.load(AppSettings)
-        auth = loader.load(AuthSettings)
-        database = loader.load(DatabaseSettings)
-        redis = loader.load(RedisSettings)
-        mail = loader.load(MailSettings)
-        file = loader.load(FileSettings)
-        throttler = loader.load(ThrottlerSettings)
-        metrics = loader.load(MetricsSettings)
-        log = loader.load(LogSettings)
-        observability = loader.load(ObservabilitySettings)
-        sms = loader.load(SmsSettings)
-        wechat = loader.load(WechatSettings)
-        alipay = loader.load(AlipaySettings)
-        if app is not None and app.is_production:
-            if not app.frontend_url:
-                loader.errors.append("APP_FRONTEND_URL: required in production")
-            if redis is not None and not redis.enabled:
-                loader.errors.append("REDIS_ENABLED: must be true in production")
-            if mail is not None:
-                loader.errors.extend(mail.validate_for_production())
-        if (
-            loader.errors
-            or app is None
-            or auth is None
-            or database is None
-            or redis is None
-            or mail is None
-            or file is None
-            or throttler is None
-            or metrics is None
-            or log is None
-            or observability is None
-            or sms is None
-            or wechat is None
-            or alipay is None
-        ):
+        groups = {
+            name: loader.load(group)
+            for name, group in (
+                ("app", AppSettings),
+                ("auth", AuthSettings),
+                ("database", DatabaseSettings),
+                ("redis", RedisSettings),
+                ("mail", MailSettings),
+                ("storage", StorageSettings),
+                ("rate_limit", RateLimitSettings),
+                ("log", LogSettings),
+                ("telemetry", TelemetrySettings),
+                ("events", EventsSettings),
+                ("sms", SmsSettings),
+                ("wechat", WechatSettings),
+                ("alipay", AlipaySettings),
+            )
+        }
+        if loader.errors or any(group is None for group in groups.values()):
             raise SettingsError(loader.errors)
-        return cls(
-            app=app,
-            auth=auth,
-            database=database,
-            redis=redis,
-            mail=mail,
-            file=file,
-            throttler=throttler,
-            metrics=metrics,
-            log=log,
-            observability=observability,
-            sms=sms,
-            wechat=wechat,
-            alipay=alipay,
-        )
+        settings = cls(**groups)  # type: ignore[arg-type]
+        errors = settings.cross_check()
+        if errors:
+            raise SettingsError(errors)
+        return settings
+
+    def cross_check(self) -> list[str]:
+        """跨分组校验：签发方必填项与生产环境必填项。"""
+        errors: list[str] = []
+        if self.storage.driver is None:
+            errors.append("STORAGE_DRIVER: required for the issuer")
+        if self.events.transport is EventsTransport.REDIS_STREAM and not self.redis.enabled:
+            errors.append("REDIS_URL: required when EVENTS_TRANSPORT=redis_stream")
+        if self.telemetry.prometheus_enabled and self.app.web_concurrency > 1:
+            errors.append("WEB_CONCURRENCY: must be 1 when OTEL_METRICS_EXPORTER=prometheus")
+        if not self.app.is_production:
+            return errors
+        if not self.app.frontend_url:
+            errors.append("APP_FRONTEND_URL: required in production")
+        if not self.redis.enabled:
+            errors.append("REDIS_URL: required in production")
+        if not self.app.cors_origins:
+            errors.append("CORS_ORIGINS: required in production")
+        if self.telemetry.prometheus_enabled and self.telemetry.metrics_token is None:
+            errors.append(
+                "METRICS_TOKEN: required in production with OTEL_METRICS_EXPORTER=prometheus"
+            )
+        if self.storage.driver is StorageDriver.LOCAL and self.storage.url_secret is None:
+            errors.append("STORAGE_URL_SECRET: required in production with STORAGE_DRIVER=local")
+        errors.extend(self.mail.validate_for_production())
+        return errors
 
 
 @cache

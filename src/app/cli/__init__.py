@@ -16,7 +16,7 @@ from app.cli.openapi import openapi_cli
 from app.cli.seed import seed as run_seed
 from app.config import Settings, get_settings
 from app.factory import build_context
-from app.infrastructure.account_cleanup import AccountCleanupRunner
+from app.identity.account_deletion.cleanup import AccountCleanupRunner
 from app.infrastructure.logging import configure_logging
 from app.security.keys import generate_key_pair
 
@@ -96,10 +96,13 @@ async def _ping_redis(settings: Settings) -> None:
 def worker(
     workers: Annotated[int, typer.Option(min=1, help="worker 进程数")] = 1,
 ) -> None:
-    """启动队列 worker（Taskiq，需 REDIS_ENABLED=true）。"""
+    """启动队列 worker（Taskiq，需 REDIS_URL）。"""
     settings = get_settings()
     if not settings.redis.enabled:
-        typer.echo("REDIS_ENABLED=false：任务在 API 进程内执行，无需单独的 worker")
+        typer.echo("未设置 REDIS_URL：任务在 API 进程内执行，无需单独的 worker")
+        raise typer.Exit(1)
+    if workers > 1 and settings.telemetry.prometheus_enabled:
+        typer.echo("OTEL_METRICS_EXPORTER=prometheus 时 --workers 只能为 1", err=True)
         raise typer.Exit(1)
     configure_logging(settings)
     try:

@@ -9,14 +9,14 @@ from app.config import (
     AppSettings,
     AuthSettings,
     DatabaseSettings,
-    FileSettings,
+    EventsSettings,
     LogSettings,
     MailSettings,
-    MetricsSettings,
-    ObservabilitySettings,
+    RateLimitSettings,
     RedisSettings,
     SmsSettings,
-    ThrottlerSettings,
+    StorageSettings,
+    TelemetrySettings,
     WechatSettings,
     get_settings,
 )
@@ -34,11 +34,11 @@ SETTINGS_ENV_VARS = set().union(
             DatabaseSettings,
             RedisSettings,
             MailSettings,
-            ThrottlerSettings,
-            MetricsSettings,
+            RateLimitSettings,
             LogSettings,
-            ObservabilitySettings,
-            FileSettings,
+            TelemetrySettings,
+            EventsSettings,
+            StorageSettings,
             SmsSettings,
             WechatSettings,
             AlipaySettings,
@@ -49,7 +49,9 @@ TEST_ENV = {
     "AUTH_ISSUER": keys.ISSUER,
     "AUTH_AUDIENCE": keys.AUDIENCE,
     "AUTH_SIGNING_KEY": keys.SIGNING_KEY,
-    "THROTTLE_ENABLED": "false",
+    "OTEL_SERVICE_NAME": "api",
+    "STORAGE_DRIVER": "local",
+    "RATE_LIMIT_DEFAULT": "1/ms,burst=100000000",
     "DATABASE_URL": "postgresql://root:secret@localhost:5432/api?sslmode=disable",
 }
 
@@ -82,7 +84,10 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
 
 def use_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("REDIS_ENABLED", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("METRICS_TOKEN", "test_metrics_token_0123456789")
+    monkeypatch.setenv("STORAGE_URL_SECRET", "test_storage_url_secret")
     monkeypatch.setenv("MAIL_HOST", "smtp.example.com")
     monkeypatch.setenv("MAIL_FROM", "Api <noreply@example.com>")
     monkeypatch.setenv("APP_FRONTEND_URL", "https://app.example.com")

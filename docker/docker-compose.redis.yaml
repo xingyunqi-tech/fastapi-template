@@ -4,9 +4,7 @@
 #   docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis.yaml -f docker/docker-compose.postgres.yaml up
 
 x-redis-env: &redis-env
-  REDIS_ENABLED: 'true'
-  REDIS_HOST: redis
-  REDIS_PORT: '6379'
+  REDIS_URL: redis://redis:6379/0
 
 x-redis-depends: &redis-depends
   redis:
@@ -82,15 +80,11 @@ services:
       retries: 3
       start_period: 30s
       start_interval: 2s
-    pid: service:pidns
     environment:
       <<: *redis-env
       DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?sslmode=disable
       MAIL_HOST: mailpit
       MAIL_PORT: '1025'
-      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
-    volumes:
-      - prometheus-multiproc:/tmp/prometheus
     depends_on:
       <<: *redis-depends
       api:
@@ -124,4 +118,3 @@ services:
 volumes:
   redis-data:
   redisinsight-data:
-  prometheus-multiproc:

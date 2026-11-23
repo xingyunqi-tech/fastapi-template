@@ -1,20 +1,32 @@
-lazy from collections.abc import Sequence
-lazy from uuid import UUID
+"""上传、读取与按所有者清理；类型按文件内容识别，大小按用途上限判定。"""
+
+from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import select
-lazy from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import AppError
+from app.common.errors import AppError, field_error
+from app.infrastructure.database.session import after_rollback
 from app.modules.files.models import FileModel
-from app.modules.files.purposes import FileVisibility
+from app.modules.files.purposes import RULES, SNIFF_BYTES, Purpose, sniff
+from app.modules.files.storage import build_storage, new_key
 
-PRIVATE = FileVisibility.PRIVATE.value
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from typing import IO
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.config import StorageSettings
+
+NAME_MAX_LENGTH: Final = 255
 
 
-def can_access(file: FileModel, user_id: UUID | None) -> bool:
-    if file.visibility != PRIVATE:
-        return True
-    return user_id is not None and file.owner_user_id == user_id
+def _size(body: IO[bytes]) -> int:
+    body.seek(0, 2)
+    size = body.tell()
+    body.seek(0)
+    return size
 
 
 class FilesService:
@@ -24,60 +36,58 @@ class FilesService:
     async def find_by_id(self, file_id: UUID) -> FileModel | None:
         return await self.session.get(FileModel, file_id)
 
-    async def find_by_ids(self, ids: Sequence[UUID]) -> list[FileModel]:
-        if not ids:
-            return []
-        return list(await self.session.scalars(select(FileModel).where(FileModel.id.in_(ids))))
-
-    async def find_by_path(self, path: str) -> FileModel | None:
-        return await self.session.scalar(select(FileModel).where(FileModel.path == path).limit(1))
+    async def find_owned(self, file_id: UUID, owner_id: str) -> FileModel:
+        """不存在或不是本人上传时 404 `common.notFound`。"""
+        file = await self.find_by_id(file_id)
+        if file is None or file.owner_id != owner_id:
+            raise AppError("common.notFound")
+        return file
 
     async def find_by_owner(
-        self, owner_user_id: UUID, after_id: UUID | None, limit: int
-    ) -> list[FileModel]:
-        """该用户上传的文件，按 id 升序取 after_id 之后的 limit 条。"""
-        query = select(FileModel).where(FileModel.owner_user_id == owner_user_id)
+        self, owner_id: str, after_id: UUID | None, limit: int
+    ) -> Sequence[FileModel]:
+        query = select(FileModel).where(FileModel.owner_id == owner_id)
         if after_id is not None:
             query = query.where(FileModel.id > after_id)
         return list(await self.session.scalars(query.order_by(FileModel.id).limit(limit)))
 
-    async def create(
+    async def upload(
         self,
+        storage_settings: StorageSettings,
         *,
-        path: str,
-        owner_user_id: UUID | None,
-        visibility: FileVisibility,
-        mime_type: str | None,
-        size: int | None,
+        owner_id: str,
+        purpose_value: str | None,
+        name: str,
+        body: IO[bytes],
     ) -> FileModel:
+        """用途缺失或非法 422；超出用途上限 413 `file.tooLarge`；类型不符 422。"""
+        if not purpose_value:
+            raise field_error("purpose", "required")
+        try:
+            purpose = Purpose(purpose_value)
+        except ValueError:
+            raise field_error("purpose", "enum", values=[p.value for p in Purpose]) from None
+        rule = RULES[purpose]
+        size = _size(body)
+        if size > rule.max_size:
+            raise AppError("file.tooLarge")
+        content_type = sniff(body.read(SNIFF_BYTES))
+        body.seek(0)
+        if content_type is None or content_type not in rule.content_types:
+            raise AppError("file.typeNotAllowed")
+        key = new_key()
+        storage = build_storage(storage_settings)
+        await storage.put(key, body, content_type)
+        after_rollback(self.session, lambda: storage.delete(key))
         file = FileModel(
-            path=path,
-            owner_user_id=owner_user_id,
-            visibility=visibility.value,
-            mime_type=mime_type,
+            owner_id=owner_id,
+            purpose=purpose.value,
+            storage_key=key,
+            name=name[:NAME_MAX_LENGTH] or key,
+            content_type=content_type,
             size=size,
         )
         self.session.add(file)
         await self.session.flush()
+        await self.session.refresh(file)
         return file
-
-    async def find_accessible(self, file_id: UUID, user_id: UUID | None) -> FileModel:
-        """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
-        file = await self.find_by_id(file_id)
-        if file is None:
-            raise AppError("common.notFound")
-        if not can_access(file, user_id):
-            raise AppError("common.forbidden")
-        return file
-
-    async def assert_referenceable(
-        self, ids: Sequence[UUID], user_id: UUID | None
-    ) -> list[FileModel]:
-        """不存在时 404 `common.notFound`，无权访问时 403 `common.forbidden`。"""
-        unique = list(dict.fromkeys(ids))
-        files = await self.find_by_ids(unique)
-        if len(files) != len(unique):
-            raise AppError("common.notFound")
-        if any(not can_access(file, user_id) for file in files):
-            raise AppError("common.forbidden")
-        return files

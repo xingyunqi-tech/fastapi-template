@@ -15,12 +15,20 @@ lazy from sqlalchemy.ext.asyncio import AsyncConnection
 from app.identity.providers.sms import DAILY_LIMIT, FAILURE_LIMIT, MAX_ATTEMPTS
 from app.identity.providers.sms.store import RedisSmsStore
 from app.infrastructure.database.session import Database
+from app.infrastructure.throttler import account_subject
+from app.infrastructure.throttler.rules import AUTH_LOGIN_ACCOUNT
 from tests.integration.conftest import _build_app, client_for, error_of, rules_of
 from tests.integration.identity import USER_EMAIL, auth_headers, bearer
 
 SEND = "/api/v1/auth/sms/send"
 LOGIN = "/api/v1/auth/sms/login"
 PHONE = "+8613800138000"
+ACCOUNT_KEY = f"rl:auth-login-account:{account_subject(PHONE)}"
+
+
+def sms_key(kind: str, *parts: str, phone: str = PHONE) -> str:
+    return ":".join(("api", "sms", kind, *parts, f"{{{phone}}}"))
+
 
 ALIYUN_ENV = {
     "SMS_PROVIDER": "aliyun",
@@ -88,7 +96,12 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def clear_cooldown(app: FastAPI, phone: str = PHONE) -> None:
-    await app.state.context.sms_store.delete(f"sms:cooldown:{phone}")
+    await app.state.context.sms_store.delete(sms_key("cooldown", phone=phone))
+
+
+async def clear_rate_limits(redis: Redis) -> None:
+    async for name in redis.scan_iter(match="rl:*"):
+        await redis.delete(name)
 
 
 async def send(
@@ -170,7 +183,7 @@ class TestLoginWithSms:
         )
 
     async def test_wrong_code_and_expired_attempts(
-        self, client: httpx.AsyncClient, aliyun: FakeAliyun
+        self, app: FastAPI, client: httpx.AsyncClient, aliyun: FakeAliyun
     ) -> None:
         await send(client)
         code = aliyun.last_code
@@ -178,8 +191,26 @@ class TestLoginWithSms:
         for _ in range(MAX_ATTEMPTS):
             response = await client.post(LOGIN, json={"phone": PHONE, "code": wrong})
             assert error_of(response) == (422, "auth.verificationCodeInvalid")
+        limited = await client.post(LOGIN, json={"phone": PHONE, "code": code})
+        assert error_of(limited) == (429, "common.tooManyRequests")
+
+        await app.state.context.rate_limiter.reset(AUTH_LOGIN_ACCOUNT, account_subject(PHONE))
         response = await client.post(LOGIN, json={"phone": PHONE, "code": code})
         assert error_of(response) == (422, "auth.verificationCodeInvalid")
+
+    async def test_successful_login_clears_account_failures(
+        self, app: FastAPI, client: httpx.AsyncClient, aliyun: FakeAliyun
+    ) -> None:
+        await send(client)
+        for _ in range(AUTH_LOGIN_ACCOUNT.quota.burst - 1):
+            await client.post(LOGIN, json={"phone": PHONE, "code": "000000"})
+        await client.post(LOGIN, json={"phone": PHONE, "code": aliyun.last_code})
+
+        await clear_cooldown(app)
+        await send(client)
+        for _ in range(AUTH_LOGIN_ACCOUNT.quota.burst):
+            response = await client.post(LOGIN, json={"phone": PHONE, "code": "000000"})
+        assert response.status_code != 429
 
     async def test_code_format_is_validated(self, client: httpx.AsyncClient) -> None:
         response = await client.post(LOGIN, json={"phone": PHONE, "code": "12345"})
@@ -237,7 +268,7 @@ class TestBindPhone:
         assert error_of(response) == (409, "user.phoneTaken")
 
     async def test_locked_phone_is_429(self, app: FastAPI, client: httpx.AsyncClient) -> None:
-        await app.state.context.sms_store.set(f"sms:locked:{PHONE}", "1", 60_000)
+        await app.state.context.sms_store.set(sms_key("locked"), "1", 60_000)
         response = await client.put(
             "/api/v1/me/phone",
             json={"phone": PHONE, "code": "123456"},
@@ -272,8 +303,8 @@ class TestRedisStore:
         async with client_for(redis_app) as client:
             await send(client)
             assert error_of(await send(client)) == (429, "auth.sendTooFrequent")
-            assert 0 < await redis.pttl(f"sms:cooldown:{PHONE}") <= 60_000
-            assert 0 < await redis.pttl(f"sms:code:login:{PHONE}") <= 300_000
+            assert 0 < await redis.pttl(sms_key("cooldown")) <= 60_000
+            assert 0 < await redis.pttl(sms_key("code", "login")) <= 300_000
 
             body = {"phone": PHONE, "code": aliyun.last_code}
             assert (await client.post(LOGIN, json=body)).status_code == 200
@@ -288,25 +319,28 @@ class TestRedisStore:
             wrong = "000000" if code != "000000" else "111111"
             for _ in range(MAX_ATTEMPTS):
                 await client.post(LOGIN, json={"phone": PHONE, "code": wrong})
-            assert await redis.exists(f"sms:code:login:{PHONE}") == 0
+            assert await redis.exists(sms_key("code", "login")) == 0
+            assert await redis.exists(ACCOUNT_KEY) == 1
             for _ in range(FAILURE_LIMIT - MAX_ATTEMPTS):
+                await clear_rate_limits(redis)
                 await client.post(LOGIN, json={"phone": PHONE, "code": wrong})
 
+            await clear_rate_limits(redis)
             locked = await client.post(LOGIN, json={"phone": PHONE, "code": code})
             assert error_of(locked) == (429, "auth.verificationLocked")
             assert 3500 < int(locked.headers["retry-after"]) <= 3600
-            assert 3_500_000 < await redis.pttl(f"sms:locked:{PHONE}") <= 3_600_000
+            assert 3_500_000 < await redis.pttl(sms_key("locked")) <= 3_600_000
 
     async def test_daily_limit_and_send_failure_rollback(
         self, redis_app: FastAPI, aliyun: FakeAliyun
     ) -> None:
         redis: Redis = redis_app.state.context.redis
-        daily = f"sms:daily:{datetime.now(UTC):%Y%m%d}:{PHONE}"
+        daily = sms_key("daily", f"{datetime.now(UTC):%Y%m%d}")
         async with client_for(redis_app) as client:
             aliyun.code = "isv.BUSINESS_LIMIT_CONTROL"
             assert error_of(await send(client)) == (502, "common.badGateway")
             assert await redis.get(daily) == b"0"
-            assert await redis.exists(f"sms:cooldown:{PHONE}") == 0
+            assert await redis.exists(sms_key("cooldown")) == 0
             assert 0 < await redis.pttl(daily) <= 25 * 3600 * 1000
 
             aliyun.code = "OK"

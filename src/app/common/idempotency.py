@@ -13,6 +13,7 @@ from starlette.responses import Response
 from app.common.client import client_ip
 from app.common.errors import AppError
 from app.common.middleware import current_request_id
+from app.infrastructure.redis import key as redis_key
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -132,7 +133,7 @@ def _subject(request: Request) -> str:
     if user_id is not None:
         return f"u:{user_id}"
     context: AppContext = request.app.state.context
-    return f"ip:{client_ip(request, context.settings.app.trust_proxy) or ''}"
+    return f"ip:{client_ip(request, context.settings.app.trusted_proxies) or ''}"
 
 
 async def idempotency_guard(
@@ -145,7 +146,7 @@ async def idempotency_guard(
     context: AppContext = request.app.state.context
     scope = "\n".join([_subject(request), request.method, request.url.path, key_header])
     digest = hashlib.sha256(scope.encode()).hexdigest()
-    key = f"{context.settings.app.name}:idem:{digest}"
+    key = redis_key(context.settings.telemetry.service_name, "idem", digest)
     body_hash = hashlib.sha256(await request.body()).hexdigest()
     store = store_for(request)
     if await store.claim(key, {"bodyHash": body_hash, "pending": True}, PENDING_TTL_MS):

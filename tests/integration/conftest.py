@@ -1,7 +1,11 @@
-"""testcontainers：会话级 Postgres / Redis，Alembic 迁移与种子写入模板库，每个 worker 克隆一份。"""
+"""testcontainers：会话级 Postgres / Redis / Mailpit / MinIO。
+
+Alembic 迁移与种子写入模板库，每个 worker 克隆一份。
+"""
 
 import asyncio
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -16,6 +20,8 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
+from testcontainers.core.container import DockerContainer
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 lazy from fastapi import FastAPI
 
 from app.cli.seed import seed
@@ -32,6 +38,10 @@ if TYPE_CHECKING:
 
 POSTGRES_IMAGE = "postgres:18.6-alpine"
 REDIS_IMAGE = "redis:8.10.3-alpine"
+MAILPIT_IMAGE = "axllent/mailpit:v1.27"
+MINIO_IMAGE = (
+    "chainguard/minio@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd"
+)
 TEMPLATE_DB = "app_template"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DESKTOP_SOCKET = os.path.expanduser("~/.docker/run/docker.sock")
@@ -96,6 +106,51 @@ def redis_url() -> Iterator[str]:
         yield f"redis://{container.get_container_host_ip()}:{container.get_exposed_port(6379)}/0"
 
 
+@dataclass(frozen=True, slots=True)
+class Mailpit:
+    host: str
+    smtp_port: int
+    api: str
+
+
+@pytest.fixture(scope="session")
+def mailpit_server() -> Iterator[Mailpit]:
+    container = DockerContainer(MAILPIT_IMAGE).with_exposed_ports(1025, 8025)
+    with container.waiting_for(LogMessageWaitStrategy("accessible via")) as container:
+        host = container.get_container_host_ip()
+        api = f"http://{host}:{container.get_exposed_port(8025)}"
+        for _ in range(100):
+            try:
+                if httpx_lib.get(f"{api}/readyz", timeout=1, trust_env=False).status_code == 200:
+                    break
+            except httpx_lib.TransportError:
+                time.sleep(0.2)
+        yield Mailpit(host, int(container.get_exposed_port(1025)), api)
+
+
+@dataclass(frozen=True, slots=True)
+class Minio:
+    endpoint: str
+    access_key: str
+    secret_key: str
+
+
+@pytest.fixture(scope="session")
+def minio_server() -> Iterator[Minio]:
+    user, password = "minio-test", "minio-test-secret"
+    container = (
+        DockerContainer(MINIO_IMAGE)
+        .with_env("MINIO_ROOT_USER", user)
+        .with_env("MINIO_ROOT_PASSWORD", password)
+        .with_command("server /data --address :9000")
+        .with_exposed_ports(9000)
+        .waiting_for(LogMessageWaitStrategy("API:"))
+    )
+    with container:
+        host = container.get_container_host_ip()
+        yield Minio(f"http://{host}:{container.get_exposed_port(9000)}", user, password)
+
+
 @pytest.fixture(scope="session")
 def template_db(pg_server: PgServer) -> str:
     asyncio.run(_execute(pg_server.dsn("postgres"), f"CREATE DATABASE {TEMPLATE_DB}"))
@@ -146,7 +201,7 @@ def _build_app(database: Database, *, redis: Redis | None = None) -> FastAPI:
     app.state.context = AppContext(
         settings=settings,
         database=database,
-        cache=RedisCache(redis) if redis is not None else MemoryCache(),
+        cache=RedisCache(redis, "api") if redis is not None else MemoryCache(),
         passwords=built.passwords,
         mailer=LoggingMailer(),
         signer=built.signer,

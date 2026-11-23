@@ -1,17 +1,18 @@
-from urllib.parse import quote
-
 from pydantic import Field, SecretStr
 
-from app.config.base import EnvFlag, SettingsGroup
+from app.config.base import SettingsGroup
 
 
 class RedisSettings(SettingsGroup):
-    enabled: EnvFlag = Field(default=False, validation_alias="REDIS_ENABLED")
-    host: str = Field(default="localhost", validation_alias="REDIS_HOST")
-    port: int = Field(default=6379, validation_alias="REDIS_PORT")
-    password: SecretStr | None = Field(default=None, validation_alias="REDIS_PASSWORD")
-    db: int = Field(default=0, ge=0, validation_alias="REDIS_DB")
+    """`REDIS_URL` 未设置时缓存、锁、限流、吊销、短信计数与队列用进程内实现。"""
+
+    redis_url: SecretStr | None = Field(default=None, validation_alias="REDIS_URL")
+
+    @property
+    def enabled(self) -> bool:
+        return self.redis_url is not None
 
     def url(self) -> str:
-        auth = f":{quote(self.password.get_secret_value(), safe='')}@" if self.password else ""
-        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
+        if self.redis_url is None:
+            raise RuntimeError("REDIS_URL is not set")
+        return self.redis_url.get_secret_value()

@@ -1,4 +1,4 @@
-"""应用级单例（配置、数据库、Redis、缓存、令牌、密码、邮件、队列、锁、短信计数）。"""
+"""应用级单例（配置、数据库、Redis、缓存、令牌、密码、邮件、队列、锁、限流、短信计数）。"""
 
 from dataclasses import dataclass, field
 from typing import Annotated
@@ -11,8 +11,10 @@ from app.config import Settings
 from app.identity.providers.sms.store import SmsStore, sms_store
 from app.infrastructure.cache import Cache
 from app.infrastructure.database.session import Database
+from app.infrastructure.events import EventPublisher, build_publisher
 from app.infrastructure.mail import Mailer
 from app.infrastructure.redis import LockService
+from app.infrastructure.throttler import RateLimiter
 from app.modules.files.urls import FileUrls
 from app.security.jwt import TokenSigner, TokenVerifier
 from app.security.passwords import Passwords
@@ -36,15 +38,17 @@ class AppContext:
     locks: LockService = field(init=False)
     revocations: Revocations = field(init=False)
     sms_store: SmsStore = field(init=False)
+    rate_limiter: RateLimiter = field(init=False)
+    events: EventPublisher = field(init=False)
+    file_urls: FileUrls = field(init=False)
 
     def __post_init__(self) -> None:
-        self.locks = LockService(self.redis)
+        self.locks = LockService(self.redis, self.settings.telemetry.service_name)
         self.revocations = Revocations(self.redis, self.settings.auth.access_ttl)
         self.sms_store = sms_store(self.redis)
-
-    @property
-    def file_urls(self) -> FileUrls:
-        return FileUrls.from_settings(self.settings)
+        self.rate_limiter = RateLimiter(self.redis)
+        self.events = build_publisher(self.settings, self.redis)
+        self.file_urls = FileUrls.from_settings(self.settings)
 
 
 def _context(request: Request) -> AppContext:

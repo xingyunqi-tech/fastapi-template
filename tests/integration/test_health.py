@@ -1,224 +1,81 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import httpx
 import pytest
 from redis.asyncio import Redis
 
 from app.config import DatabaseSettings
 from app.infrastructure.database.session import Database
-from app.infrastructure.health import indicators
-from tests.integration.conftest import _build_app, client_for, error_of
-from tests.integration.test_auth_providers import alipay_env
+from tests.integration.conftest import _build_app, client_for
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import Callable
 
     from fastapi import FastAPI
     from sqlalchemy.ext.asyncio import AsyncConnection
-
-TOKEN = "monitoring-token-0123456789"
-NO_CACHE = "no-cache, no-store, must-revalidate"
-UNAVAILABLE = {"status": "error"}
 
 type AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def make_app(
-    connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch
-) -> Callable[..., FastAPI]:
-    def factory(
-        redis: Redis | None = None, database: Database | None = None, **env: str
-    ) -> FastAPI:
-        for name, value in env.items():
-            monkeypatch.setenv(name, value)
+def make_app(connection: AsyncConnection) -> AppFactory:
+    def factory(redis: Redis | None = None, database: Database | None = None) -> FastAPI:
         return _build_app(database or Database.bound_to(connection), redis=redis)
 
     return factory
 
 
-@pytest.fixture(autouse=True)
-def generous_thresholds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(indicators, "DISK_THRESHOLD_PERCENT", 1.0)
-    monkeypatch.setattr(indicators, "HEAP_THRESHOLD_BYTES", 1 << 40)
-
-
-@pytest.fixture
-async def broken_database() -> AsyncIterator[Database]:
-    settings = DatabaseSettings.model_validate(
-        {"DATABASE_URL": "postgresql://root:secret@127.0.0.1:1/none?sslmode=disable"}
+def unreachable_database() -> Database:
+    return Database.from_settings(
+        DatabaseSettings.model_validate(
+            {"DATABASE_URL": "postgresql://u:p@127.0.0.1:1/db?sslmode=disable"}
+        )
     )
-    database = Database.from_settings(settings)
-    yield database
-    await database.dispose()
-
-
-def mock_http(app: FastAPI, handler: Callable[[httpx.Request], Any]) -> FastAPI:
-    app.state.context.http_transport = httpx.MockTransport(handler)
-    return app
-
-
-def bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
 
 
 class TestProbes:
     async def test_liveness(self, make_app: AppFactory) -> None:
-        async with client_for(make_app()) as client:
-            response = await client.get("/api/v1/health/live")
+        async with client_for(make_app(database=unreachable_database())) as client:
+            response = await client.get("/health/live")
 
         assert response.status_code == 200
-        assert response.headers["cache-control"] == NO_CACHE
-        assert response.json() == {
-            "status": "ok",
-            "info": {"memory_heap": {"status": "up"}},
-            "error": {},
-            "details": {"memory_heap": {"status": "up"}},
-        }
+        assert response.json() == {"status": "ok"}
+        assert response.headers["cache-control"] == "no-store"
 
-    async def test_readiness(self, make_app: AppFactory) -> None:
-        async with client_for(make_app()) as client:
-            response = await client.get("/api/v1/health/ready")
-
-        data = response.json()
-        assert response.status_code == 200
-        assert data["status"] == "ok"
-        assert list(data["info"]["database"]) == ["responseTime", "status"]
-        assert isinstance(data["info"]["database"]["responseTime"], int)
-        assert data["details"] == data["info"]
-
-    async def test_readiness_fails_with_503(
-        self, make_app: AppFactory, broken_database: Database
+    async def test_readiness_checks_database_and_redis(
+        self, make_app: AppFactory, redis_url: str
     ) -> None:
-        async with client_for(make_app(database=broken_database)) as client:
-            response = await client.get("/api/v1/health/ready")
-
-        assert response.status_code == 503
-        assert response.json() == UNAVAILABLE
-        assert response.headers["cache-control"] == NO_CACHE
-
-
-class TestFullCheck:
-    async def test_without_redis_and_payment_config(self, make_app: AppFactory) -> None:
-        async with client_for(make_app()) as client:
-            response = await client.get("/api/v1/health")
-
-        data = response.json()
-        assert response.status_code == 200
-        assert response.headers["cache-control"] == NO_CACHE
-        assert list(data["details"]) == [
-            "memory_heap",
-            "disk",
-            "database",
-            "database_pool",
-            "wechat_api",
-            "alipay_api",
-        ]
-        assert data["details"]["wechat_api"] == {
-            "message": "WeChat not configured, skipped",
-            "status": "up",
-        }
-        assert data["details"]["alipay_api"] == {
-            "message": "Alipay not configured, skipped",
-            "status": "up",
-        }
-        assert list(data["details"]["database_pool"]) == [
-            "activeConnections",
-            "maxConnections",
-            "utilizationPercent",
-            "status",
-        ]
-
-    async def test_includes_redis_when_enabled(self, make_app: AppFactory, redis_url: str) -> None:
         redis = Redis.from_url(redis_url)
-        try:
-            async with client_for(make_app(redis, REDIS_ENABLED="true")) as client:
-                response = await client.get("/api/v1/health")
-        finally:
-            await redis.aclose()
+        async with client_for(make_app(redis)) as client:
+            response = await client.get("/health/ready")
+        await redis.aclose()
 
-        details = response.json()["details"]
-        assert details["redis"] == {"status": "up"}
-        assert list(details).index("redis") == 4
-
-    async def test_redis_down(self, make_app: AppFactory) -> None:
-        redis = Redis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
-        try:
-            async with client_for(make_app(redis, REDIS_ENABLED="true")) as client:
-                response = await client.get("/api/v1/health")
-        finally:
-            await redis.aclose()
-
-        assert response.status_code == 503
-        assert response.json() == UNAVAILABLE
-
-    async def test_payment_apis_probed_when_configured(self, make_app: AppFactory) -> None:
-        seen: list[tuple[str, str]] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen.append((request.method, str(request.url)))
-            return httpx.Response(405 if request.method == "HEAD" else 200)
-
-        app = mock_http(
-            make_app(WECHAT_APP_APP_ID="wx", WECHAT_APP_SECRET="secret", **alipay_env()), handler
-        )
-        async with client_for(app) as client:
-            response = await client.get("/api/v1/health")
-
-        details = response.json()["details"]
         assert response.status_code == 200
-        assert details["wechat_api"] == {"responseTime": "OK", "status": "up"}
-        assert details["alipay_api"] == {"responseTime": "OK", "status": "up"}
-        assert sorted(seen) == [
-            ("GET", indicators.WECHAT_API_URL),
-            ("HEAD", indicators.ALIPAY_GATEWAY_URL),
-        ]
+        assert response.json() == {"status": "ok"}
+        assert response.headers["cache-control"] == "no-store"
 
-    async def test_payment_api_failure_returns_503(self, make_app: AppFactory) -> None:
-        app = mock_http(make_app(**alipay_env()), lambda request: httpx.Response(500))
-        async with client_for(app) as client:
-            response = await client.get("/api/v1/health")
+    async def test_database_down_is_503(self, make_app: AppFactory) -> None:
+        database = unreachable_database()
+        async with client_for(make_app(database=database)) as client:
+            response = await client.get("/health/ready")
+        await database.dispose()
 
         assert response.status_code == 503
-        assert response.json() == UNAVAILABLE
+        assert response.json() == {"status": "error"}
+        assert response.headers["retry-after"] == "5"
 
-    async def test_storage_thresholds(
-        self, make_app: AppFactory, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(indicators, "DISK_THRESHOLD_PERCENT", 0.0)
-        monkeypatch.setattr(indicators, "HEAP_THRESHOLD_BYTES", 0)
+    async def test_redis_down_is_503(self, make_app: AppFactory) -> None:
+        redis = Redis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
+        async with client_for(make_app(redis)) as client:
+            response = await client.get("/health/ready")
 
-        assert await indicators.disk("disk") == {
-            "disk": {"message": "Used disk storage exceeded the set threshold", "status": "down"}
-        }
-        assert await indicators.memory_heap("memory_heap") == {
-            "memory_heap": {"message": "Used heap exceeded the set threshold", "status": "down"}
-        }
+        assert (response.status_code, response.json()) == (503, {"status": "error"})
+
+    @pytest.mark.parametrize("path", ["/api/v1/health/live", "/health", "/api/health/ready"])
+    async def test_only_root_paths_exist(self, make_app: AppFactory, path: str) -> None:
         async with client_for(make_app()) as client:
-            live = await client.get("/api/v1/health/live")
+            assert (await client.get(path)).status_code == 404
 
-        assert live.status_code == 503
-        assert live.json() == UNAVAILABLE
+    def test_probes_are_not_in_openapi(self, make_app: AppFactory) -> None:
+        paths = make_app().openapi()["paths"]
 
-
-class TestMonitoringToken:
-    async def test_token_required_when_configured(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(METRICS_TOKEN=TOKEN)) as client:
-            missing = await client.get("/api/v1/health")
-            wrong = await client.get("/api/v1/health", headers=bearer(TOKEN + "x"))
-            scheme = await client.get("/api/v1/health", headers={"Authorization": f"Token {TOKEN}"})
-            ok = await client.get("/api/v1/health", headers=bearer(TOKEN))
-            lower = await client.get("/api/v1/health", headers={"Authorization": f"bearer {TOKEN}"})
-
-        for response in (missing, wrong, scheme):
-            assert response.status_code == 403
-            assert error_of(response) == (403, "common.forbidden")
-        assert ok.status_code == 200
-        assert lower.status_code == 200
-
-    async def test_probes_do_not_require_token(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(METRICS_TOKEN=TOKEN)) as client:
-            live = await client.get("/api/v1/health/live")
-            ready = await client.get("/api/v1/health/ready")
-
-        assert (live.status_code, ready.status_code) == (200, 200)
+        assert not any(path.startswith("/health") for path in paths)

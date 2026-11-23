@@ -12,9 +12,10 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from app.common.errors import AppError
+from app.common.masking import mask_phone
 from app.config.sms import SmsProvider
 from app.identity.providers.sms.aliyun import AliyunSmsSender
-from app.identity.providers.sms.masking import mask_phone
+from app.infrastructure.redis import key as redis_key
 lazy from app.common.context import AppContext
 lazy from app.identity.providers.sms.store import SmsStore
 
@@ -78,12 +79,17 @@ def _until_next_utc_day(now: datetime) -> int:
 
 
 class SmsCodes:
-    """键为 `sms:*`；每日上限按 UTC 日期计。"""
+    """键为 `{service}:sms:<kind>:…:{phone}`；每日上限按 UTC 日期计。"""
 
-    def __init__(self, store: SmsStore, sender: SmsSender, key: bytes) -> None:
+    def __init__(self, store: SmsStore, sender: SmsSender, key: bytes, service: str) -> None:
         self.store = store
         self.sender = sender
         self.key = key
+        self.service = service
+
+    def _key(self, kind: str, phone: str, *parts: str) -> str:
+        """手机号为 hash tag，同一号码的键落在同一 slot。"""
+        return redis_key(self.service, "sms", kind, *parts, f"{{{phone}}}")
 
     def _digest(self, phone: str, scene: SmsScene, code: str) -> str:
         message = f"{phone}:{scene}:{code}".encode()
@@ -92,12 +98,12 @@ class SmsCodes:
     async def send(self, phone: str, scene: SmsScene) -> None:
         """冷却中或超过当日上限时 429 `auth.sendTooFrequent`。"""
         store = self.store
-        cooldown = f"sms:cooldown:{phone}"
+        cooldown = self._key("cooldown", phone)
         if not await store.set_nx(cooldown, COOLDOWN_MS):
             remaining = await store.ttl_ms(cooldown) or COOLDOWN_MS
             raise AppError("auth.sendTooFrequent", headers=_retry_after(remaining))
         now = datetime.now(UTC)
-        daily = f"sms:daily:{now:%Y%m%d}:{phone}"
+        daily = self._key("daily", phone, f"{now:%Y%m%d}")
         until_tomorrow = _until_next_utc_day(now)
         if await store.increment(daily, until_tomorrow + 60_000) > DAILY_LIMIT:
             await store.decrement(daily)
@@ -109,24 +115,26 @@ class SmsCodes:
             await store.delete(cooldown)
             await store.decrement(daily)
             raise
-        await store.set(f"sms:code:{scene}:{phone}", self._digest(phone, scene, code), CODE_TTL_MS)
-        await store.delete(f"sms:attempts:{scene}:{phone}")
+        await store.set(
+            self._key("code", phone, scene), self._digest(phone, scene, code), CODE_TTL_MS
+        )
+        await store.delete(self._key("attempts", phone, scene))
 
     async def verify(self, phone: str, scene: SmsScene, code: str) -> None:
         """锁定中 429 `auth.verificationLocked`；错误、过期或超过尝试次数 422。"""
         store = self.store
-        lock = f"sms:locked:{phone}"
+        lock = self._key("locked", phone)
         locked = await store.ttl_ms(lock)
         if locked is not None:
             raise AppError("auth.verificationLocked", headers=_retry_after(locked))
         if await store.check_code(
-            f"sms:code:{scene}:{phone}",
-            f"sms:attempts:{scene}:{phone}",
+            self._key("code", phone, scene),
+            self._key("attempts", phone, scene),
             self._digest(phone, scene, code),
             MAX_ATTEMPTS,
         ):
             return
-        failures = f"sms:failures:{phone}"
+        failures = self._key("failures", phone)
         if await store.increment(failures, FAILURE_WINDOW_MS) >= FAILURE_LIMIT:
             await store.set(lock, "1", LOCK_MS)
             await store.delete(failures)
@@ -135,4 +143,9 @@ class SmsCodes:
 
 def sms_codes(context: AppContext) -> SmsCodes:
     signing_key = context.settings.auth.signing_key.get_secret_value()
-    return SmsCodes(context.sms_store, build_sms_sender(context), digest_key(signing_key))
+    return SmsCodes(
+        context.sms_store,
+        build_sms_sender(context),
+        digest_key(signing_key),
+        context.settings.telemetry.service_name,
+    )

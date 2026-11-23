@@ -1,5 +1,4 @@
 import re
-import time
 
 lazy import httpx2 as httpx
 
@@ -16,25 +15,21 @@ from tests.e2e.conftest import (
 
 PNG = b"\x89PNG\r\n\x1a\ne2e-image"
 RATE_LIMIT_HEADERS = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
-API_REGISTER_SAMPLE = re.compile(
-    r'^http_requests_total\{app="FastAPI API",method="POST",'
-    r'path="/api/v1/auth/email/register",status="201"\} \d',
-    re.MULTILINE,
-)
-WORKER_MAIL_SAMPLE = re.compile(
-    r'^queue_jobs_total\{app="FastAPI API",queue_name="mail",status="completed"\} \d',
+HTTP_DURATION_SAMPLE = re.compile(
+    r"^http_server_request_duration_seconds_count\{(?=[^}]*http_request_method=\"POST\")"
+    r"(?=[^}]*http_route=\"/api/v1/auth/email/register\")"
+    r"(?=[^}]*http_response_status_code=\"201\")[^}]*\} \d",
     re.MULTILINE,
 )
 
 
-def test_health_ready(api: httpx.Client) -> None:
-    response = api.get("/api/v1/health/ready")
+def test_health_probes(api: httpx.Client) -> None:
+    live = api.get("/health/live")
+    ready = api.get("/health/ready")
 
-    assert response.status_code == 200, response.text
-    assert response.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-    data = response.json()["data"]
-    assert data["status"] == "ok"
-    assert data["details"]["database"]["status"] == "up"
+    assert live.status_code == 200, live.text
+    assert ready.status_code == 200, ready.text
+    assert ready.json() == {"status": "ok"}
 
 
 def test_email_registration_lifecycle(api: httpx.Client, mailpit: httpx.Client) -> None:
@@ -68,34 +63,24 @@ def test_email_registration_lifecycle(api: httpx.Client, mailpit: httpx.Client) 
     assert stale.status_code == 401
 
 
-def test_public_and_private_file_round_trip(api: httpx.Client) -> None:
+def test_file_upload_and_signed_content(api: httpx.Client) -> None:
     token = login(api, SEED_USER)["accessToken"]
 
-    public = api.post(
-        "/api/v1/files/upload",
-        params={"purpose": "image"},
+    uploaded = api.post(
+        "/api/v1/files",
         headers=bearer(token),
-        files={"file": ("e2e.png", PNG, "image/png")},
+        data={"purpose": "avatar"},
+        files={"file": ("e2e.png", PNG, "application/octet-stream")},
     )
-    assert public.status_code == 201, public.text
-    name = public.json()["data"]["file"]["path"].rsplit("/", 1)[-1]
-    download = api.get(f"/api/v1/files/{name}")
-    assert download.status_code == 200
-    assert download.headers["content-type"] == "image/png"
-    assert download.content == PNG
+    assert uploaded.status_code == 201, uploaded.text
+    file = uploaded.json()["data"]
+    assert (file["contentType"], file["purpose"], file["size"]) == ("image/png", "avatar", len(PNG))
 
-    private = api.post(
-        "/api/v1/files/upload",
-        params={"purpose": "private-image"},
-        headers=bearer(token),
-        files={"file": ("e2e.png", PNG, "image/png")},
-    )
-    assert private.status_code == 201, private.text
-    file_id = private.json()["data"]["file"]["id"]
-    assert api.get(f"/api/v1/files/private/{file_id}").status_code == 401
-    owned = api.get(f"/api/v1/files/private/{file_id}", headers=bearer(token))
-    assert owned.status_code == 200
-    assert owned.content == PNG
+    content = api.get(file["url"])
+    assert content.status_code == 200
+    assert content.headers["x-content-type-options"] == "nosniff"
+    assert content.content == PNG
+    assert api.get(f"/api/v1/files/{file['id']}/content").status_code == 404
 
 
 def test_rate_limit_headers_and_rejection(api: httpx.Client) -> None:
@@ -111,26 +96,18 @@ def test_rate_limit_headers_and_rejection(api: httpx.Client) -> None:
             assert response.headers[header].isdigit(), (header, response.headers)
     assert rejected
     assert rejected[0].headers["retry-after"].isdigit()
+    assert "x-ratelimit-limit" not in rejected[0].headers
 
 
-def test_metrics_include_api_and_worker_samples(api: httpx.Client, mailpit: httpx.Client) -> None:
-    assert api.get("/metrics").status_code == 403
+def test_metrics_use_stable_http_semantic_conventions(api: httpx.Client) -> None:
+    assert api.get("/metrics").status_code == 401
 
-    email = unique_email("metrics")
-    register(api, email)
-    wait_for_mail(mailpit, email)
+    register(api, unique_email("metrics"))
+    response = api.get("/metrics", headers=bearer(METRICS_TOKEN))
 
-    deadline = time.monotonic() + 10
-    while True:
-        response = api.get("/metrics", headers=bearer(METRICS_TOKEN))
-        assert response.status_code == 200
-        if WORKER_MAIL_SAMPLE.search(response.text) or time.monotonic() > deadline:
-            break
-        time.sleep(0.5)
-
+    assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
-    assert API_REGISTER_SAMPLE.search(response.text), response.text
-    assert WORKER_MAIL_SAMPLE.search(response.text), response.text
+    assert HTTP_DURATION_SAMPLE.search(response.text), response.text
 
 
 def test_openapi_json_is_served(api: httpx.Client) -> None:

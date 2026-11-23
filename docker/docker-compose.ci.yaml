@@ -16,9 +16,9 @@ x-ci-env: &ci-env
   SEED_ADMIN_PASSWORD: Secret00
   DOCS_ENABLED: 'true'
   METRICS_TOKEN: ci_metrics_token_0123456789abcdef
-  THROTTLE_ENABLED: ${CI_THROTTLE_ENABLED:-true}
-  TRUST_PROXY: '1'
-  WEB_CONCURRENCY: '2'
+  CORS_ORIGINS: https://app.example.com
+  STORAGE_URL_SECRET: ci_storage_url_secret_0123456789
+  TRUSTED_PROXIES: '1'
 
 services:
   postgres:

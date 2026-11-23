@@ -1,15 +1,16 @@
-import hashlib
-import logging
+import asyncio
+import time
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+import httpx2 as httpx
 import pytest
 from redis.asyncio import Redis
 
 from app.infrastructure.database.session import Database
-from app.infrastructure.metrics import throttler_storage_fallback_total
-from app.infrastructure.throttler import ThrottlerStorage, redis_key
+from app.infrastructure.telemetry import REGISTRY
 from tests.integration.conftest import _build_app, client_for, error_of
+from tests.integration.identity import PASSWORD, USER_EMAIL, bearer, login
 from tests.tokens import access_token
 
 if TYPE_CHECKING:
@@ -20,20 +21,11 @@ if TYPE_CHECKING:
 
 CLIENT_IP = "203.0.113.7"
 RATE_HEADERS = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
-S3_ENV = {
-    "ACCESS_KEY_ID": "key",
-    "SECRET_ACCESS_KEY": "secret",
-    "AWS_DEFAULT_S3_BUCKET": "bucket",
-    "AWS_S3_REGION": "us-east-1",
-}
-LIVE = "/api/v1/health/live"
-READY = "/api/v1/health/ready"
+DEFAULT_KEY = f"rl:api-default:ip:{CLIENT_IP}"
+CONTENT = "/api/v1/files/019a8f3c-6b1e-7d2a-8000-000000000001/content"
+LOGIN = "/api/v1/auth/email/login"
 
 type AppFactory = Callable[..., FastAPI]
-
-
-def nest_key(handler: str, tracker: str) -> str:
-    return hashlib.sha256(f"{handler}-default-{tracker}".encode()).hexdigest()
 
 
 def user_id(n: int) -> UUID:
@@ -44,12 +36,18 @@ def user_token(app: FastAPI, n: int) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token(app, user_id(n))}"}
 
 
+def client_at(app: FastAPI, ip: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(ip, 50000)),
+        base_url="http://test",
+        trust_env=False,
+    )
+
+
 @pytest.fixture
-def make_app(
-    connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch
-) -> Callable[..., FastAPI]:
+def make_app(connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch) -> AppFactory:
     def factory(redis: Redis | None = None, **env: str) -> FastAPI:
-        monkeypatch.setenv("THROTTLE_ENABLED", "true")
+        monkeypatch.setenv("RATE_LIMIT_DEFAULT", "1/m,burst=2")
         for name, value in env.items():
             monkeypatch.setenv(name, value)
         return _build_app(Database.bound_to(connection), redis=redis)
@@ -65,232 +63,306 @@ async def redis_client(redis_url: str) -> AsyncIterator[Redis]:
     await client.aclose()
 
 
+def fallback_count(rule: str) -> float:
+    return sum(
+        sample.value
+        for metric in REGISTRY.collect()
+        for sample in metric.samples
+        if sample.name == "ratelimit_fallback_total" and sample.labels.get("rule") == rule
+    )
+
+
+@pytest.fixture
+async def blackhole_redis() -> AsyncIterator[Redis]:
+    async def swallow(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while await reader.read(1024):
+            pass
+        writer.close()
+
+    server = await asyncio.start_server(swallow, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = Redis.from_url(f"redis://127.0.0.1:{port}/0")
+    yield client
+    server.close()
+    server.close_clients()
+    await server.wait_closed()
+
+
+def broken_redis() -> Redis:
+    return Redis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
+
+
 class TestHeadersAndLimit:
     async def test_default_rule_sets_headers_then_blocks(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="3", THROTTLE_TTL="60")) as client:
-            responses = [await client.get(LIVE) for _ in range(4)]
+        async with client_for(make_app()) as client:
+            responses = [await client.get(CONTENT) for _ in range(3)]
 
-        for response, remaining in zip(responses[:3], ["2", "1", "0"], strict=True):
-            assert response.status_code == 200
-            assert response.headers["x-ratelimit-limit"] == "3"
-            assert response.headers["x-ratelimit-remaining"] == remaining
-            assert response.headers["x-ratelimit-reset"].isdigit()
-        blocked = responses[3]
-        assert blocked.status_code == 429
-        assert error_of(blocked) == (429, "common.tooManyRequests")
-        assert int(blocked.headers["retry-after"]) >= 1
-        assert not any(name in blocked.headers for name in RATE_HEADERS)
+        assert [r.status_code for r in responses] == [404, 404, 429]
+        assert [r.headers["x-ratelimit-limit"] for r in responses[:2]] == ["2", "2"]
+        assert [r.headers["x-ratelimit-remaining"] for r in responses[:2]] == ["1", "0"]
+        assert [r.headers["x-ratelimit-reset"] for r in responses[:2]] == ["60", "120"]
+        assert error_of(responses[2]) == (429, "common.tooManyRequests")
+        assert responses[2].headers["retry-after"] == "60"
+        assert not any(name in responses[2].headers for name in RATE_HEADERS)
 
     async def test_message_follows_accept_language(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            await client.get(LIVE)
-            response = await client.get(LIVE, headers={"Accept-Language": "en"})
+        async with client_for(make_app()) as client:
+            for _ in range(2):
+                await client.get(CONTENT)
+            response = await client.get(CONTENT, headers={"Accept-Language": "en"})
 
-        assert error_of(response) == (429, "common.tooManyRequests")
         assert response.json()["message"] == "Too many requests, please try again later"
 
-    async def test_route_rule_overrides_default_and_precedes_validation(
+    async def test_route_rule_replaces_default_and_precedes_validation(
         self, make_app: AppFactory
     ) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="100")) as client:
-            responses = [await client.post("/api/v1/auth/email/login", json={}) for _ in range(11)]
+        async with client_for(make_app()) as client:
+            responses = [await client.post(LOGIN, json={}) for _ in range(11)]
 
         assert [r.status_code for r in responses] == [422] * 10 + [429]
         assert responses[0].headers["x-ratelimit-limit"] == "10"
-        assert responses[9].headers["x-ratelimit-remaining"] == "0"
 
-    async def test_routes_are_counted_separately(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get(LIVE)
-            other = await client.get(READY)
+    async def test_probes_are_not_limited(self, make_app: AppFactory) -> None:
+        async with client_for(make_app()) as client:
+            responses = [await client.get("/health/live") for _ in range(3)]
 
-        assert first.status_code == 200
-        assert other.status_code == 200
+        assert [r.status_code for r in responses] == [200] * 3
+        assert "x-ratelimit-limit" not in responses[0].headers
 
-    async def test_disabled_sends_no_headers(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_ENABLED="false", THROTTLE_LIMIT="1")) as client:
-            responses = [await client.get(LIVE) for _ in range(3)]
-
-        assert [r.status_code for r in responses] == [200, 200, 200]
-        assert not any(name in responses[0].headers for name in RATE_HEADERS)
-
-    async def test_unmatched_route_is_not_throttled(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
+    async def test_unmatched_route_is_not_limited(self, make_app: AppFactory) -> None:
+        async with client_for(make_app()) as client:
             responses = [await client.get("/api/v1/nope") for _ in range(3)]
 
-        assert [r.status_code for r in responses] == [404, 404, 404]
+        assert [r.status_code for r in responses] == [404] * 3
         assert "x-ratelimit-limit" not in responses[0].headers
 
 
-class TestTracker:
+class TestSubject:
     async def test_jwt_routes_count_per_user(self, make_app: AppFactory) -> None:
-        app = make_app(THROTTLE_LIMIT="2")
+        app = make_app()
         async with client_for(app) as client:
-            first = [await client.get("/api/v1/me", headers=user_token(app, 1)) for _ in range(3)]
-            second = await client.get("/api/v1/me", headers=user_token(app, 2))
+            for _ in range(2):
+                await client.get("/api/v1/files/" + str(user_id(9)), headers=user_token(app, 1))
+            blocked = await client.get("/api/v1/me", headers=user_token(app, 1))
+            other = await client.get("/api/v1/me", headers=user_token(app, 2))
 
-        assert [r.status_code for r in first] == [404, 404, 429]
-        assert first[0].headers["x-ratelimit-limit"] == "2"
-        assert second.status_code == 404
-        assert second.headers["x-ratelimit-remaining"] == "1"
+        assert blocked.status_code == 429
+        assert other.status_code != 429
 
-    async def test_jwt_route_without_valid_token_counts_by_ip(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="2")) as client:
-            invalid = {"Authorization": "Bearer nope"}
-            statuses = [
-                (await client.get("/api/v1/me", headers=headers)).status_code
-                for headers in (invalid, {}, invalid)
-            ]
+    async def test_invalid_token_counts_by_ip(self, make_app: AppFactory) -> None:
+        bad = {"Authorization": "Bearer nope"}
+        async with client_for(make_app()) as client:
+            statuses = [(await client.get("/api/v1/me", headers=bad)).status_code for _ in range(2)]
+            blocked = await client.get(CONTENT)
 
-        assert statuses == [401, 401, 429]
+        assert statuses == [401, 401]
+        assert blocked.status_code == 429
 
     async def test_public_route_ignores_token(self, make_app: AppFactory) -> None:
-        app = make_app(THROTTLE_LIMIT="1")
+        app = make_app()
         async with client_for(app) as client:
-            first = await client.get(LIVE, headers=user_token(app, 1))
-            second = await client.get(LIVE, headers=user_token(app, 2))
+            await client.get(CONTENT, headers=user_token(app, 1))
+            await client.get(CONTENT, headers=user_token(app, 2))
+            blocked = await client.get(CONTENT)
 
-        assert (first.status_code, second.status_code) == (200, 429)
+        assert blocked.status_code == 429
 
-    async def test_forwarded_for_with_trust_proxy(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1", TRUST_PROXY="1")) as client:
-            first = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
-            second = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.2"})
-            repeated = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
+    async def test_ipv6_clients_share_a_64_prefix(self, make_app: AppFactory) -> None:
+        app = make_app()
+        for ip in ("2001:db8:1:2::1", "2001:db8:1:2::2"):
+            async with client_at(app, ip) as client:
+                await client.get(CONTENT)
+        async with client_at(app, "2001:db8:1:2:ffff::9") as client:
+            blocked = await client.get(CONTENT)
+        async with client_at(app, "2001:db8:1:3::1") as client:
+            other = await client.get(CONTENT)
 
-        assert [first.status_code, second.status_code, repeated.status_code] == [200, 200, 429]
+        assert (blocked.status_code, other.status_code) == (429, 404)
 
-    async def test_forwarded_for_ignored_without_trust_proxy(self, make_app: AppFactory) -> None:
-        async with client_for(make_app(THROTTLE_LIMIT="1")) as client:
-            first = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.1"})
-            second = await client.get(LIVE, headers={"X-Forwarded-For": "198.51.100.2"})
+    @pytest.mark.parametrize(("trusted", "expected"), [("1", 404), ("0", 429)])
+    async def test_forwarded_for_follows_trusted_proxies(
+        self, make_app: AppFactory, trusted: str, expected: int
+    ) -> None:
+        async with client_for(make_app(TRUSTED_PROXIES=trusted)) as client:
+            for n in range(2):
+                await client.get(CONTENT, headers={"X-Forwarded-For": f"198.51.100.{n}"})
+            response = await client.get(CONTENT, headers={"X-Forwarded-For": "198.51.100.9"})
 
-        assert [first.status_code, second.status_code] == [200, 429]
+        assert response.status_code == expected
 
 
-class TestRedisStorage:
-    async def test_uses_nestjs_key_in_redis(
+@pytest.mark.committed
+class TestRedisStore:
+    async def test_key_holds_tat_in_milliseconds(
         self, make_app: AppFactory, redis_client: Redis
     ) -> None:
-        app = make_app(redis_client, THROTTLE_LIMIT="2")
-        async with client_for(app) as client:
-            responses = [await client.get(LIVE) for _ in range(3)]
+        async with client_for(make_app(redis_client)) as client:
+            await client.get(CONTENT)
 
-        key = redis_key(nest_key("HealthController-liveness", f"ip:{CLIENT_IP}"))
-        assert key.endswith(":default:gcra")
-        assert [r.status_code for r in responses] == [200, 200, 429]
-        assert responses[1].headers["x-ratelimit-remaining"] == "0"
-        assert await redis_client.exists(key) == 1
-        assert 0 < await redis_client.pttl(key) <= 60_000
-        assert app.state.throttler.memory._tat == {}
+        stored = await redis_client.get(DEFAULT_KEY)
+        assert isinstance(stored, bytes)
+        tat = int(stored)
+        seconds, micros = await redis_client.time()
+        server_ms = int(seconds) * 1000 + int(micros) // 1000
+        assert 0 < tat - server_ms <= 60_000
+        assert 0 < await redis_client.pttl(DEFAULT_KEY) <= 60_000
 
-    async def test_user_key_in_redis(self, make_app: AppFactory, redis_client: Redis) -> None:
+    async def test_user_subject_key(self, make_app: AppFactory, redis_client: Redis) -> None:
         app = make_app(redis_client)
         async with client_for(app) as client:
-            await client.patch("/api/v1/me", headers=user_token(app, 42), json={})
+            await client.get("/api/v1/me", headers=user_token(app, 1))
 
-        key = redis_key(nest_key("updateMe", f"user:{user_id(42)}"))
-        assert await redis_client.exists(key) == 1
-
-    async def test_coexists_with_nestjs_counter_keys(
-        self, make_app: AppFactory, redis_client: Redis
-    ) -> None:
-        digest = nest_key("HealthController-liveness", f"ip:{CLIENT_IP}")
-        counter, block = f"throttle:{digest}:default", f"throttle:{digest}:default:block"
-        await redis_client.set(counter, "7", px=60_000)
-        await redis_client.set(block, "1", px=60_000)
-        async with client_for(make_app(redis_client, THROTTLE_LIMIT="2")) as client:
-            responses = [await client.get(LIVE) for _ in range(3)]
-
-        assert [r.status_code for r in responses] == [200, 200, 429]
-        assert await redis_client.get(counter) == b"7"
-        assert await redis_client.get(block) == b"1"
-        assert await redis_client.incr(counter) == 8
-        assert await redis_client.exists(redis_key(digest)) == 1
-
-    @pytest.mark.parametrize(
-        ("driver", "method", "path", "handler"),
-        [
-            ("local", "GET", "/api/v1/files/a.png", "FilesLocalController-download"),
-            (
-                "local",
-                "GET",
-                "/api/v1/files/private/00000000-0000-0000-0000-000000000000",
-                "FilesController-readPrivate",
-            ),
-            ("local", "POST", "/api/v1/files/upload", "FilesLocalController-uploadFile"),
-            ("s3", "POST", "/api/v1/files/upload", "FilesS3Controller-uploadFile"),
-            (
-                "s3-presigned",
-                "POST",
-                "/api/v1/files/upload",
-                "FilesS3PresignedController-uploadFile",
-            ),
-        ],
-    )
-    async def test_files_routes_use_nestjs_handler_keys(
-        self,
-        make_app: AppFactory,
-        redis_client: Redis,
-        driver: str,
-        method: str,
-        path: str,
-        handler: str,
-    ) -> None:
-        app = make_app(redis_client, FILE_DRIVER=driver, **S3_ENV)
-        async with client_for(app) as client:
-            response = await client.request(method, path)
-
-        assert "x-ratelimit-limit" in response.headers
-        key = redis_key(nest_key(handler, f"ip:{CLIENT_IP}"))
-        assert await redis_client.exists(key) == 1
+        assert await redis_client.exists(f"rl:api-default:u:{user_id(1)}") == 1
 
     async def test_shared_between_instances(
         self, make_app: AppFactory, redis_client: Redis
     ) -> None:
-        async with client_for(make_app(redis_client, THROTTLE_LIMIT="1")) as client:
-            first = await client.get(LIVE)
-        async with client_for(make_app(redis_client, THROTTLE_LIMIT="1")) as client:
-            second = await client.get(LIVE)
+        first, second = make_app(redis_client), make_app(redis_client)
+        async with client_for(first) as a, client_for(second) as b:
+            await a.get(CONTENT)
+            await b.get(CONTENT)
+            blocked = await a.get(CONTENT)
 
-        assert (first.status_code, second.status_code) == (200, 429)
+        assert blocked.status_code == 429
 
-    async def test_falls_back_to_memory_when_redis_fails(
-        self, make_app: AppFactory, caplog: pytest.LogCaptureFixture
+    async def test_failed_logins_count_per_account(
+        self, make_app: AppFactory, redis_client: Redis
     ) -> None:
-        broken = Redis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
-        app = make_app(broken, THROTTLE_LIMIT="2")
-        before = throttler_storage_fallback_total._value.get()
-        try:
-            with caplog.at_level(logging.ERROR, logger="app.throttler"):
-                async with client_for(app) as client:
-                    responses = [await client.get(LIVE) for _ in range(3)]
-        finally:
-            await broken.aclose()
+        body = {"email": "john.doe@example.com", "password": "Wrong000"}
+        async with client_for(make_app(redis_client)) as client:
+            failures = [await client.post(LOGIN, json=body) for _ in range(5)]
+            locked = await client.post(LOGIN, json={**body, "password": "Secret00"})
 
-        storage: ThrottlerStorage = app.state.throttler
-        assert [r.status_code for r in responses] == [200, 200, 429]
-        assert responses[0].headers["x-ratelimit-limit"] == "2"
-        assert storage.degraded is True
-        assert throttler_storage_fallback_total._value.get() - before == 3
-        fallback_logs = [
-            record
-            for record in caplog.records
-            if record.name == "app.throttler" and record.levelno == logging.ERROR
-        ]
-        assert len(fallback_logs) == 1
-        assert (
-            fallback_logs[0]
-            .getMessage()
-            .startswith("Redis throttler storage unavailable, falling back to in-memory storage:")
-        )
+        assert {error_of(r) for r in failures} == {(401, "auth.invalidCredentials")}
+        assert error_of(locked) == (429, "common.tooManyRequests")
+        assert 0 < int(locked.headers["retry-after"]) <= 720
 
-    async def test_recovers_from_fallback(self, make_app: AppFactory, redis_client: Redis) -> None:
-        app = make_app(redis_client, THROTTLE_LIMIT="5")
-        storage: ThrottlerStorage = app.state.throttler
-        storage.degraded = True
-        async with client_for(app) as client:
-            response = await client.get(LIVE)
 
-        assert response.status_code == 200
-        assert storage.degraded is False
+class TestRedisFailure:
+    async def test_shared_rule_fails_closed(self, make_app: AppFactory) -> None:
+        async with client_for(make_app(broken_redis())) as client:
+            response = await client.post(LOGIN, json={})
+
+        assert error_of(response) == (503, "common.serviceUnavailable")
+
+    async def test_private_rule_fails_open_and_counts(self, make_app: AppFactory) -> None:
+        before = fallback_count("api-default")
+        async with client_for(make_app(broken_redis())) as client:
+            responses = [await client.get(CONTENT) for _ in range(3)]
+
+        assert [r.status_code for r in responses] == [404] * 3
+        assert fallback_count("api-default") == before + 3
+
+    async def test_unresponsive_redis_times_out(
+        self, make_app: AppFactory, blackhole_redis: Redis
+    ) -> None:
+        started = time.monotonic()
+        async with client_for(make_app(blackhole_redis)) as client:
+            shared = await client.post(LOGIN, json={})
+            private = await client.get(CONTENT)
+
+        assert error_of(shared) == (503, "common.serviceUnavailable")
+        assert private.status_code == 404
+        assert time.monotonic() - started < 5
+
+
+def forwarded(n: int) -> dict[str, str]:
+    return {"X-Forwarded-For": f"198.51.100.{n}"}
+
+
+class TestSharedRules:
+    async def test_register_counts_per_ip(self, make_app: AppFactory) -> None:
+        async with client_for(make_app()) as client:
+            responses = [
+                await client.post(
+                    "/api/v1/auth/email/register",
+                    json={"email": f"r{n}@example.com", "password": PASSWORD},
+                )
+                for n in range(4)
+            ]
+
+        assert [r.status_code for r in responses] == [201, 201, 201, 429]
+
+    async def test_forgot_password_counts_per_account_and_ip(self, make_app: AppFactory) -> None:
+        forgot = "/api/v1/auth/password/forgot"
+        async with client_for(make_app(TRUSTED_PROXIES="1")) as client:
+            same = [
+                await client.post(forgot, json={"email": USER_EMAIL}, headers=forwarded(n))
+                for n in range(3)
+            ]
+            other = [
+                await client.post(forgot, json={"email": f"x{n}@example.com"}, headers=forwarded(9))
+                for n in range(4)
+            ]
+
+        assert [r.status_code for r in same] == [202, 202, 429]
+        assert [r.status_code for r in other] == [202, 202, 202, 429]
+
+    async def test_sms_send_counts_per_ip(self, make_app: AppFactory) -> None:
+        async with client_for(make_app()) as client:
+            responses = [
+                await client.post(
+                    "/api/v1/auth/sms/send",
+                    json={"phone": f"+86138000000{n:02d}", "scene": "login"},
+                )
+                for n in range(6)
+            ]
+
+        assert [r.status_code for r in responses] == [202] * 5 + [429]
+
+    async def test_email_login_success_clears_account_failures(self, make_app: AppFactory) -> None:
+        wrong = {"email": USER_EMAIL, "password": "Wrong000"}
+        async with client_for(make_app(TRUSTED_PROXIES="1")) as client:
+            for n in range(4):
+                await client.post(LOGIN, json=wrong, headers=forwarded(n))
+            await login_from(client, forwarded(4))
+            after = [
+                await client.post(LOGIN, json=wrong, headers=forwarded(5 + n)) for n in range(5)
+            ]
+
+        assert {error_of(r) for r in after} == {(401, "auth.invalidCredentials")}
+
+    async def test_password_verify_counts_failures_per_user(self, make_app: AppFactory) -> None:
+        async with client_for(make_app(RATE_LIMIT_DEFAULT="100/s,burst=100")) as client:
+            headers = bearer((await login(client, USER_EMAIL))["accessToken"])
+
+            async def change(current: str) -> int:
+                body = {"currentPassword": current, "newPassword": PASSWORD}
+                return (
+                    await client.put("/api/v1/me/password", json=body, headers=headers)
+                ).status_code
+
+            cleared = [await change("Wrong000") for _ in range(4)] + [await change(PASSWORD)]
+            failed = [await change("Wrong000") for _ in range(5)]
+            locked = await change(PASSWORD)
+
+        assert cleared == [422] * 4 + [200]
+        assert failed == [422] * 5
+        assert locked == 429
+
+    async def test_refresh_counts_per_session_then_ip(self, make_app: AppFactory) -> None:
+        refresh = "/api/v1/auth/refresh"
+        async with client_for(make_app()) as client:
+            first = await login(client, USER_EMAIL)
+            second = await login(client, USER_EMAIL)
+            token = first["refreshToken"]
+            for _ in range(10):
+                response = await client.post(refresh, json={"refreshToken": token})
+                assert response.status_code == 200, response.text
+                token = response.json()["data"]["refreshToken"]
+            limited = await client.post(refresh, json={"refreshToken": token})
+            other = await client.post(refresh, json={"refreshToken": second["refreshToken"]})
+            unknown = [
+                await client.post(refresh, json={"refreshToken": "x" * 43}) for _ in range(11)
+            ]
+
+        assert error_of(limited) == (429, "common.tooManyRequests")
+        assert other.status_code == 200
+        assert [r.status_code for r in unknown] == [401] * 10 + [429]
+
+
+async def login_from(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
+    response = await client.post(
+        LOGIN, json={"email": USER_EMAIL, "password": PASSWORD}, headers=headers
+    )
+    assert response.status_code == 200, response.text

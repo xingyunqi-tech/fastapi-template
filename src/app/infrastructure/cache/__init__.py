@@ -1,4 +1,4 @@
-"""与 nestjs cache-manager + Keyv 兼容的缓存：键 `cache::<key>`，值 `{"value", "expires"}`。"""
+"""缓存：Redis 键 `{service}:cache:<key>`，值 `{"value", "expires"}`。"""
 
 import json
 import time
@@ -6,7 +6,7 @@ from typing import Any, Final, Protocol
 
 lazy from redis.asyncio import Redis
 
-from app.infrastructure.metrics import record_cache_hit, record_cache_miss
+from app.infrastructure.redis import key as redis_key
 
 NAMESPACE: Final = "cache"
 DEFAULT_TTL_MS: Final = 60_000
@@ -25,20 +25,12 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _counted(value: Any) -> Any:
-    if value is None:
-        record_cache_miss(NAMESPACE)
-    else:
-        record_cache_hit(NAMESPACE)
-    return value
-
-
 class MemoryCache:
     def __init__(self) -> None:
         self._items: dict[str, tuple[Any, int]] = {}
 
     async def get(self, key: str) -> Any:
-        return _counted(self._get(key))
+        return self._get(key)
 
     def _get(self, key: str) -> Any:
         item = self._items.get(key)
@@ -64,15 +56,15 @@ class MemoryCache:
 
 
 class RedisCache:
-    def __init__(self, client: Redis) -> None:
+    def __init__(self, client: Redis, service: str) -> None:
         self.client = client
+        self.prefix = redis_key(service, NAMESPACE, "")
 
-    @staticmethod
-    def _key(key: str) -> str:
-        return f"{NAMESPACE}::{key}"
+    def _key(self, key: str) -> str:
+        return self.prefix + key
 
     async def get(self, key: str) -> Any:
-        return _counted(await self._get(key))
+        return await self._get(key)
 
     async def _get(self, key: str) -> Any:
         raw = await self.client.get(self._key(key))

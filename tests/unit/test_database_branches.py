@@ -17,7 +17,7 @@ def test_tables_carry_their_branch() -> None:
 
     assert set(branches.values()) <= set(Branch)
     assert {name for name, branch in branches.items() if branch == Branch.PLATFORM} == {
-        "file",
+        "files",
         "audit_logs",
     }
 
@@ -44,10 +44,10 @@ def test_table_filter_skips_other_branches_and_unknown_tables() -> None:
     include = table_filter({Branch.PLATFORM})
     tables = AllModels.metadata.tables
 
-    assert include(tables["file"], "file", "table", False, None)
+    assert include(tables["files"], "files", "table", False, None)
     assert not include(tables["users"], "users", "table", False, None)
     assert not include(object(), "stray", "table", True, None)
-    assert include(tables["file"], "file", "table", True, tables["file"])
+    assert include(tables["files"], "files", "table", True, tables["files"])
 
 
 def _alembic_config(output: io.StringIO | None = None) -> Config:

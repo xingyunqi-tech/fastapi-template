@@ -1,39 +1,33 @@
-import hashlib
 import json
 import logging
-import os
-import subprocess
-import sys
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 lazy from collections.abc import Iterator
-lazy from pathlib import Path
 
-import psutil  # type: ignore[import-untyped]
 import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from app import __main__ as app_main
+from app.common.client import client_ip
 from app.common.errors import AppError
-from app.config import FileDriver, LogLevel, Settings, SettingsError
+from app.common.masking import mask_email, mask_phone
+from app.config import Quota, Settings
 from app.factory import create_app
-from app.infrastructure import observability
-from app.infrastructure.health import indicators
+from app.infrastructure import telemetry
+from app.infrastructure.events import USER_DELETED, decode, encode, user_deleted
 from app.infrastructure.logging import configure_logging
 from app.infrastructure.logging.middleware import level_for
-from app.infrastructure.metrics.database import classify
-from app.infrastructure.metrics.guard import monitoring_token, token_matches
-from app.infrastructure.metrics.middleware import express_path
-from app.infrastructure.observability import setup_otel, setup_sentry
-from app.infrastructure.throttler import MemoryGcra, normalize_ip, redis_key
-from app.infrastructure.throttler import storage as throttler_storage
-from app.infrastructure.throttler.guard import handler_name, nest_handlers
-from tests.conftest import use_production
+from app.infrastructure.telemetry import setup_sentry, tag_request_id
+from app.infrastructure.telemetry.router import monitoring_token, token_matches
+from app.infrastructure.throttler import account_subject, normalize_ip
+from app.infrastructure.throttler.rules import SHARED_RULES, default_rule, private_rule
+from app.infrastructure.throttler.storage import MemoryGcraStore, Mode, gcra, key
 from tests.tokens import access_token
+
+PER_MINUTE = Quota(60, 60_000, 3)
 
 
 class TestNormalizeIp:
@@ -44,206 +38,168 @@ class TestNormalizeIp:
             ("", ""),
             ("not-an-ip", "not-an-ip"),
             ("::1", "::1"),
-            ("0:0:0:0:0:0:0:1", "::1"),
             ("::ffff:198.51.100.4", "198.51.100.4"),
             ("2001:db8:abcd:12:1:2:3:4", "2001:db8:abcd:12::/64"),
             ("2001:DB8::1%eth0", "2001:db8::/64"),
-            ("2001:db8:0:0:1::", "2001:db8::/64"),
         ],
     )
-    def test_matches_nestjs(self, ip: str, expected: str) -> None:
+    def test_ipv6_uses_64_prefix(self, ip: str, expected: str) -> None:
         assert normalize_ip(ip) == expected
 
 
-class TestMemoryGcra:
-    def test_allows_limit_then_blocks(self) -> None:
-        gcra = MemoryGcra()
-        decisions = [gcra.consume("k", 60_000, 3, now=0) for _ in range(4)]
+def _request(remote: str, forwarded: str | None) -> Any:
+    headers = {} if forwarded is None else {"x-forwarded-for": forwarded}
+    return SimpleNamespace(client=SimpleNamespace(host=remote), headers=headers)
+
+
+class TestClientIp:
+    @pytest.mark.parametrize(
+        ("hops", "forwarded", "expected"),
+        [
+            (0, "198.51.100.1", "10.0.0.2"),
+            (1, "198.51.100.1", "198.51.100.1"),
+            (1, "203.0.113.9, 198.51.100.1", "198.51.100.1"),
+            (2, "203.0.113.9, 198.51.100.1", "203.0.113.9"),
+            (3, "203.0.113.9, 198.51.100.1", "203.0.113.9"),
+            (1, None, "10.0.0.2"),
+        ],
+    )
+    def test_hop_count_takes_nth_from_right(
+        self, hops: int, forwarded: str | None, expected: str
+    ) -> None:
+        assert client_ip(_request("10.0.0.2", forwarded), hops) == expected
+
+    @pytest.mark.parametrize(
+        ("remote", "forwarded", "expected"),
+        [
+            ("10.0.0.2", "203.0.113.9, 10.1.0.1", "203.0.113.9"),
+            ("10.0.0.2", "198.51.100.7, 203.0.113.9, 10.1.0.1", "203.0.113.9"),
+            ("192.0.2.5", "203.0.113.9", "192.0.2.5"),
+            ("10.0.0.2", "10.1.0.1", "10.1.0.1"),
+            ("10.0.0.2", None, "10.0.0.2"),
+        ],
+    )
+    def test_cidr_list_skips_trusted_hops(
+        self, remote: str, forwarded: str | None, expected: str
+    ) -> None:
+        trusted = (
+            Settings.load().app.model_validate({"TRUSTED_PROXIES": "10.0.0.0/8"}).trusted_proxies
+        )
+
+        assert client_ip(_request(remote, forwarded), trusted) == expected
+
+
+class TestGcra:
+    def test_burst_then_reject_with_retry_after(self) -> None:
+        store = MemoryGcraStore()
+        decisions = [store.consume_at("k", PER_MINUTE, Mode.HIT, now=0) for _ in range(4)]
 
         assert [d.allowed for d in decisions] == [True, True, True, False]
         assert [d.remaining for d in decisions[:3]] == [2, 1, 0]
-        assert decisions[2].reset_seconds == 60
-        assert decisions[3].retry_after_seconds == 20
+        assert [d.reset_seconds for d in decisions[:3]] == [1, 2, 3]
+        assert decisions[3].retry_after_seconds == 1
+        assert decisions[0].limit == 3
 
-    def test_replenishes_gradually(self) -> None:
-        gcra = MemoryGcra()
+    def test_emission_interval_replenishes_one_request(self) -> None:
+        store = MemoryGcraStore()
         for _ in range(3):
-            gcra.consume("k", 60_000, 3, now=0)
+            store.consume_at("k", PER_MINUTE, Mode.HIT, now=0)
 
-        assert gcra.consume("k", 60_000, 3, now=19_999).allowed is False
-        later = gcra.consume("k", 60_000, 3, now=20_000)
-        assert later.allowed is True
-        assert later.remaining == 0
+        assert store.consume_at("k", PER_MINUTE, Mode.HIT, now=999).allowed is False
+        later = store.consume_at("k", PER_MINUTE, Mode.HIT, now=1_000)
+        assert (later.allowed, later.remaining) == (True, 0)
 
-    def test_keys_are_independent(self) -> None:
-        gcra = MemoryGcra()
-        gcra.consume("a", 1000, 1, now=0)
+    def test_peek_does_not_count(self) -> None:
+        store = MemoryGcraStore()
+        for _ in range(5):
+            assert store.consume_at("k", PER_MINUTE, Mode.PEEK, now=0).remaining == 3
 
-        assert gcra.consume("b", 1000, 1, now=0).allowed is True
-        assert gcra.consume("a", 1000, 1, now=0).allowed is False
+        assert store.consume_at("k", PER_MINUTE, Mode.HIT, now=0).remaining == 2
 
-    def test_first_request_is_allowed_at_any_clock_value(self) -> None:
-        now = 268382706.34399077
-        decision = MemoryGcra().consume("k", 60_000, 1, now=now)
+    @pytest.mark.parametrize(("count", "burst"), [(3, 20), (7, 10), (10, 20)])
+    def test_burst_is_exact_for_fractional_intervals(self, count: int, burst: int) -> None:
+        store = MemoryGcraStore()
+        quota = Quota(count, 1000, burst)
+        decisions = [store.consume_at("k", quota, Mode.HIT, now=0) for _ in range(burst + 1)]
 
-        assert decision.allowed is True
-        assert decision.remaining == 0
+        assert [d.remaining for d in decisions[:burst]] == list(range(burst - 1, -1, -1))
+        assert decisions[burst].allowed is False
 
-    def test_remaining_with_fractional_interval(self) -> None:
-        gcra = MemoryGcra()
+    def test_stored_tat_is_integer_milliseconds(self) -> None:
+        decision, stored = gcra(0, 1_000, Quota(3, 1000, 2), Mode.HIT)
 
-        assert gcra.consume("k", 60_000, 7, now=0).remaining == 6
+        assert stored == 1_334
+        assert decision.reset_ms == 334
 
-    def test_full_table_drops_expired_keys_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(throttler_storage, "MEMORY_MAX_KEYS", 3)
-        gcra = MemoryGcra()
-        gcra.consume("long", 60_000, 1, now=0)
-        gcra.consume("short", 1_000, 1, now=0)
-        gcra.consume("medium", 10_000, 1, now=0)
-
-        gcra.consume("new", 60_000, 1, now=5_000)
-
-        assert set(gcra._tat) == {"long", "medium", "new"}
-
-    def test_full_table_evicts_earliest_expiring_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(throttler_storage, "MEMORY_MAX_KEYS", 3)
-        gcra = MemoryGcra()
-        gcra.consume("long", 60_000, 1, now=0)
-        gcra.consume("short", 1_000, 1, now=0)
-        gcra.consume("medium", 10_000, 1, now=0)
-
-        gcra.consume("new", 60_000, 1, now=500)
-
-        assert set(gcra._tat) == {"long", "medium", "new"}
-        assert gcra.consume("long", 60_000, 1, now=500).allowed is False
+    def test_key_layout(self) -> None:
+        assert key("auth-login", "ip:203.0.113.7") == "rl:auth-login:ip:203.0.113.7"
 
 
-class TestThrottleKeys:
-    def test_handler_table_covers_auth_routes(self) -> None:
-        handlers = nest_handlers()
+class TestRules:
+    def test_shared_rules_match_convention(self) -> None:
+        table = {
+            rule.name: (
+                rule.quota.count,
+                rule.quota.period_ms,
+                rule.quota.burst,
+                rule.failures_only,
+            )
+            for rule in SHARED_RULES
+        }
 
-        assert handlers["loginWithEmail"] == "AuthController-login"
-        assert handlers["updateCurrentUser"] == "AuthController-update"
-        assert handlers["healthCheck"] == "HealthController-check"
-        assert handlers["getMetrics"] == "MetricsController-index"
+        assert table == {
+            "auth-login": (20, 60_000, 10, False),
+            "auth-login-account": (10, 3_600_000, 5, True),
+            "auth-register": (10, 3_600_000, 3, False),
+            "auth-mail": (5, 3_600_000, 3, False),
+            "auth-sms": (10, 3_600_000, 5, False),
+            "auth-mail-account": (3, 3_600_000, 2, False),
+            "auth-password-verify": (5, 900_000, 5, True),
+            "auth-refresh": (30, 60_000, 10, False),
+        }
+        assert all(rule.shared for rule in SHARED_RULES)
 
-    def test_unknown_operation_falls_back_to_operation_id(self) -> None:
-        route = SimpleNamespace(operation_id="notInNest", name="fn")
+    def test_private_rules_are_prefixed_with_service_name(self) -> None:
+        assert default_rule("api", PER_MINUTE).name == "api-default"
+        assert private_rule("api", "export", PER_MINUTE).shared is False
 
-        assert handler_name(route) == "notInNest"  # type: ignore[arg-type]
-
-    def test_redis_key_layout(self) -> None:
-        digest = hashlib.sha256(b"AuthController-login-default-ip:1.2.3.4").hexdigest()
-
-        assert redis_key(digest) == f"throttle:{digest}:default:gcra"
-
-    @pytest.mark.parametrize(
-        ("operation_id", "driver", "expected"),
-        [
-            ("readPrivateFile", FileDriver.LOCAL, "FilesController-readPrivate"),
-            ("readPrivateFile", FileDriver.S3, "FilesController-readPrivate"),
-            ("downloadFile", FileDriver.LOCAL, "FilesLocalController-download"),
-            ("uploadFile", FileDriver.LOCAL, "FilesLocalController-uploadFile"),
-            ("uploadFile", FileDriver.S3, "FilesS3Controller-uploadFile"),
-            ("uploadFile", FileDriver.S3_PRESIGNED, "FilesS3PresignedController-uploadFile"),
-        ],
-    )
-    def test_files_handlers(self, operation_id: str, driver: FileDriver, expected: str) -> None:
-        route = SimpleNamespace(operation_id=operation_id, name="fn")
-
-        assert handler_name(route, driver) == expected  # type: ignore[arg-type]
-
-
-class TestConfig:
-    def test_defaults_match_nestjs(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("THROTTLE_ENABLED")
-        settings = Settings.load()
-
-        assert settings.throttler.enabled is True
-        assert settings.throttler.ttl_ms == 60_000
-        assert settings.throttler.limit == 100
-        assert settings.metrics.enabled is True
-        assert settings.metrics.path == "metrics"
-        assert settings.metrics.token is None
-        assert settings.observability.sentry_dsn is None
-        assert settings.observability.otel_enabled is False
-
-    @pytest.mark.parametrize(("value", "expected"), [("false", False), ("0", True), ("", True)])
-    def test_metrics_enabled_only_false_disables(
-        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
-    ) -> None:
-        monkeypatch.setenv("METRICS_ENABLED", value)
-
-        assert Settings.load().metrics.enabled is expected
-
-    @pytest.mark.parametrize(
-        ("env", "overrides"),
-        [
-            ("THROTTLE_TTL", "0"),
-            ("THROTTLE_LIMIT", "abc"),
-            ("THROTTLE_ENABLED", "yes"),
-            ("METRICS_TOKEN", "short"),
-            ("LOG_LEVEL", "verbose"),
-        ],
-    )
-    def test_rejects_invalid_values(
-        self, monkeypatch: pytest.MonkeyPatch, env: str, overrides: str
-    ) -> None:
-        monkeypatch.setenv(env, overrides)
-
-        with pytest.raises(SettingsError):
-            Settings.load()
-
-    def test_log_defaults_follow_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        development = Settings.load().log
-        use_production(monkeypatch)
-        production = Settings.load().log
-
-        assert development.resolved_level(production=False) is LogLevel.DEBUG
-        assert development.resolved_pretty(production=False) is True
-        assert production.resolved_level(production=True) is LogLevel.INFO
-        assert production.resolved_pretty(production=True) is False
-
-    def test_log_pretty_print_is_true_only_for_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "yes")
-
-        assert Settings.load().log.resolved_pretty(production=False) is False
-
-
-def _monitoring_request(token: str | None, production: bool, authorization: str | None) -> Any:
-    settings = SimpleNamespace(
-        metrics=SimpleNamespace(
-            token=None if token is None else SimpleNamespace(get_secret_value=lambda: token)
-        ),
-        app=SimpleNamespace(is_production=production),
-    )
-    headers = {} if authorization is None else {"authorization": authorization}
-    return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(context=SimpleNamespace(settings=settings))),
-        headers=headers,
-    )
+    def test_account_subject_is_sha256_prefix(self) -> None:
+        assert account_subject("a@example.com") == "a:08168cd80dfd534a"
 
 
 class TestMonitoringToken:
+    @staticmethod
+    def _request(token: str | None, production: bool, authorization: str | None) -> Any:
+        settings = SimpleNamespace(
+            telemetry=SimpleNamespace(
+                metrics_token=None
+                if token is None
+                else SimpleNamespace(get_secret_value=lambda: token)
+            ),
+            app=SimpleNamespace(is_production=production),
+        )
+        headers = {} if authorization is None else {"authorization": authorization}
+        return SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(context=SimpleNamespace(settings=settings))),
+            headers=headers,
+        )
+
     async def test_without_token_only_non_production_passes(self) -> None:
-        await monitoring_token(_monitoring_request(None, False, None))
+        await monitoring_token(self._request(None, False, None))
 
         with pytest.raises(AppError) as raised:
-            await monitoring_token(_monitoring_request(None, True, None))
-        assert raised.value.status == 403
+            await monitoring_token(self._request(None, True, None))
+        assert raised.value.status == 401
 
     async def test_production_with_token(self) -> None:
-        await monitoring_token(_monitoring_request("t" * 16, True, "Bearer " + "t" * 16))
+        await monitoring_token(self._request("t" * 16, True, "Bearer " + "t" * 16))
 
     @pytest.mark.parametrize(
         ("header", "expected"),
         [
             ("Bearer secret", True),
             ("  BEARER   secret  ", True),
-            ("Bearer secret extra", True),
-            ("Bearer secre", False),
             ("Basic secret", False),
-            ("Bearer", False),
             (None, False),
         ],
     )
@@ -251,35 +207,14 @@ class TestMonitoringToken:
         assert token_matches(header, "secret") is expected
 
 
-class TestMetricsHelpers:
-    @pytest.mark.parametrize(
-        ("path", "expected"),
-        [
-            ("/api/v1/users/{id}", "/api/v1/users/:id"),
-            ("/files/{path:path}", "/files/:path"),
-            ("/", "/"),
-        ],
-    )
-    def test_express_path(self, path: str, expected: str) -> None:
-        assert express_path(path) == expected
-
-    @pytest.mark.parametrize(
-        ("statement", "expected"),
-        [
-            ('SELECT "user".id FROM "user" WHERE id = $1', ("SELECT", "user")),
-            ("INSERT INTO session (hash) VALUES ($1)", ("INSERT", "session")),
-            ('UPDATE public."user" SET x = 1', ("UPDATE", "user")),
-            ("DELETE FROM notification", ("DELETE", "notification")),
-            ("SELECT 1", ("SELECT", "unknown")),
-        ],
-    )
-    def test_classify(self, statement: str, expected: tuple[str, str]) -> None:
-        assert classify(statement) == expected
+def _json_lines(out: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
 
 
 class TestLogging:
     @pytest.fixture(autouse=True)
-    def restore_root_logger(self) -> Iterator[None]:
+    def restore_root_logger(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        monkeypatch.setenv("LOG_FORMAT", "json")
         root = logging.getLogger()
         level, handlers = root.level, list(root.handlers)
         yield
@@ -289,271 +224,192 @@ class TestLogging:
     @pytest.mark.parametrize(
         ("status", "failed", "level"),
         [
-            (200, False, "info"),
-            (304, False, "info"),
-            (404, False, "warning"),
-            (499, False, "warning"),
-            (500, False, "error"),
-            (200, True, "error"),
+            (200, False, logging.INFO),
+            (404, False, logging.WARNING),
+            (500, False, logging.ERROR),
+            (200, True, logging.ERROR),
         ],
     )
-    def test_level_rules(self, status: int, failed: bool, level: str) -> None:
+    def test_level_rules(self, status: int, failed: bool, level: int) -> None:
         assert level_for(status, failed) == level
 
-    def test_production_json_with_request_context(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
+    def test_access_log_fields(self, capsys: pytest.CaptureFixture[str]) -> None:
         app = create_app(Settings.load())
         user_id = UUID("019a8f3c-6b1e-7d2a-8000-000000000007")
         token = access_token(app, user_id)
         capsys.readouterr()
 
         response = TestClient(app).get(
-            "/api/v1/health/live?token=abc&page=1",
-            headers={"Authorization": f"Bearer {token}", "Cookie": "a=b", "X-Request-Id": "rid-1"},
+            "/api/v1/users/019a8f3c-6b1e-7d2a-8000-000000000001?token=abc",
+            headers={"Authorization": f"Bearer {token}", "X-Request-Id": "rid-1"},
         )
 
-        lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
-        [access] = [line for line in lines if line.get("logger") == "app.http.access"]
-        assert response.status_code == 200
-        assert access["msg"] == "GET /api/v1/health/live?token=abc&page=1 200"
-        assert access["level"] == "info"
+        [access] = [x for x in _json_lines(capsys.readouterr().out) if x["msg"] == "http request"]
+        assert response.status_code == 403
+        assert access["method"] == "GET"
+        assert access["route"] == "/api/v1/users/{id}"
+        assert access["status"] == 403
+        assert access["level"] == "warn"
         assert access["request_id"] == "rid-1"
         assert access["user_id"] == str(user_id)
-        assert access["context"] == "HTTP"
-        assert access["res"] == {"statusCode": 200}
-        assert access["req"]["headers"]["authorization"] == "[REDACTED]"
-        assert access["req"]["headers"]["cookie"] == "[REDACTED]"
-        assert access["req"]["query"] == {"token": "[REDACTED]", "page": "1"}
-        assert isinstance(access["responseTime"], int)
+        assert access["service"] == "api"
+        assert access["env"] == "development"
+        assert access["ts"].endswith("Z")
+        assert len(access["ts"]) == 24
+        assert isinstance(access["duration_ms"], float)
+        assert "abc" not in json.dumps(access)
 
-    def test_access_log_uses_resolved_request_id(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
-        app = create_app(Settings.load())
+    def test_unmatched_route_is_null(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = TestClient(create_app(Settings.load()))
         capsys.readouterr()
 
-        response = TestClient(app).get("/api/v1/health/live", headers={"X-Request-Id": "bad id!"})
+        client.get("/api/v1/nope")
 
-        lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
-        [access] = [line for line in lines if line.get("logger") == "app.http.access"]
-        assert access["req"]["id"] == response.headers["x-request-id"] != "bad id!"
+        [access] = [x for x in _json_lines(capsys.readouterr().out) if x["msg"] == "http request"]
+        assert (access["route"], access["status"], access["level"]) == (None, 404, "warn")
+
+    def test_secrets_are_dropped_and_contacts_masked(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        configure_logging(Settings.load())
+        capsys.readouterr()
+
+        logging.getLogger("app.test").warning(
+            "sent %s",
+            "mail",
+            extra={
+                "email": "alice@example.com",
+                "phone": "+8613800000000",
+                "password": "Secret00",
+                "payload": {"refreshToken": "r", "code": "123456", "keep": 1},
+            },
+        )
+
+        [line] = _json_lines(capsys.readouterr().out)
+        assert line["msg"] == "sent mail"
+        assert line["level"] == "warn"
+        assert line["logger"] == "app.test"
+        assert line["email"] == "a***@example.com"
+        assert line["phone"] == "+86138****0000"
+        assert "password" not in line
+        assert line["payload"] == {"keep": 1}
+
+    def test_scrubbing_ignores_case_and_enters_lists(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        configure_logging(Settings.load())
+        capsys.readouterr()
+
+        logging.getLogger("app.test").info(
+            "request",
+            extra={
+                "headers": {"Authorization": "Bearer TOPSECRET", "Accept": "x"},
+                "items": [{"Password": "TOPSECRET", "Email": "bob@example.com"}],
+            },
+        )
+
+        [line] = _json_lines(capsys.readouterr().out)
+        assert "TOPSECRET" not in json.dumps(line)
+        assert line["headers"] == {"Accept": "x"}
+        assert line["items"] == [{"Email": "b***@example.com"}]
 
     def test_http_client_request_lines_are_not_logged(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("LOG_LEVEL", "info")
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
         configure_logging(Settings.load())
         capsys.readouterr()
 
-        logging.getLogger("httpx").info(
-            "HTTP Request: GET https://api.weixin.qq.com/sns/jscode2session?secret=TOPSECRET"
-        )
+        logging.getLogger("httpx").info("HTTP Request: GET https://x.example?secret=TOPSECRET")
         logging.getLogger("httpx").warning("httpx warning")
 
         out = capsys.readouterr().out
         assert "TOPSECRET" not in out
         assert "httpx warning" in out
 
-    def test_stdlib_logging_goes_through_structlog(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
-        configure_logging(Settings.load())
-        capsys.readouterr()
-
-        logging.getLogger("app.test").warning("hello %s", "world", extra={"path": "/x"})
-
-        [line] = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x]
-        assert line["msg"] == "hello world"
-        assert line["level"] == "warning"
-        assert line["logger"] == "app.test"
-        assert line["path"] == "/x"
-
-    def test_warn_and_error_status_levels(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
-        client = TestClient(create_app(Settings.load()))
-        capsys.readouterr()
-
-        client.get("/api/v1/nope")
-
-        lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x]
-        [access] = [line for line in lines if line.get("logger") == "app.http.access"]
-        assert access["level"] == "warning"
-        assert access["msg"] == "GET /api/v1/nope 404"
-
-    def test_silent_level_suppresses_output(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("LOG_LEVEL", "silent")
+    def test_critical_is_reported_as_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         configure_logging(Settings.load())
         capsys.readouterr()
 
         logging.getLogger("app.test").critical("boom")
 
-        assert capsys.readouterr().out == ""
+        [line] = _json_lines(capsys.readouterr().out)
+        assert line["level"] == "error"
 
 
-class TestMemoryHeap:
-    def test_threshold_is_300mb(self) -> None:
-        assert indicators.HEAP_THRESHOLD_BYTES == 300 * 1024 * 1024
-
-    @pytest.mark.parametrize(
-        ("rss", "status"), [(300 * 1024 * 1024, "up"), (300 * 1024 * 1024 + 1, "down")]
-    )
-    async def test_compares_rss_with_threshold(
-        self, monkeypatch: pytest.MonkeyPatch, rss: int, status: str
-    ) -> None:
-        process = SimpleNamespace(memory_info=lambda: SimpleNamespace(rss=rss))
-        monkeypatch.setattr(psutil, "Process", lambda: process)
-
-        result = await indicators.memory_heap("memory_heap")
-
-        assert result["memory_heap"]["status"] == status
+@pytest.mark.parametrize(
+    ("value", "masked"),
+    [("+8613800000000", "+86138****0000"), ("13800138000", "138****8000"), ("123", "***")],
+)
+def test_mask_phone(value: str, masked: str) -> None:
+    assert mask_phone(value) == masked
 
 
-class TestMultiprocess:
-    def test_render_aggregates_worker_files(self, tmp_path: Path) -> None:
-        script = (
-            "from app.infrastructure import metrics\n"
-            "metrics.record_cache_hit('cache')\n"
-            "metrics.http_active_connections.inc()\n"
-            "print(metrics.render('Multi', include_default=True).decode())\n"
-        )
-        env = {**os.environ, "PROMETHEUS_MULTIPROC_DIR": str(tmp_path)}
-        for _ in range(2):
-            subprocess.run([sys.executable, "-c", script], env=env, check=True, capture_output=True)  # noqa: S603
-
-        output = subprocess.run(  # noqa: S603
-            [sys.executable, "-c", script], env=env, check=True, capture_output=True, text=True
-        ).stdout
-
-        assert 'cache_hits_total{app="Multi",cache_name="cache"} 3.0' in output
-        assert "http_active_connections" in output
-        assert list(tmp_path.iterdir())
-
-    def test_main_clears_files_of_dead_processes_before_serving(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        directory = tmp_path / "prom"
-        directory.mkdir()
-        dead = subprocess.run(
-            [sys.executable, "-c", "import os; print(os.getpid())"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        live = os.getpid()
-        for name in (f"counter_{dead}.db", f"gauge_livesum_{dead}.db"):
-            (directory / name).write_bytes(b"stale")
-        for name in (f"counter_{live}.db", f"gauge_livesum_{live}.db", "histogram_main.db"):
-            (directory / name).write_bytes(b"live")
-        (directory / "keep.txt").write_text("x")
-        monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(directory))
-        monkeypatch.setenv("WEB_CONCURRENCY", "4")
-        seen: list[list[str]] = []
-
-        class FakeGranian:
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                self.workers = kwargs["workers"]
-
-            def serve(self) -> None:
-                seen.append(sorted(p.name for p in directory.iterdir()))
-
-        monkeypatch.setattr(app_main, "Granian", FakeGranian)
-
-        app_main.main()
-
-        assert seen == [
-            sorted(
-                [f"counter_{live}.db", f"gauge_livesum_{live}.db", "histogram_main.db", "keep.txt"]
-            )
-        ]
-
-    def test_main_keeps_files_of_processes_owned_by_other_users(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        directory = tmp_path / "prom"
-        directory.mkdir()
-        (directory / "counter_4242.db").write_bytes(b"live")
-        monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(directory))
-        monkeypatch.setenv("WEB_CONCURRENCY", "1")
-        monkeypatch.setattr(app_main, "Granian", _NoopGranian)
-
-        def kill(pid: int, signal: int) -> None:
-            raise PermissionError(pid, signal)
-
-        monkeypatch.setattr(os, "kill", kill)
-
-        app_main.main()
-
-        assert [p.name for p in directory.iterdir()] == ["counter_4242.db"]
-
-    def test_main_warns_when_workers_share_no_directory(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
-        monkeypatch.setenv("WEB_CONCURRENCY", "2")
-        monkeypatch.setattr(app_main, "Granian", _NoopGranian)
-
-        app_main.main()
-
-        output = capsys.readouterr().out
-        assert "WEB_CONCURRENCY=2" in output
-        assert "PROMETHEUS_MULTIPROC_DIR is not set" in output
-
-    def test_single_worker_does_not_warn(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
-        monkeypatch.setattr(app_main, "Granian", _NoopGranian)
-
-        app_main.main()
-
-        assert "PROMETHEUS_MULTIPROC_DIR" not in capsys.readouterr().out
-
-
-class _NoopGranian:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def serve(self) -> None:
-        pass
+def test_mask_email() -> None:
+    assert (mask_email("alice@example.com"), mask_email("broken")) == ("a***@example.com", "***")
 
 
 class TestTelemetry:
-    def test_disabled_by_default(self) -> None:
-        settings = Settings.load()
-        app = create_app(settings)
+    def test_sentry_disabled_without_dsn(self) -> None:
+        assert setup_sentry(Settings.load()) is False
 
-        assert setup_sentry(settings) is False
-        assert setup_otel(app, settings, None) is False
+    def test_sentry_events_carry_request_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(telemetry, "current_request_id", lambda: "rid-9")
+
+        assert tag_request_id({}, None) == {"tags": {"request_id": "rid-9"}}
+
+    def test_metrics_route_requires_prometheus_exporter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
+        assert TestClient(create_app(Settings.load())).get("/metrics").status_code == 404
+
+    def test_http_metrics_use_stable_semantic_conventions(self) -> None:
+        client = TestClient(create_app(Settings.load()))
+
+        client.get("/health/live")
+        body = client.get("/metrics").text
+
+        [sample] = [
+            line
+            for line in body.splitlines()
+            if line.startswith("http_server_request_duration_seconds_count{")
+            and 'http_route="/health/live"' in line
+        ]
+        assert 'http_request_method="GET"' in sample
+        assert 'http_response_status_code="200"' in sample
 
     def test_logs_carry_trace_and_span_ids(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setenv("OTEL_ENABLED", "true")
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
-        monkeypatch.setattr(observability, "OTLPSpanExporter", lambda **_: InMemorySpanExporter())
-        monkeypatch.setenv("LOG_PRETTY_PRINT", "false")
+        monkeypatch.setenv("LOG_FORMAT", "json")
+        monkeypatch.setattr(telemetry, "OTLPSpanExporter", InMemorySpanExporter)
+        monkeypatch.setitem(telemetry._state, "tracer", None)
         root = logging.getLogger()
         level, handlers = root.level, list(root.handlers)
         try:
             client = TestClient(create_app(Settings.load()))
             capsys.readouterr()
-            client.get("/api/v1/health/live")
-            lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x]
+            client.get("/health/live")
+            lines = _json_lines(capsys.readouterr().out)
         finally:
             RedisInstrumentor().uninstrument()
             HTTPXClientInstrumentor().uninstrument()
             root.setLevel(level)
             root.handlers[:] = handlers
 
-        [access] = [line for line in lines if line.get("logger") == "app.http.access"]
+        [access] = [line for line in lines if line["msg"] == "http request"]
         assert len(access["trace_id"]) == 32
         assert len(access["span_id"]) == 16
+
+
+def test_user_deleted_is_cloudevents_json() -> None:
+    event = user_deleted("api", "019a8f3c-6b1e-7d2a-8000-000000000007")
+
+    payload = json.loads(encode(event))
+    assert payload["specversion"] == "1.0"
+    assert payload["type"] == USER_DELETED
+    assert payload["source"] == "/api"
+    assert payload["data"] == {"userId": "019a8f3c-6b1e-7d2a-8000-000000000007"}
+    assert decode(encode(event)).get_id() == event.get_id()

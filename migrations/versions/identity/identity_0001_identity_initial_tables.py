@@ -46,8 +46,8 @@ def upgrade() -> None:
         sa.CheckConstraint("status IN ('active', 'disabled')", name=op.f("ck_users_status")),
         sa.ForeignKeyConstraint(
             ["avatar_file_id"],
-            ["file.id"],
-            name=op.f("fk_users_avatar_file_id_file"),
+            ["files.id"],
+            name=op.f("fk_users_avatar_file_id_files"),
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
