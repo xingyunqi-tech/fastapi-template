@@ -1,4 +1,4 @@
-# 代码质量检查：lint、workflow-lint、type-check、test、migrations、security、build、image-scan、e2e
+# 代码质量检查：lint、workflow-lint、type-check、test、migrations、openapi、api、security、build、image-scan、e2e
 
 name: Check
 
@@ -19,6 +19,7 @@ permissions:
 env:
   ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
   GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  OASDIFF_IMAGE: tufin/oasdiff:v1.37.0@sha256:ff02af37a254b5199b9d72e7bba93dae5837a9119d59459168d1398893b47aea
   HADOLINT_IMAGE: hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
   TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 
@@ -163,6 +164,64 @@ jobs:
           make migrate
           uv run --frozen app migrate --check
 
+  openapi:
+    name: OpenAPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Export check
+        run: uv run --frozen app openapi export --check
+
+      - name: Checkout base
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          sparse-checkout: openapi
+          persist-credentials: false
+
+      - name: Breaking changes (oasdiff)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          if [ ! -f base/openapi/openapi.json ]; then
+            echo "base 分支没有 openapi/openapi.json，跳过" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          status=0
+          {
+            echo "## OpenAPI 破坏性变更"
+            echo '```'
+            docker run --rm -v "$PWD:/repo" -w /repo "$OASDIFF_IMAGE" \
+              breaking base/openapi/openapi.json openapi/openapi.json || status=$?
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  api:
+    name: API (schemathesis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - run: make test-api
+
   security:
     name: Security
     runs-on: ubuntu-latest
@@ -232,7 +291,7 @@ jobs:
     name: E2E (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [lint, type-check, test, build, migrations, workflow-lint, security]
+    needs: [lint, type-check, test, build, migrations, openapi, api, workflow-lint, security]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

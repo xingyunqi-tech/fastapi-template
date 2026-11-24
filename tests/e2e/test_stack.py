@@ -115,3 +115,24 @@ def test_openapi_json_is_served(api: httpx.Client) -> None:
 
     assert response.status_code == 200
     assert response.json()["openapi"] == "3.1.0"
+
+
+def test_notes_crud_and_account_deletion(api: httpx.Client) -> None:
+    email = unique_email("notes")
+    register(api, email)
+    headers = bearer(login(api, email)["accessToken"])
+
+    created = api.post("/api/v1/notes", json={"title": "e2e"}, headers=headers)
+    assert created.status_code == 201, created.text
+    note_id = created.json()["data"]["id"]
+    updated = api.patch(f"/api/v1/notes/{note_id}", json={"status": "published"}, headers=headers)
+    assert updated.status_code == 200, updated.text
+    listed = api.get("/api/v1/notes", params={"status": "published"}, headers=headers)
+    assert [note["id"] for note in listed.json()["data"]["items"]] == [note_id]
+    assert api.delete(f"/api/v1/notes/{note_id}", headers=headers).status_code == 200
+    assert api.get(f"/api/v1/notes/{note_id}", headers=headers).status_code == 404
+
+    assert api.delete("/api/v1/me", headers=headers).status_code == 202
+    assert api.get("/api/v1/me", headers=headers).status_code == 401
+    body = {"email": email, "password": "Secret00"}
+    assert api.post("/api/v1/auth/email/login", json=body).status_code == 401

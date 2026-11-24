@@ -24,7 +24,7 @@ from app.config.base import env_names
 from tests import keys
 
 TESTS_ROOT = Path(__file__).parent
-DIRECTORY_MARKERS = {"unit", "conventions", "integration", "e2e"}
+DIRECTORY_MARKERS = {"unit", "conventions", "integration", "api", "e2e"}
 SETTINGS_ENV_VARS = set().union(
     *(
         env_names(group)

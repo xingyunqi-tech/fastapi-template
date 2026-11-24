@@ -43,14 +43,16 @@ docker compose -f docker/docker-compose.base.yaml -f docker/docker-compose.redis
 
 | 文件 | 服务 / 作用 |
 |---|---|
-| `infra.compose.yaml` | postgres:18.6（:5432）、redis:8.10.3（:6379）、mailpit（:1025 SMTP、:8025 UI），项目名 `fastapi-temp-infra` |
-| `docker-compose.base.yaml` | `pidns`（api 与 worker 共享 PID 命名空间）、`mailpit`（UI 宿主端口 `MAIL_CLIENT_PORT`，默认 1080）、`migrate`、`api`（:3000，`env_file: .env.example`） |
+| `infra.compose.yaml` | postgres:18.6（:5432）、redis:8.10.3（:6379）、mailpit（:1025 SMTP、:8025 UI）、minio（:9000 S3、:9001 控制台，`minioadmin` / `minioadmin`），项目名 `fastapi-temp-infra` |
+| `docker-compose.base.yaml` | `mailpit`（UI 宿主端口 `MAIL_CLIENT_PORT`，默认 1080）、`migrate`、`api`（:3000，`env_file: .env.example`） |
 | `docker-compose.postgres.yaml` | `postgres`；`adminer`（profile `tools`，:8080） |
 | `docker-compose.redis.yaml` | `redis`、`worker`、`scheduler`，为 api / migrate 设置 `REDIS_URL`；`redisinsight`（profile `tools`，:5540） |
-| `docker-compose.dev.yaml` | development 镜像；`develop.watch` 同步 `src/` 并重启，`pyproject.toml` / `uv.lock` 变更时重建；migrate 设 `RUN_SEEDS=true` |
-| `docker-compose.test.yaml` | development 镜像、`APP_ENV=test`，挂载 `src/`、`tests/` |
+| `docker-compose.dev.yaml` | development 镜像、测试签名密钥（与 `tests/keys.py` 相同）；`develop.watch` 同步 `src/` 并重启，`pyproject.toml` / `uv.lock` 变更时重建；migrate 设 `RUN_SEEDS=true` |
+| `docker-compose.test.yaml` | development 镜像、`APP_ENV=test`、测试签名密钥，挂载 `src/`、`tests/` |
 | `docker-compose.ci.yaml` | 生产镜像、`APP_ENV=production`、CI 用密钥与 `METRICS_TOKEN`、`STORAGE_URL_SECRET`、`TRUSTED_PROXIES=1`，端口随机分配 |
 | `docker-compose.ecs.yaml` | 服务器：api、worker、scheduler、migrate、postgres、redis；镜像 `IMAGE_FULL_NAME`，配置取部署目录 `.env` |
+
+`STORAGE_DRIVER=s3` 本地联调：`S3_ENDPOINT=http://localhost:9000`、`S3_FORCE_PATH_STYLE=true`、`S3_REGION=us-east-1`、访问密钥 `minioadmin` / `minioadmin`，bucket 在 MinIO 控制台创建后写入 `S3_BUCKET`。
 
 api 的 `/metrics` 只输出本进程指标；worker 与 scheduler 在 `OTEL_EXPORTER_PROMETHEUS_PORT`（默认 9464）输出各自的指标。
 
@@ -79,6 +81,32 @@ api 的 `/metrics` 只输出本进程指标；worker 与 scheduler 在 `OTEL_EXP
 | `TRUSTED_PROXIES` | 反向代理层数，或可信代理 CIDR 列表 |
 
 `APP_ENV=production`、`REDIS_URL` 等由 `docker-compose.ecs.yaml` 设置。
+
+### 签名密钥
+
+```bash
+make keys    # = uv run --frozen app keys generate，输出 Ed25519 私钥与公钥（PEM）
+```
+
+私钥写入签发方 `.env` 的 `AUTH_SIGNING_KEY`（多行 PEM 可用 `\n` 写成一行）。轮换：
+
+1. `make keys` 生成新密钥对
+2. 新私钥写入 `AUTH_SIGNING_KEY`，原私钥对应的公钥追加到 `AUTH_VERIFY_KEYS`，重启签发方；JWKS 同时列出新旧公钥
+3. 验证方遇到未知 `kid` 时刷新 JWKS（间隔不少于 30 秒），无需重启
+4. 至少一个 access 有效期（`AUTH_ACCESS_TTL`）后从 `AUTH_VERIFY_KEYS` 删除旧公钥
+
+### monorepo 部署
+
+一个签发方加若干验证方共用 Postgres 与 Redis（约定 §10）：
+
+| 项 | 签发方 | 验证方 |
+|---|---|---|
+| 令牌 | `AUTH_SIGNING_KEY` | `AUTH_JWKS_URL`（签发方内网地址 + `/.well-known/jwks.json`）；`AUTH_ISSUER`、`AUTH_AUDIENCE` 与签发方相同 |
+| 数据库 | `DATABASE_URL`，独占 `DATABASE_SCHEMA` | 需要自有数据时配置，`DATABASE_SCHEMA` 与其他服务不同；`app migrate` 只升级 platform + modules |
+| 存储 | `STORAGE_DRIVER` 必填 | 可不设，此时不挂载 files；`local` 时须设 `STORAGE_URL_SECRET` |
+| 服务名 | `OTEL_SERVICE_NAME` 各不相同，用作 Redis 键前缀、私有限流规则名与消费组名 | 同左 |
+| 事件 | `EVENTS_TRANSPORT=redis_stream`、`EVENTS_REDIS_STREAM` 为 monorepo 分配的 stream 名 | 同左；`app worker` 消费 `user.deleted` 并执行本服务的清理器 |
+| 进程 | api、worker、scheduler、migrate | api；有数据库时加 migrate、worker；scheduler 只调度非 `issuer_only` 的任务 |
 
 ### deploy/manage.sh
 
@@ -113,10 +141,12 @@ check.yml 的 job：
 | type-check | mypy；ty（`continue-on-error`） | – |
 | test | `make test`（testcontainers），上传 coverage.xml | – |
 | migrations | postgres service，签发方与验证方各一遍：upgrade → `app migrate --check` → downgrade base → upgrade → `app migrate --check` | – |
+| openapi | `app openapi export --check`；PR 上用 oasdiff 对 base 分支报告破坏性变更，写入 job summary，不阻塞 | – |
+| api | `make test-api`（schemathesis，testcontainers） | – |
 | security | `make security`（pip-audit）、gitleaks（只扫本次 push / PR 引入的提交） | – |
 | build | `uv build`、生产镜像构建 | – |
 | image-scan | 生产镜像 + Trivy（HIGH / CRITICAL，有修复版本） | – |
-| e2e | `make test-e2e`，失败上传容器日志 | lint、type-check、test、build、migrations、workflow-lint、security |
+| e2e | `make test-e2e`，失败上传容器日志 | lint、type-check、test、build、migrations、openapi、api、workflow-lint、security |
 
 ### Secrets 与 Variables
 

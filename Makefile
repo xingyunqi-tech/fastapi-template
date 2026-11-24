@@ -53,6 +53,10 @@ test: ## 单元 + 约定 + 集成测试（含覆盖率）
 test-conventions: ## 约定测试（tests/conventions，探针路由）
 	$(PYTEST) -m conventions -n auto
 
+.PHONY: test-api
+test-api: ## schemathesis：按 openapi/openapi.json 对 Granian 启动的服务发请求（需 Docker）
+	$(PYTEST) -m api
+
 .PHONY: openapi
 openapi: ## 按代码导出 openapi/openapi.json
 	$(RUN) app openapi export
@@ -69,13 +73,17 @@ migrate: ## 执行数据库迁移（签发方全部分支，验证方 platform +
 seed: ## 写入种子数据（角色、权限、初始账号）
 	$(RUN) app seed
 
+.PHONY: keys
+keys: ## 生成 Ed25519 签名密钥对（AUTH_SIGNING_KEY 与公钥）
+	$(RUN) app keys generate
+
 .PHONY: generate-resource
 generate-resource: ## 生成 CRUD 模块骨架（make generate-resource name=Product）
 	@test -n "$(name)" || { echo "用法：make generate-resource name=<Name>"; exit 1; }
 	$(RUN) app generate resource "$(name)"
 
 .PHONY: infra
-infra: ## 启动本地 Postgres / Redis / Mailpit（docker compose）
+infra: ## 启动本地 Postgres / Redis / Mailpit / MinIO（docker compose）
 	docker compose -f docker/infra.compose.yaml up -d --wait
 
 IMAGE ?= fastapi-temp:local
@@ -106,8 +114,12 @@ workflow-lint: ## actionlint + zizmor（min-severity medium）
 	actionlint
 	uvx zizmor==1.32.0 --min-severity medium .
 
+.PHONY: bench
+bench: ## k6 压测：起 bench 栈、跑全部场景、输出表格后删除栈（见 docs/benchmark.md）
+	scripts/bench/run.sh all
+
 .PHONY: ci
-ci: check test security workflow-lint ## 本地运行 CI 门禁
+ci: check test test-api security workflow-lint ## 本地运行 CI 门禁
 
 .PHONY: clean
 clean: ## 清理缓存与构建产物

@@ -12,7 +12,7 @@ uv run --frozen app --help
 | `app seed` | 仅签发方：无 active admin 时创建管理员，见 [auth.md](auth.md#种子数据) | `make seed` |
 | `app worker [--workers N]` | 启动 Taskiq worker（默认 1 个进程）；未设置 `REDIS_URL` 时提示无需 worker；Redis 不可达，或 `OTEL_METRICS_EXPORTER=prometheus` 时 `--workers` 大于 1，退出码 1 | – |
 | `app scheduler` | 启动 Taskiq scheduler，按 cron 投递定时任务 | – |
-| `app keys generate` | 输出新的 Ed25519 私钥与公钥（PEM），不读取配置 | – |
+| `app keys generate` | 输出新的 Ed25519 私钥与公钥（PEM），不读取配置；轮换步骤见 [deploy.md](deploy.md#签名密钥) | `make keys` |
 | `app users cleanup <id>` | 仅签发方：重新执行该用户的注销数据清理 | – |
 | `app generate resource <Name>` | 按 `notes` 的结构生成 CRUD 模块骨架（本人可见、`<name>:read` / `<name>:write` 权限、注销清理器、集成测试） | `make generate-resource name=<Name>` |
 | `app openapi export [--check]` | 按代码导出 `openapi/openapi.json`；`--check` 不一致时退出码 1 | `make openapi` |
@@ -23,8 +23,8 @@ uv run --frozen app --help
 
 | 进程 | 消费 / 投递 |
 |---|---|
-| worker | Redis Stream `taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler` |
-| scheduler | `scheduler:cleanup-old-sessions`（`0 3 * * *` UTC）、`scheduler:account-cleanup-compensation`（`25 * * * *` Asia/Shanghai） |
+| worker | Redis Stream `taskiq:mail`、`taskiq:account-cleanup`、`taskiq:scheduler`；配置了数据库且 `EVENTS_TRANSPORT=redis_stream` 的验证方另消费 `EVENTS_REDIS_STREAM` 中的 `user.deleted` |
+| scheduler | `scheduler:cleanup-old-sessions`（`0 3 * * *` UTC）、`scheduler:account-cleanup-compensation`（`25 * * * *` Asia/Shanghai），二者均为 `issuer_only`，验证方不调度 |
 
 多实例运行 scheduler 时，任务执行由 `{OTEL_SERVICE_NAME}:lock:cron:<name>` 互斥。worker 的指标由其自身的 `OTEL_EXPORTER_PROMETHEUS_PORT` 输出。
 

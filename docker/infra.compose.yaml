@@ -1,4 +1,4 @@
-# 本地开发依赖：Postgres、Redis、Mailpit（make infra）
+# 本地开发依赖：Postgres、Redis、Mailpit、MinIO（make infra）
 
 name: fastapi-temp-infra
 
@@ -35,5 +35,19 @@ services:
       - '1025:1025'
       - '8025:8025'
 
+  # STORAGE_DRIVER=s3 时：S3_ENDPOINT=http://localhost:9000、S3_FORCE_PATH_STYLE=true，凭据同下，bucket 在控制台 :9001 创建
+  minio:
+    image: chainguard/minio@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '${MINIO_PORT:-9000}:9000'
+      - '${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - minio-data:/data
+
 volumes:
   postgres-data:
+  minio-data:

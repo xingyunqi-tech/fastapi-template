@@ -1,7 +1,7 @@
 [project]
 name = "fastapi-temp"
 version = "0.1.0"
-description = "FastAPI 后端模板，API 契约与 nestjs-template 一致"
+description = "FastAPI 后端模板，对外行为遵循跨语言平台约定"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.15"
@@ -55,6 +55,7 @@ dev = [
     "pytest-cov>=7.0.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.4",
+    "schemathesis>=4.34.1",
     "testcontainers[minio,postgres,redis]>=4.15.0",
     "time-machine>=2.16.0",
     "ty>=0.0.100",
@@ -142,6 +143,7 @@ markers = [
     "unit: 纯单元测试，不依赖外部服务",
     "integration: 依赖 testcontainers 启动的 Postgres / Redis",
     "conventions: 逐条断言 docs/platform-conventions.md 的可观察行为",
+    "api: schemathesis 按 openapi/openapi.json 对运行中的服务发请求",
     "e2e: 对 compose 启动的完整服务发请求",
     "committed: 依赖真实提交，使用独立克隆库",
 ]

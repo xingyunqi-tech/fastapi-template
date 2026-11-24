@@ -11,9 +11,10 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 | `unit` | 无 | `make test-unit` | 纯函数、配置、路由、OpenAPI 导出、生成器、提交信息检查等 |
 | `conventions` | 无 | `make test-conventions` | 探针路由逐条断言约定 §2–§4、§6：信封、错误码登记表、校验规则、400 / 404 / 405 / 413 / 415、请求头、分页、类型序列化 |
 | `integration` | Docker（testcontainers） | `make test` | 每个模块的 HTTP 行为、数据层、限流、健康检查、指标、文件、队列与定时任务、两种角色的迁移、验证方挂载与 `user.deleted` 消费 |
+| `api` | Docker（testcontainers） | `make test-api` | schemathesis 按 `openapi/openapi.json` 对 Granian 启动的服务发请求 |
 | `e2e` | Docker Compose | `make test-e2e` | 生产镜像完整服务栈黑盒测试 |
 
-`make test` = unit + conventions + integration（`-n auto`，输出 `coverage.xml`）；`make check` 只跑 unit。
+`make test` = unit + conventions + integration（`-n auto`，输出 `coverage.xml`）；`make check` 只跑 unit；`make ci` 另跑 `test-api`。
 
 ## 环境隔离
 
@@ -39,11 +40,24 @@ uv run --frozen pytest tests/integration/test_auth.py -n auto
 uv run --frozen pytest -m committed
 ```
 
+## api
+
+`tests/api/conftest.py` 用 testcontainers 的 Postgres 与 Redis 建库 `api_fuzz`，以子进程执行 `app migrate`、`app seed` 后用 `python -m app`（Granian）启动服务，登录种子管理员取得 access token，经 `schema.auth()` 提供给需要鉴权的请求。`tests/api/test_schema.py` 按入库的 `openapi/openapi.json` 为每个操作生成 20 个请求（hypothesis，含正例与反例），检查：
+
+- 无 5xx，状态码、`Content-Type`、响应头与响应体符合文档，不符合 schema 的请求被拒绝
+- 不检查 `positive_data_acceptance`：业务规则拒绝格式合法的请求时返回 422（如令牌无效、当前密码错误）
+- 排除会使 token 失效的 `deleteMe`、`logout`、`revokeOtherSessions`
+
+```bash
+make test-api
+uv run --frozen pytest tests/api -k notes
+```
+
 ## e2e
 
 `make test-e2e` 以 base + postgres + redis + ci 组合（项目名 `E2E_PROJECT`，默认 `fastapi-e2e`）`up --build --wait` 起完整服务栈，宿主端口随机分配，结束后 `down --volumes`；启动或用例失败时输出最近 200 行日志。`E2E_KEEP_STACK=1` 保留服务栈；设置 `CI` 时失败的服务栈不 down，由 workflow 收集容器日志。
 
-覆盖：`/health/ready`、邮箱注册全流程（Mailpit 收信）、文件上传与签名地址下载、限流头与 429、`/metrics` 的 HTTP 指标按稳定语义约定、`/openapi.json` 可访问。
+覆盖：`/health/ready`、邮箱注册 → 验证（Mailpit 收信）→ 登录 → 刷新 → 登出、notes 增删改查与注销账号、文件上传与签名地址下载、限流头与 429、`/metrics` 的 HTTP 指标按稳定语义约定、`/openapi.json` 可访问。
 
 ## 编写约定
 

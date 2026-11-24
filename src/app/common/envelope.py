@@ -85,4 +85,6 @@ class ValidationErrorData(BaseModel):
 
 
 class ValidationErrorResponse(ErrorResponse):
-    data: ValidationErrorData
+    """`common.validationFailed` 时 `data` 为字段错误，其余 422 errorKey 的 `data` 为 null。"""
+
+    data: ValidationErrorData | None

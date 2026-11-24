@@ -1,4 +1,4 @@
-"""@nestjs/throttler `normalizeIp`：IPv6 按子网前缀归并，回环与 IPv4 映射地址特殊处理。"""
+"""限流主体的 IP 归一化：IPv6 按子网前缀归并，回环与 IPv4 映射地址特殊处理。"""
 
 import ipaddress
 from typing import Final

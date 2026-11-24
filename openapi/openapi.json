@@ -3954,7 +3954,14 @@
             "title": "Errorkey"
           },
           "data": {
-            "$ref": "#/components/schemas/ValidationErrorData"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidationErrorData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "requestId": {
             "type": "string",
@@ -3969,7 +3976,8 @@
           "data",
           "requestId"
         ],
-        "title": "ValidationErrorResponse"
+        "title": "ValidationErrorResponse",
+        "description": "`common.validationFailed` 时 `data` 为字段错误，其余 422 errorKey 的 `data` 为 null。"
       },
       "VerifyEmailRequest": {
         "properties": {

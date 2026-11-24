@@ -10,16 +10,14 @@ x-test-build: &test-build
 
 x-test-env: &test-env
   APP_ENV: test
+  # 与 tests/keys.py 相同的测试密钥，仅用于本地
+  AUTH_SIGNING_KEY: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIIfsCwlN9KBxNWmO/r4h9O5HYHy12QqyuUnx96zHD0pL\n-----END PRIVATE KEY-----\n"
 
 x-test-volumes: &test-volumes
   - ../src:/app/src
   - ../tests:/app/tests
 
 services:
-  pidns:
-    build: *test-build
-    image: fastapi-temp:dev
-
   migrate:
     build: *test-build
     image: fastapi-temp:dev

@@ -22,8 +22,8 @@ src/app/
 |---|---|
 | `openapi/` | `openapi.json`（`app openapi export` 由代码导出，`--check` 校验一致） |
 | `migrations/` | Alembic（async env.py） |
-| `scripts/` | `check_commit_msg.py`、`audit_severity.py` |
-| `tests/` | `unit`、`conventions`、`integration`、`e2e`，见 [testing.md](testing.md) |
+| `scripts/` | `check_commit_msg.py`、`audit_severity.py`、`bench/`（k6 压测，见 [benchmark.md](benchmark.md)） |
+| `tests/` | `unit`、`conventions`、`integration`、`api`、`e2e`，见 [testing.md](testing.md) |
 | `docker/`、`deploy/`、`.github/workflows/` | 见 [deploy.md](deploy.md) |
 
 ## 模块分层
@@ -33,10 +33,9 @@ src/app/
 | `models.py` | SQLAlchemy ORM：snake_case 列名、UUIDv7 主键、`timestamptz`，声明 `__branch__` |
 | `repository.py` | 数据访问 |
 | `service.py` | 业务逻辑，只依赖 repository |
-| `schemas.py` | 本地请求 / 查询模型（契约模型在 `app.contract.schemas`） |
-| `serializers.py` | 按视图（me / admin / public）输出字段 |
+| `schemas.py` | 请求、查询与响应模型（camelCase 别名，约定 §3） |
 | `router.py` | 薄路由，`ApiRouter.endpoint(...)` 声明 |
-| `account_cleaner.py` | 注销账号后的数据清理器（`@register_account_cleaner(order)`） |
+| `account_cleaner.py` | 注销账号后的数据清理器（`infrastructure/account_data.py` 的 `@register_account_cleaner(order)`） |
 
 新模块需在 `factory.mount_routes` 中 `include_routes`，在 `infrastructure/database/models.py` 中导入 ORM 模型。
 

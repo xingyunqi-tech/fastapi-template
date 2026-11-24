@@ -86,8 +86,8 @@
 | 测试 | pytest / pytest-asyncio / pytest-xdist / coverage | 9.2.0 / 1.5.0 / 3.8.0 / 7.17.3 | 保留 |
 | 测试辅助 | testcontainers / time-machine / httpx2 | 4.15.0 / 3.6.0 / 2.16.2 | 保留 |
 | 测试数据 | polyfactory | 3.5.0 | **新增**：按 Pydantic / ORM 模型生成测试数据 |
-| API 模糊测试 | schemathesis | 4.33.4 | **新增**：按导出的 OpenAPI 生成请求，校验响应符合文档与约定 |
-| OpenAPI 兼容性 | oasdiff（Docker 镜像） | 固定 tag | **新增**：PR 中报告对 main 的破坏性变更 |
+| API 模糊测试 | schemathesis | 4.34.1 | **新增**：按导出的 OpenAPI 生成请求，校验响应符合文档与约定 |
+| OpenAPI 兼容性 | oasdiff（Docker 镜像） | v1.37.0（按 digest 固定） | **新增**：PR 中报告对 main 的破坏性变更 |
 | Lint / 类型 | Ruff / mypy strict / ty | 0.17.5 / 2.4.1 / 0.0.105 | 保留；ty 继续试运行 |
 | 钩子 / 拼写 | prek / typos | 0.5.11 / 1.52.2 | 保留 |
 | 删除 | psutil、bcrypt extra、uvicorn（直接依赖）、aiosmtpd（dev，改用 Mailpit 容器） | — | 无对应功能或已有替代 |
@@ -267,7 +267,7 @@ REDIS_URL=redis://redis:6379/0
 - 三个 Alembic 分支：`platform` 为基础；`identity`、`modules` 声明 `depends_on` platform（`users.avatar_file_id` 引用同 schema 的 `files`）
 - 签发方 `app migrate` 执行 `upgrade heads`；配置了数据库的验证方依次执行 `upgrade platform@head`、`upgrade modules@head`（`modules@head` 只带上它 `depends_on` 的 platform 版本，platform 的后续版本须单独升级）；`app migrate` 先 `CREATE SCHEMA IF NOT EXISTS`，`version_table_schema` 为 `DATABASE_SCHEMA`
 - ORM 模型声明 `__branch__`，写入表的 `info["branch"]`；`env.py` 的 `include_object` 只比较 ORM 中的表，`-x branches=` 限定分支；`alembic check` 只能在全部 heads 已升级时运行（Alembic 硬性检查），验证方只升级 platform + modules，两种角色统一用 `app migrate --check`（`branches.py` 的 `migration_problems`：已升级到本角色的目标版本，且 `schema_diff` 为空）；新迁移用 `alembic revision --autogenerate --head <branch>@head`
-- 初始迁移在 B3–B7 期间按需重新生成，B8 定稿；定稿后已合并的迁移不得修改
+- 初始迁移在 B3–B7 期间按需重新生成，B8 定稿：identity 合并为单个 `identity_0001`（含 `user_identities` 与 `account_deletions.event_published_at`），modules 保留空分支根 `modules_0001` 与示例 `modules_0002_notes`；定稿后已合并的迁移不得修改
 - CI 对两种角色各跑一遍 upgrade → check → downgrade base → upgrade（B7 起）
 - `alembic.ini` 设置 `version_locations` 指向三个分支目录与 `recursive_version_locations = true`
 
@@ -333,7 +333,7 @@ REDIS_URL=redis://redis:6379/0
 | integration | 每个接口的正常与错误路径；refresh 轮换、宽限期、重用吊销、并发刷新（`committed`）；`role.lastAdmin` 并发；限流（共享与私有规则、Redis 出错策略）；幂等键；队列与定时任务；邮件（Mailpit）；文件（local + MinIO，魔数识别、按用途上限）；账号注销链路与 `user.deleted`；`DATABASE_SCHEMA` 隔离；验证方三种挂载组合（无数据库、有数据库、有数据库与存储） | testcontainers（PG 18、Redis 8、MinIO、Mailpit；Docker Hub 的 `minio/minio` 已不可拉取，MinIO 用按 digest 固定的 `chainguard/minio`） |
 | conventions | `tests/conventions/`：逐条断言约定 §1–§8 与 §11 的可观察行为；平台部分用测试专用应用挂载探针路由，不依赖业务接口 | testcontainers |
 | OpenAPI（unit） | `app openapi export --check` 与入库文件一致；operationId 规则；约定 §11 的 operationId 与字段全部存在；错误响应与 `bearerAuth` 声明 | 无 |
-| api | schemathesis 按 `openapi/openapi.json` 对运行中的服务发请求，检查状态码与响应 schema | testcontainers |
+| api | schemathesis 按 `openapi/openapi.json` 对 Granian 子进程启动的服务发请求，检查无 5xx、状态码、Content-Type、响应头、响应 schema 与非法请求被拒绝；token 经 `schema.auth()` 提供；不检查 `positive_data_acceptance`（业务 422），排除使 token 失效的 `deleteMe` / `logout` / `revokeOtherSessions` | testcontainers |
 | e2e | compose 起完整栈（api、worker、scheduler、migrate），走注册 → 验证 → 登录 → 刷新 → notes CRUD → 上传 → 注销 | Docker Compose |
 
 ## 13. CI / CD
@@ -360,7 +360,7 @@ REDIS_URL=redis://redis:6379/0
 | `src/app/infrastructure/account_cleanup/router.py` | B1 | 改为 CLI |
 | `src/app/cli/seed_data/region-data.json` | B1 | 行政区划 |
 | `scripts/{openapi-sync.sh,gen_validation_cases.py,schema_snapshot.py}`、`scripts/nestjs/`、`db/nestjs-schema.sql` | B1 | 同步工具 |
-| `scripts/bench/` | B1 | 依赖 nestjs 对照环境；B8 以 `make bench` 重写 |
+| `scripts/bench/` | B1 | 依赖 nestjs 对照环境；B8 以 `make bench` 重写（只压本服务：login、me、users、notes；refresh 受 `auth-refresh` 每会话 30 次 / 分钟限制不压） |
 | `tests/parity/`、`tests/contract/`、`tests/fixtures/nestjs_mail/` | B1 | 对照测试与邮件快照 |
 | `tests/unit/test_wechat_subscribe.py`、`tests/integration/test_{addresses,app_config,app_profile,consents,favorites,feedbacks,notifications,regions,account_cleanup_admin,schema}.py` | B1 | 对应功能删除 |
 | `.github/workflows/nestjs-drift.yml`、`docs/contract.md` | B1 | |
@@ -439,7 +439,7 @@ REDIS_URL=redis://redis:6379/0
 | 路径 | 改写要点 |
 |---|---|
 | `src/app/integrations/{sms,wechat,alipay}/` | 迁到 `identity/providers/`（`sms/`、`wechat/`、`alipay/`、`registry.py`、`accounts.py`），实现 `ProviderClient` 与错误映射；删除 `integrations/` 包，`tests/unit/test_login_integrations.py` 改为 `test_providers.py` |
-| `migrations/versions/identity/` | 新增 `identity_0002`：`user_identities` 表（B4 的 identity 初始迁移不含该表）；注销时删除 `user_identities` |
+| `migrations/versions/identity/` | `user_identities` 表（B8 并入 `identity_0001`）；注销时删除 `user_identities` |
 | `src/app/config/sms.py` | `SMS_MOCK_MODE`、`SMS_ACCESS_KEY_*`、`SMS_SIGN_NAME`、`SMS_TEMPLATE_CODE`、`SMS_ENDPOINT` → `SMS_PROVIDER`、`SMS_ALIYUN_ACCESS_KEY_ID` / `_ACCESS_KEY_SECRET` / `_SIGN_NAME` / `_TEMPLATE_CODE` / `_ENDPOINT`；删除 `SMS_CODE_LENGTH`、`SMS_CODE_EXPIRES`、`SMS_MAX_ATTEMPTS`、`SMS_RESEND_INTERVAL`（规则由约定 §11.1 固定） |
 | `src/app/config/{wechat,alipay}.py` | `WECHAT_MINI_APP_ID` / `WECHAT_MINI_APP_SECRET` → `WECHAT_MINIAPP_APP_ID` / `WECHAT_MINIAPP_SECRET`；`WECHAT_APP_ID` → `WECHAT_APP_APP_ID`（`WECHAT_APP_SECRET` 不变）；删除 `WECHAT_MINI_PROGRAM_STATE`；支付宝增加 `ALIPAY_PUBLIC_KEY`（响应验签），`ALIPAY_GATEWAY` / `_SIGN_TYPE` / `_CHARSET` / `_SANDBOX` 保留；密钥在启动时校验 |
 | 短信 Redis 键 | 暂为 `sms:*`，B6 由 `redis.key()` 加 `{OTEL_SERVICE_NAME}:` 前缀，并以 `{phone}` 为 hash tag（`CHECK_CODE` 同时操作验证码与计次两个键） |
@@ -469,7 +469,7 @@ REDIS_URL=redis://redis:6379/0
 | `src/app/cli/{generate.py,templates/resource/*}` | 模板对齐 `notes`：本人可见、`<name>:read` / `<name>:write` 权限、`PATCH` 更新、不软删、生成 `account_cleaner.py` |
 | `src/app/config/{auth,database,__init__}.py`、`src/app/common/context.py`、`src/app/factory.py`、`src/app/common/routing.py` | `AUTH_JWKS_URL`；验证方 `DATABASE_URL` / `STORAGE_DRIVER` 可空；`AppContext.database` / `signer` / `file_urls` 可为 None（`db` / `token_signer` / `urls` 取用）；`mount_routes`；`app.state.auth_dependencies` |
 | `src/app/security/{jwt,jwks}.py`、`security/deps.py` | `TokenVerifier.verify` 改为异步，验证方从 JWKS 取公钥；JWKS 不可用且无缓存时 503 |
-| `src/app/identity/account_deletion/cleanup.py`、新增 `infrastructure/account_data.py`、`infrastructure/events/consumer.py`、`migrations/versions/identity/identity_0003_*` | 清理器登记移出 `identity/`；`user.deleted` 由清理任务发布并记 `event_published_at`；验证方消费者 |
+| `src/app/identity/account_deletion/cleanup.py`、新增 `infrastructure/account_data.py`、`infrastructure/events/consumer.py`、`migrations/versions/identity/` | 清理器登记移出 `identity/`；`user.deleted` 由清理任务发布并记 `event_published_at`（列在 B8 并入 `identity_0001`）；验证方消费者 |
 | `src/app/cli/__init__.py`、`infrastructure/database/branches.py`、`migrations/env.py` | `app migrate` 按角色选择目标，`--check`；未配置数据库时 `app migrate` 直接退出、`env.py` 报错 |
 | `src/app/identity/account_deletion/`、`infrastructure/events/` | `user.deleted` 发布可补偿：B6 只在提交后发布一次、失败只记日志；改为在 `account_deletions` 记录发布状态，由清理任务或定时补偿重发 |
 | `.github/workflows/check.yml` | migrations job 改为签发方与验证方两种角色（matrix）；签发方在 `.env` 中写入 `app keys generate` 生成的签名私钥，验证方写入 `AUTH_JWKS_URL` 并清空 `STORAGE_DRIVER`；check 步骤改为 `app migrate --check` |
@@ -478,8 +478,11 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `docker/*.yaml`（Mailpit、MinIO）、`.github/workflows/check.yml`（openapi、api job） | 按 §13 |
+| `docker/*.yaml`（Mailpit、MinIO）、`.github/workflows/check.yml`（openapi、api job） | 按 §13；MinIO 加入 `infra.compose.yaml`（e2e 仍用 local 存储，预签名地址的主机名在 compose 网络外不可达）；dev / test 组合写入测试签名密钥并删除残留的 `pidns` 服务；oasdiff 输出默认文本格式写入 job summary |
 | `pyproject.toml` | dev 依赖新增 `schemathesis`，markers 增加 `api` |
+| `src/app/common/envelope.py` | `ValidationErrorResponse.data` 可为 null：422 除 `common.validationFailed` 外的 errorKey（§2.4）`data` 为 null，schemathesis 发现文档与实际响应不符 |
+| `Makefile` | 新增 `test-api`、`keys`、`bench`；`ci` 加入 `test-api` |
+| `tests/e2e/test_stack.py` | 增加 notes 增删改查与注销账号 |
 | `README.md` | 定位为独立 Python 模板；功能、Make 目标、签发 / 验证方配置、文档索引 |
 | `docs/architecture.md`、`auth.md`、`database.md`、`testing.md`、`cli.md`、`deploy.md`、`benchmark.md` | auth 引用约定 §5、§11 并写实现落点；database 删除「与 nestjs 共用数据库」，写 schema 与迁移分支；testing 删除契约与 parity 两节；cli 写新命令；deploy 写密钥生成与轮换、monorepo 部署；benchmark 重新压测 |
 
