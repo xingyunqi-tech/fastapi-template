@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from app.common.client import client_ip
@@ -362,6 +363,8 @@ class TestTelemetry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
+        monkeypatch.setitem(telemetry._state, "meters", None)
+        monkeypatch.setattr(telemetry, "build_metric_reader", lambda _: InMemoryMetricReader())
         assert TestClient(create_app(Settings.load())).get("/metrics").status_code == 404
 
     def test_http_metrics_use_stable_semantic_conventions(self) -> None:
