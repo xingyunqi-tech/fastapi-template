@@ -1,23 +1,32 @@
 import asyncio
 import os
+import shutil
 import uuid
 from argparse import Namespace
 from typing import TYPE_CHECKING
+lazy from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from typer.testing import CliRunner
 
+from app.cli import cli
+from app.config import get_settings
 from app.infrastructure.database.base import Branch
 from app.infrastructure.database.branches import schema_diff
+from app.infrastructure.database.models import Base
 from app.infrastructure.database.session import Database
 from app.modules.files.models import FileModel
+from tests.conftest import use_verifier
 from tests.integration.conftest import ROOT, PgServer, _execute
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from typer.testing import Result
 
 PLATFORM_TABLES = {"files", "audit_logs"}
 
@@ -172,5 +181,110 @@ async def test_primary_keys_are_uuid_v7_and_timestamps_have_time_zone(
             )
         assert server_id.version == 7
         assert types == {"timestamp with time zone"}
+    finally:
+        await engine.dispose()
+
+
+def _migrate(*args: str) -> Result:
+    get_settings.cache_clear()
+    return CliRunner().invoke(cli, ["migrate", *args])
+
+
+@pytest.mark.parametrize(
+    ("role", "tables"),
+    [
+        ("issuer", None),
+        ("verifier", PLATFORM_TABLES | {"notes"}),
+    ],
+)
+async def test_role_migrations_upgrade_check_downgrade_upgrade(
+    pg_server: PgServer,
+    empty_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    tables: set[str] | None,
+) -> None:
+    monkeypatch.chdir(ROOT)
+    if role == "verifier":
+        use_verifier(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", pg_server.url(empty_db))
+    monkeypatch.setenv("DATABASE_SCHEMA", "svc")
+    engine = await _engine(pg_server, empty_db, "svc")
+    try:
+        result = await asyncio.to_thread(_migrate, "--check")
+        assert result.exit_code == 1
+        assert "未升级到最新版本" in result.output
+
+        assert (await asyncio.to_thread(_migrate)).exit_code == 0
+        result = await asyncio.to_thread(_migrate, "--check")
+        assert result.exit_code == 0, result.output
+        expected = tables if tables is not None else set(Base.metadata.tables)
+        assert await _tables(engine, "svc") == expected
+
+        config = Config(os.path.join(ROOT, "alembic.ini"))
+        await asyncio.to_thread(command.downgrade, config, "base")
+        assert await _tables(engine, "svc") == set()
+
+        assert (await asyncio.to_thread(_migrate)).exit_code == 0
+        assert (await asyncio.to_thread(_migrate, "--check")).exit_code == 0
+    finally:
+        await engine.dispose()
+
+
+def test_verifier_without_database_skips_migrations(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_verifier(monkeypatch)
+    result = _migrate()
+    assert result.exit_code == 0
+    assert "无需迁移" in result.output
+
+
+PLATFORM_0002 = '''"""platform probe
+
+Revision ID: platform_0002
+Revises: platform_0001
+"""
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "platform_0002"
+down_revision = "platform_0001"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table("platform_probe", sa.Column("id", sa.Integer(), primary_key=True))
+
+
+def downgrade() -> None:
+    op.drop_table("platform_probe")
+'''
+
+
+async def test_verifier_upgrades_platform_beyond_the_modules_dependency(
+    pg_server: PgServer,
+    empty_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copy(os.path.join(ROOT, "alembic.ini"), project / "alembic.ini")
+    shutil.copytree(
+        os.path.join(ROOT, "migrations"),
+        project / "migrations",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    (project / "migrations/versions/platform/platform_0002_probe.py").write_text(PLATFORM_0002)
+    monkeypatch.chdir(project)
+    use_verifier(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", pg_server.url(empty_db))
+    engine = await _engine(pg_server, empty_db, "public")
+    try:
+        assert (await asyncio.to_thread(_migrate)).exit_code == 0
+        assert "platform_probe" in await _tables(engine, "public")
+        result = await asyncio.to_thread(_migrate, "--check")
+        assert "未升级到最新版本" not in result.output
     finally:
         await engine.dispose()

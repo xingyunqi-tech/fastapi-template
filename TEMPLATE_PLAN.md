@@ -242,7 +242,8 @@ REDIS_URL=redis://redis:6379/0
 - `/health/ready` 只检查已配置的依赖（数据库、Redis），不检查 JWKS（约定 §1）
 - `app openapi export` 以签发方与全部模块挂载的配置生成文档；未配置 `DATABASE_URL` 时用占位地址（不连接）
 - Redis 键：`auth:`、`rl:` 开头的键按约定原格式使用（含私有限流规则），其余一律带 `{OTEL_SERVICE_NAME}:` 前缀（约定 §10），由 `redis.key(...)` 统一拼接；Taskiq stream 名同样带前缀；事件 stream 名例外，见下条
-- 事件：`infrastructure/events/` 提供 `EventPublisher` / `EventConsumer` 协议，`EVENTS_TRANSPORT=none|log|redis_stream`（默认 `log`）；stream 名 `EVENTS_REDIS_STREAM` 由 monorepo 配置、不加服务前缀，消费者组名为 `OTEL_SERVICE_NAME`（约定 §10）；签发方提交删除后发布 `user.deleted`，验证方的消费者调用本服务登记的清理器
+- 事件：`infrastructure/events/` 提供 `EventPublisher` 协议与 `EventConsumer`（Redis Stream 消费组），`EVENTS_TRANSPORT=none|log|redis_stream`（默认 `log`）；stream 名 `EVENTS_REDIS_STREAM` 由 monorepo 配置、不加服务前缀，消费者组名为 `OTEL_SERVICE_NAME`（约定 §10）；签发方的注销清理任务先发布 `user.deleted` 再执行清理器；配置了数据库且 `EVENTS_TRANSPORT=redis_stream` 的验证方在 `app worker` 进程内消费，调用 `infrastructure/account_data.py` 登记的本服务清理器，失败的消息空闲 60 秒后重领，投递满 5 次记 error 后确认；出错时记日志并重试，消费组缺失时从 stream 开头重建
+- 路由挂载由 `factory.mount_routes` 按角色与依赖决定；签发方的 JWT 依赖（更新会话活跃时间）经 `app.state.auth_dependencies` 只替换签发方应用；验证方的 `app scheduler` 不调度标记为 `issuer_only` 的任务
 
 ## 8. 数据模型
 
@@ -258,14 +259,14 @@ REDIS_URL=redis://redis:6379/0
 | `sessions` | user_id、user_agent、ip（`inet`）、auth_time、created_at、last_active_at、expires_at（登录时确定）、revoked_at | identity |
 | `refresh_tokens` | session_id、token_hash（唯一）、created_at、rotated_at、grace_ciphertext（可空） | identity |
 | `verification_tokens` | user_id、purpose（`verify_email` / `reset_password`）、token_hash、password_fingerprint、expires_at；（user_id, purpose）唯一 | identity |
-| `account_deletions` | user_id（主键）、requested_at、completed_at、attempts、last_error | identity |
+| `account_deletions` | user_id（主键）、requested_at、completed_at、attempts、last_error、event_published_at（`user.deleted` 发布成功时间） | identity |
 | `notes` | owner_id（`sub`）、title、content、status（`draft` / `published`）、created_at、updated_at | modules |
 
 迁移：
 
 - 三个 Alembic 分支：`platform` 为基础；`identity`、`modules` 声明 `depends_on` platform（`users.avatar_file_id` 引用同 schema 的 `files`）
-- `alembic upgrade` 只接受一个目标：签发方 `app migrate` 执行 `upgrade heads`，配置了数据库的验证方执行 `upgrade modules@head`（`depends_on` 带上 platform）；`app migrate` 先 `CREATE SCHEMA IF NOT EXISTS`，`version_table_schema` 为 `DATABASE_SCHEMA`
-- ORM 模型声明 `__branch__`，写入表的 `info["branch"]`；`env.py` 的 `include_object` 只比较 ORM 中的表，`-x branches=` 限定分支；`alembic check` 只能在全部 heads 已升级时运行（Alembic 硬性检查），验证方只升级 platform + modules，其 check 改用 `infrastructure/database/branches.py` 的 `schema_diff`（B7 接入 `app migrate`）；新迁移用 `alembic revision --autogenerate --head <branch>@head`
+- 签发方 `app migrate` 执行 `upgrade heads`；配置了数据库的验证方依次执行 `upgrade platform@head`、`upgrade modules@head`（`modules@head` 只带上它 `depends_on` 的 platform 版本，platform 的后续版本须单独升级）；`app migrate` 先 `CREATE SCHEMA IF NOT EXISTS`，`version_table_schema` 为 `DATABASE_SCHEMA`
+- ORM 模型声明 `__branch__`，写入表的 `info["branch"]`；`env.py` 的 `include_object` 只比较 ORM 中的表，`-x branches=` 限定分支；`alembic check` 只能在全部 heads 已升级时运行（Alembic 硬性检查），验证方只升级 platform + modules，两种角色统一用 `app migrate --check`（`branches.py` 的 `migration_problems`：已升级到本角色的目标版本，且 `schema_diff` 为空）；新迁移用 `alembic revision --autogenerate --head <branch>@head`
 - 初始迁移在 B3–B7 期间按需重新生成，B8 定稿；定稿后已合并的迁移不得修改
 - CI 对两种角色各跑一遍 upgrade → check → downgrade base → upgrade（B7 起）
 - `alembic.ini` 设置 `version_locations` 指向三个分支目录与 `recursive_version_locations = true`
@@ -286,7 +287,7 @@ REDIS_URL=redis://redis:6379/0
 | 邮件 | aiosmtplib + Jinja2，模板 `verify-email`、`reset-password` 中英双语，链接基于 `APP_FRONTEND_URL`；提交后入队发送；未配置 `MAIL_HOST` 时只记日志 |
 | 文件 | 接口与用途规则见约定 §11.5；签发方必挂，验证方配置数据库与存储时挂载（§7.5）。`STORAGE_DRIVER=local|s3`；用途表 `avatar`（约定）与 `attachment`（本服务追加：jpeg / png / webp / gif / pdf，≤ 20 MiB）；上传路由豁免 `BODY_LIMIT`，以所有用途的最大上限作为流式读取上限，解析出 `purpose` 后按该用途上限判定 `file.tooLarge`；类型按文件头魔数识别（只需覆盖白名单内类型，不引入依赖）。`File.url`：s3 为预签名 GET；local 为相对路径 `/api/v1/files/{id}/content?expires=&signature=`（`getFileContent`，HMAC-SHA256，密钥 `STORAGE_URL_SECRET`，未设置时由 `AUTH_SIGNING_KEY` 经 HKDF 派生，签名无效或过期 404，不包信封，`FileResponse` 输出，响应头按约定 §11.5） |
 | 审计 | `endpoint(audit=Audit("user.update", resource="user"))`；请求成功后独立事务写 `audit_logs`，失败只记日志；`GET /audit-logs`（`listAuditLogs`，`audit:read`，游标分页） |
-| 账号注销 | `deleteMe` / `deleteUser`：同一事务内做 `role.lastAdmin` 检查，软删用户并清空 email / phone / password_hash / avatar_file_id（约定 §11.3 立即释放），删除 `user_roles`、`user_identities`、`verification_tokens`，吊销全部会话（写约定 §5.1 的吊销键），写 `account_deletions`；提交后入队清理任务并发布 `user.deleted`。清理器用 `register_account_cleaner(order)` 登记（files、notes），按 `sub` 清理且幂等；签发方删除 `sessions` / `refresh_tokens`；失败重试 5 次后记 error 并上报 Sentry；定时补偿未完成记录；`app users cleanup <id>` 手动重跑。验证方配置数据库时消费 `user.deleted` 并执行同一组本地清理器 |
+| 账号注销 | `deleteMe` / `deleteUser`：同一事务内做 `role.lastAdmin` 检查，软删用户并清空 email / phone / password_hash / avatar_file_id（约定 §11.3 立即释放），删除 `user_roles`、`user_identities`、`verification_tokens`，吊销全部会话（写约定 §5.1 的吊销键），写 `account_deletions`；提交后入队清理任务，任务先发布 `user.deleted`（成功后记 `event_published_at`，已发布的不重发），再执行清理器，发布失败与清理失败同样记 `last_error` 并重试。清理器用 `infrastructure/account_data.py` 的 `register_account_cleaner(order)` 登记（sessions、files、notes），工厂返回 None 表示本服务未启用该数据，按 `sub` 清理且幂等；签发方删除 `sessions` / `refresh_tokens`；失败重试 5 次后记 error 并上报 Sentry；定时补偿未完成记录；`app users cleanup <id>` 手动重跑。验证方配置数据库时消费 `user.deleted` 并执行同一组本地清理器 |
 | 进程 | api（Granian）、worker、scheduler、migrate（一次性） |
 
 ## 10. 配置
@@ -465,9 +466,13 @@ REDIS_URL=redis://redis:6379/0
 
 | 路径 | 改写要点 |
 |---|---|
-| `src/app/cli/{generate.py,templates/resource/*}` | 模板对齐 `notes` |
+| `src/app/cli/{generate.py,templates/resource/*}` | 模板对齐 `notes`：本人可见、`<name>:read` / `<name>:write` 权限、`PATCH` 更新、不软删、生成 `account_cleaner.py` |
+| `src/app/config/{auth,database,__init__}.py`、`src/app/common/context.py`、`src/app/factory.py`、`src/app/common/routing.py` | `AUTH_JWKS_URL`；验证方 `DATABASE_URL` / `STORAGE_DRIVER` 可空；`AppContext.database` / `signer` / `file_urls` 可为 None（`db` / `token_signer` / `urls` 取用）；`mount_routes`；`app.state.auth_dependencies` |
+| `src/app/security/{jwt,jwks}.py`、`security/deps.py` | `TokenVerifier.verify` 改为异步，验证方从 JWKS 取公钥；JWKS 不可用且无缓存时 503 |
+| `src/app/identity/account_deletion/cleanup.py`、新增 `infrastructure/account_data.py`、`infrastructure/events/consumer.py`、`migrations/versions/identity/identity_0003_*` | 清理器登记移出 `identity/`；`user.deleted` 由清理任务发布并记 `event_published_at`；验证方消费者 |
+| `src/app/cli/__init__.py`、`infrastructure/database/branches.py`、`migrations/env.py` | `app migrate` 按角色选择目标，`--check`；未配置数据库时 `app migrate` 直接退出、`env.py` 报错 |
 | `src/app/identity/account_deletion/`、`infrastructure/events/` | `user.deleted` 发布可补偿：B6 只在提交后发布一次、失败只记日志；改为在 `account_deletions` 记录发布状态，由清理任务或定时补偿重发 |
-| `.github/workflows/check.yml` | migrations job 改为签发方与验证方两种角色 |
+| `.github/workflows/check.yml` | migrations job 改为签发方与验证方两种角色（matrix）；签发方在 `.env` 中写入 `app keys generate` 生成的签名私钥，验证方写入 `AUTH_JWKS_URL` 并清空 `STORAGE_DRIVER`；check 步骤改为 `app migrate --check` |
 
 **B8 交付**
 

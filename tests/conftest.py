@@ -91,3 +91,13 @@ def use_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAIL_HOST", "smtp.example.com")
     monkeypatch.setenv("MAIL_FROM", "Api <noreply@example.com>")
     monkeypatch.setenv("APP_FRONTEND_URL", "https://app.example.com")
+
+
+JWKS_URL = "http://identity.test/.well-known/jwks.json"
+
+
+def use_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """验证方的最小配置：只有 JWT 相关变量，无数据库与存储。"""
+    for name in ("AUTH_SIGNING_KEY", "DATABASE_URL", "STORAGE_DRIVER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AUTH_JWKS_URL", JWKS_URL)

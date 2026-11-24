@@ -104,9 +104,13 @@ jobs:
           if-no-files-found: ignore
 
   migrations:
-    name: Migrations
+    name: Migrations (${{ matrix.role }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [issuer, verifier]
     services:
       postgres:
         image: postgres:18.6-alpine
@@ -131,19 +135,33 @@ jobs:
           enable-cache: true
 
       - name: Prepare .env
-        run: cp .env.example .env
+        env:
+          ROLE: ${{ matrix.role }}
+        run: |
+          cp .env.example .env
+          if [ "$ROLE" = verifier ]; then
+            {
+              echo "AUTH_JWKS_URL=http://localhost:3000/.well-known/jwks.json"
+              echo "STORAGE_DRIVER="
+            } >> .env
+          else
+            key=$(uv run --frozen app keys generate | sed -n '1,/END PRIVATE KEY/p' | awk '{printf "%s\\n", $0}')
+            printf 'AUTH_SIGNING_KEY=%s\n' "$key" >> .env
+          fi
 
       - name: upgrade
         run: make migrate
 
       - name: check
-        run: uv run --frozen alembic check
+        run: uv run --frozen app migrate --check
 
       - name: downgrade
         run: uv run --frozen alembic downgrade base
 
       - name: upgrade again
-        run: make migrate
+        run: |
+          make migrate
+          uv run --frozen app migrate --check
 
   security:
     name: Security

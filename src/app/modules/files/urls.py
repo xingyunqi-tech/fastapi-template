@@ -27,7 +27,7 @@ def url_secret(settings: Settings) -> bytes:
     if secret is not None:
         return secret.get_secret_value().encode()
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"file-url").derive(
-        settings.auth.signing_key.get_secret_value().encode()
+        settings.auth.signing_pem().encode()
     )
 
 

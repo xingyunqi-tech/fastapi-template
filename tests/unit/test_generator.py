@@ -75,49 +75,6 @@ def test_allows_table_owned_by_target_module(tmp_path: Path) -> None:
     assert (tmp_path / "src" / "app" / "modules" / "regions" / "models.py").exists()
 
 
-def test_generated_repository_returns_empty_page_beyond_offset_range(tmp_path: Path) -> None:
-    generate_resource("Widget", tmp_path)
-    script = textwrap.dedent(
-        f"""
-        import asyncio
-
-        import app.modules
-
-        app.modules.__path__.append({str(tmp_path / "src" / "app" / "modules")!r})
-        from app.modules.widgets.repository import PG_BIGINT_MAX, WidgetRepository
-
-
-        class Session:
-            def __init__(self):
-                self.offsets = []
-
-            async def scalars(self, statement):
-                self.offsets.append(statement._offset_clause.value)
-                return []
-
-            async def scalar(self, statement):
-                return 3
-
-
-        session = Session()
-        repository = WidgetRepository(session)
-        limit = 10
-        last = PG_BIGINT_MAX // limit + 1
-        assert asyncio.run(repository.find_page(page=last, limit=limit)) == ([], 3)
-        assert asyncio.run(repository.find_page(page=last + 1, limit=limit)) == ([], 3)
-        assert asyncio.run(repository.find_page(page=10**30, limit=limit)) == ([], 3)
-        assert session.offsets == [(last - 1) * limit]
-        """
-    )
-    _run(
-        sys.executable,
-        "-c",
-        script,
-        cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
-    )
-
-
 def _project_copy(target: Path) -> Path:
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     shutil.copytree(ROOT / "src", target / "src", ignore=ignore)
@@ -196,8 +153,8 @@ def test_generated_module_passes_lint_types_and_registers_routes(tmp_path: Path)
                 ("DELETE", "/api/v1/product-categories/{id}"),
                 ("GET", "/api/v1/product-categories"),
                 ("GET", "/api/v1/product-categories/{id}"),
+                ("PATCH", "/api/v1/product-categories/{id}"),
                 ("POST", "/api/v1/product-categories"),
-                ("PUT", "/api/v1/product-categories/{id}"),
             ]
         )
     ]

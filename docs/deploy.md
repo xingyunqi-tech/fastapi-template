@@ -67,11 +67,12 @@ api 的 `/metrics` 只输出本进程指标；worker 与 scheduler 在 `OTEL_EXP
 | 变量 | 要求 |
 |---|---|
 | `AUTH_ISSUER`、`AUTH_AUDIENCE` | 必填；验证方配置相同的值 |
-| `AUTH_SIGNING_KEY` | 必填，Ed25519 私钥 PEM（`app keys generate`）；轮换时旧公钥放入 `AUTH_VERIFY_KEYS`，见 [auth.md](auth.md#令牌) |
-| `MAIL_HOST`、`MAIL_FROM` | 必填，否则启动失败；`MAIL_TLS` 取 `none` / `starttls`（默认）/ `tls` |
+| `AUTH_SIGNING_KEY` | 签发方必填，Ed25519 私钥 PEM（`app keys generate`）；轮换时旧公钥放入 `AUTH_VERIFY_KEYS`，见 [auth.md](auth.md#令牌) |
+| `AUTH_JWKS_URL` | 验证方必填（签发方的 `/.well-known/jwks.json`），不设 `AUTH_SIGNING_KEY`；需要自有数据时配置 `DATABASE_URL` 与独占的 `DATABASE_SCHEMA`，消费 `user.deleted` 时设 `EVENTS_TRANSPORT=redis_stream` 与 monorepo 分配的 `EVENTS_REDIS_STREAM`，并运行 `app worker` |
+| `MAIL_HOST`、`MAIL_FROM` | 签发方必填，否则启动失败；`MAIL_TLS` 取 `none` / `starttls`（默认）/ `tls` |
 | `METRICS_TOKEN` | ≥16 字符；`OTEL_METRICS_EXPORTER=prometheus` 时生产必填 |
 | `CORS_ORIGINS` | CORS 白名单，逗号分隔 |
-| `APP_FRONTEND_URL` | 必填，邮件链接的前端地址（`/verify-email`、`/reset-password`） |
+| `APP_FRONTEND_URL` | 签发方必填，邮件链接的前端地址（`/verify-email`、`/reset-password`） |
 | `DATABASE_*` | 见 [database.md](database.md) |
 | `STORAGE_DRIVER` 及 `S3_*` | `s3` 缺桶或区域时启动失败；未配置访问密钥时用默认凭据链；`local` 时生产要求 `STORAGE_URL_SECRET` |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | `RUN_SEEDS=true` 时创建首个管理员 |
@@ -111,7 +112,7 @@ check.yml 的 job：
 | workflow-lint | actionlint、zizmor（min-severity medium，忽略项见 `.github/zizmor.yml`） | – |
 | type-check | mypy；ty（`continue-on-error`） | – |
 | test | `make test`（testcontainers），上传 coverage.xml | – |
-| migrations | postgres service：upgrade → `alembic check` → downgrade base → upgrade | – |
+| migrations | postgres service，签发方与验证方各一遍：upgrade → `app migrate --check` → downgrade base → upgrade → `app migrate --check` | – |
 | security | `make security`（pip-audit）、gitleaks（只扫本次 push / PR 引入的提交） | – |
 | build | `uv build`、生产镜像构建 | – |
 | image-scan | 生产镜像 + Trivy（HIGH / CRITICAL，有修复版本） | – |

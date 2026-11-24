@@ -57,7 +57,7 @@ async def list_users(
         offset=page.offset,
         limit=page.page_size,
     )
-    return UserPage.of([User.from_model(u, context.file_urls) for u in users], total, page)
+    return UserPage.of([User.from_model(u, context.urls) for u in users], total, page)
 
 
 @router.endpoint(
@@ -72,7 +72,7 @@ async def list_users(
 )
 async def create_user(body: CreateUserRequest, context: Context, session: DbSession) -> User:
     user = await UsersService(context, session).create(body)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(
@@ -84,7 +84,7 @@ async def create_user(body: CreateUserRequest, context: Context, session: DbSess
     summary="用户详情",
 )
 async def get_user(id: UserId, context: Context, session: DbSession) -> User:
-    return User.from_model(await UsersService(context, session).get(id), context.file_urls)
+    return User.from_model(await UsersService(context, session).get(id), context.urls)
 
 
 @router.endpoint(
@@ -100,7 +100,7 @@ async def update_user(
     id: UserId, body: UpdateUserRequest, context: Context, session: DbSession
 ) -> User:
     user = await UsersService(context, session).update(id, body)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(
@@ -131,7 +131,7 @@ async def set_user_roles(
     id: UserId, body: SetUserRolesRequest, context: Context, session: DbSession
 ) -> User:
     user = await UsersService(context, session).set_roles(id, body)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(

@@ -10,7 +10,7 @@ import time
 from email.message import EmailMessage
 from email.policy import default as default_policy
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid7
 lazy from collections.abc import AsyncIterator
 
 import httpx as httpx_lib
@@ -27,9 +27,13 @@ from app.common.pagination import encode_cursor
 from app.common.routing import ApiRouter, Auth
 from app.config import Settings, get_settings
 from app.factory import build_tokens, create_app
-from app.identity.account_deletion import cleanup as account_cleanup
-from app.identity.account_deletion.cleanup import AccountCleanupProducer, pending_key
+from app.identity.account_deletion.cleanup import (
+    AccountCleanupProducer,
+    AccountCleanupRunner,
+    pending_key,
+)
 from app.identity.sessions.account_cleaner import SessionsAccountCleaner
+from app.infrastructure import account_data as account_cleanup
 from app.infrastructure import audit as audit_module
 from app.infrastructure import queue as queue_module
 from app.infrastructure.audit import Audit, write_audit_log
@@ -658,7 +662,7 @@ class TestAccountCleanup:
         await context.queue.shutdown()
         user_id = UUID(tokens["user"]["id"])
         assert cleaners == [("probe", user_id)]
-        async with context.database.transaction() as session:
+        async with context.db.transaction() as session:
             completed = await session.scalar(
                 text("SELECT completed_at FROM account_deletions WHERE user_id = :id"),
                 {"id": user_id},
@@ -678,10 +682,10 @@ class TestAccountCleanup:
             tokens = await login(client, USER_EMAIL)
         user_id = UUID(tokens["user"]["id"])
 
-        await SessionsAccountCleaner(context.database).clean(user_id)
-        await SessionsAccountCleaner(context.database).clean(user_id)
+        await SessionsAccountCleaner(context.db).clean(user_id)
+        await SessionsAccountCleaner(context.db).clean(user_id)
 
-        async with context.database.transaction() as session:
+        async with context.db.transaction() as session:
             counts = (
                 await session.execute(
                     text(
@@ -713,13 +717,13 @@ class TestAccountCleanup:
         context: AppContext = committed_app.state.context
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
-        user_id = await _user_id(context.database, USER_EMAIL)
-        await _request_deletion(context.database, user_id)
+        user_id = await _user_id(context.db, USER_EMAIL)
+        await _request_deletion(context.db, user_id)
         with caplog.at_level("ERROR", logger="app.account_deletion"):
             await AccountCleanupProducer(context).enqueue_cleanup(user_id)
             await context.queue.shutdown()
         assert no_sleep == [10.0, 20.0, 40.0, 80.0]
-        async with context.database.transaction() as session:
+        async with context.db.transaction() as session:
             row = (
                 await session.execute(
                     text(
@@ -755,11 +759,11 @@ class TestAccountCleanup:
                 held.append(await redis.exists(f"api:lock:account-cleanup:{user_id}"))
 
         app_context: AppContext = committed_app.state.context
-        context = make_context(app_context.database, redis)
+        context = make_context(app_context.db, redis)
         queue = context.queue
         assert queue is not None
         await queue.startup()
-        user_id = await _user_id(context.database, USER_EMAIL)
+        user_id = await _user_id(context.db, USER_EMAIL)
         producer = AccountCleanupProducer(context)
         try:
             await producer.enqueue_cleanup(user_id)
@@ -789,11 +793,11 @@ class TestAccountCleanup:
                 cleaners.append(("probe", user_id))
 
         app_context: AppContext = committed_app.state.context
-        context = make_context(app_context.database, redis)
+        context = make_context(app_context.db, redis)
         queue = context.queue
         assert queue is not None
         await queue.startup()
-        user_id = await _user_id(context.database, USER_EMAIL)
+        user_id = await _user_id(context.db, USER_EMAIL)
         other_worker = LockService(redis, SERVICE)
         token = await other_worker.try_acquire(f"account-cleanup:{user_id}", 60_000)
         assert token is not None
@@ -809,30 +813,91 @@ class TestAccountCleanup:
         await redis.delete(pending_key(SERVICE, user_id))
 
 
+class FailingPublisher:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+
+    async def publish(self, event: object) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("stream unavailable")
+
+
 class TestUserDeletedEvent:
-    async def test_published_to_redis_stream_after_commit(
+    async def test_cleanup_publishes_to_redis_stream_once(
         self,
         committed_app: FastAPI,
         redis: Redis,
         cleaners: list[tuple[str, UUID]],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        stream = f"events:{uuid7().hex}"
         monkeypatch.setenv("EVENTS_TRANSPORT", "redis_stream")
-        monkeypatch.setenv("EVENTS_REDIS_STREAM", "platform:events")
-        app = _build_app(committed_app.state.context.database, redis=redis)
+        monkeypatch.setenv("EVENTS_REDIS_STREAM", stream)
+        app = _build_app(committed_app.state.context.db, redis=redis)
+        context: AppContext = app.state.context
         async with client_for(app) as client:
             tokens = await login(client, USER_EMAIL)
             deleted = await client.delete("/api/v1/me", headers=bearer(tokens["accessToken"]))
         assert deleted.status_code == 202
-        entries = await redis.xrange("platform:events")
-        assert entries is not None
+        assert await redis.xlen(stream) == 0
+
+        user_id = UUID(tokens["user"]["id"])
+        runner = AccountCleanupRunner.from_context(context)
+        await runner.run(user_id)
+        await runner.run(user_id)
+
+        entries: Any = await redis.xrange(stream)
         [(_, fields)] = entries
-        assert fields is not None
         event = decode(fields[b"event"])
         payload = json.loads(fields[b"event"])
         assert payload["type"] == USER_DELETED
         assert payload["source"] == "/api"
-        assert event.get_data() == {"userId": tokens["user"]["id"]}
+        assert event.get_data() == {"userId": str(user_id)}
+        async with context.db.transaction() as session:
+            published = await session.scalar(
+                text("SELECT event_published_at FROM account_deletions WHERE user_id = :id"),
+                {"id": user_id},
+            )
+        assert published is not None
+
+    async def test_failed_publish_is_recorded_and_retried(
+        self, committed_app: FastAPI, cleaners: list[tuple[str, UUID]]
+    ) -> None:
+        context: AppContext = committed_app.state.context
+        user_id = await _user_id(context.db, USER_EMAIL)
+        await _request_deletion(context.db, user_id)
+
+        @account_cleanup.register_account_cleaner(10)
+        class Probe:
+            name = "probe"
+
+            def __init__(self, context: AppContext) -> None:
+                self.context = context
+
+            async def clean(self, user_id: UUID) -> None:
+                cleaners.append(("probe", user_id))
+
+        runner = AccountCleanupRunner(
+            context.db, account_cleanup.registered_cleaners(context), FailingPublisher(1), "api"
+        )
+        with pytest.raises(RuntimeError, match="stream unavailable"):
+            await runner.run(user_id)
+        assert cleaners == []
+        async with context.db.transaction() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT event_published_at, completed_at, last_error "
+                        "FROM account_deletions WHERE user_id = :id"
+                    ),
+                    {"id": user_id},
+                )
+            ).one()
+        assert (row[0], row[1], row[2]) == (None, None, "stream unavailable")
+
+        await runner.run(user_id)
+        assert cleaners == [("probe", user_id)]
 
 
 class TestLifespan:
@@ -845,13 +910,13 @@ class TestLifespan:
         assert isinstance(mailer, QueueMailer)
         finished: list[str] = []
         finished_before_dispose: list[str] = []
-        dispose = context.database.dispose
+        dispose = context.db.dispose
 
         async def recording_dispose() -> None:
             finished_before_dispose.extend(finished)
             await dispose()
 
-        monkeypatch.setattr(context.database, "dispose", recording_dispose)
+        monkeypatch.setattr(context.db, "dispose", recording_dispose)
 
         async def slow(name: str) -> None:
             await asyncio.sleep(0.3)
@@ -866,8 +931,8 @@ class TestLifespan:
 class TestScheduler:
     async def test_cleanup_conditions(self, committed_app: FastAPI) -> None:
         context: AppContext = committed_app.state.context
-        user_id = await _user_id(context.database, USER_EMAIL)
-        async with context.database.transaction() as session:
+        user_id = await _user_id(context.db, USER_EMAIL)
+        async with context.db.transaction() as session:
             await session.execute(
                 text(
                     "INSERT INTO sessions (user_id, user_agent, auth_time, expires_at, revoked_at) "
@@ -894,14 +959,14 @@ class TestScheduler:
         assert token is not None
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
-        async with context.database.transaction() as session:
+        async with context.db.transaction() as session:
             assert await session.scalar(text("SELECT count(*) FROM sessions")) == 4
         await context.locks.release("cron:cleanup-old-sessions", token)
 
         await context.queue.enqueue(cleanup_old_sessions_task)
         await context.queue.shutdown()
         assert await cleanup_old_sessions(context) == 0
-        async with context.database.transaction() as session:
+        async with context.db.transaction() as session:
             agents = await session.scalars(text("SELECT user_agent FROM sessions"))
             assert sorted(agents) == ["active", "recent"]
             hashes = await session.scalars(text("SELECT token_hash FROM verification_tokens"))
@@ -923,10 +988,10 @@ class TestScheduler:
         context: AppContext = committed_app.state.context
         context.queue = TaskQueue.from_settings(context.settings)
         context.queue.bind(context)
-        old_id = await _user_id(context.database, USER_EMAIL)
-        new_id = await _user_id(context.database, "admin@example.com")
-        await _request_deletion(context.database, old_id, minutes_ago=31)
-        await _request_deletion(context.database, new_id, minutes_ago=10)
+        old_id = await _user_id(context.db, USER_EMAIL)
+        new_id = await _user_id(context.db, "admin@example.com")
+        await _request_deletion(context.db, old_id, minutes_ago=31)
+        await _request_deletion(context.db, new_id, minutes_ago=10)
         assert await enqueue_pending_account_cleanups(context) == 1
         await context.queue.shutdown()
         assert cleaners == [("probe", old_id)]
@@ -934,7 +999,7 @@ class TestScheduler:
 
     async def test_schedules(self) -> None:
         queue = TaskQueue.from_settings(Settings.load())
-        scheduler = create_scheduler(queue)
+        scheduler = create_scheduler(queue, Settings.load())
         [source] = scheduler.sources
         await source.startup()
         schedules = {

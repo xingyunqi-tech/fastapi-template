@@ -4,7 +4,7 @@
 
 | 目录 | 内容 |
 |---|---|
-| `security/` | 密钥与 `kid`、JWT 签发与校验、吊销键、角色与权限、密码哈希、鉴权依赖 |
+| `security/` | 密钥与 `kid`、JWT 签发与校验、验证方 JWKS、吊销键、角色与权限、密码哈希、鉴权依赖 |
 | `identity/auth` | 注册、登录、邮箱验证、找回与重置密码、刷新、登出 |
 | `identity/sessions` | 会话与 refresh 令牌、宽限期重放、活跃时间、注销清理器 |
 | `identity/me` | 当前用户资料、改密、会话管理、注销 |
@@ -59,7 +59,7 @@
 | `Auth` | 依赖 | 行为 |
 |---|---|---|
 | `PUBLIC` | — | 不校验，携带的 `Authorization` 被忽略 |
-| `JWT` | `CurrentPrincipal` | 校验 access 令牌与吊销键，失败 401；签发方另更新会话 `last_active_at` |
+| `JWT` | `CurrentPrincipal` | 校验 access 令牌与吊销键，失败 401；签发方另更新会话 `last_active_at`（`factory.mount_routes` 通过 `app.state.auth_dependencies` 替换） |
 | `OPTIONAL_JWT` | `OptionalPrincipal` | 令牌缺失、无效、过期或已吊销时为 `None` |
 | `MONITORING` | `monitoring_token` | `/metrics`：配置 `METRICS_TOKEN` 时校验 Bearer，失败 401；未配置时非生产放行、生产拒绝 |
 
@@ -70,6 +70,7 @@
 | 项 | 实现 |
 |---|---|
 | access | EdDSA（Ed25519），头部 `kid` 为 RFC 7638 指纹；声明 `iss`、`aud`、`sub`、`sid`、`roles`、`email_verified`、`auth_time`、`iat`、`exp`、`jti`；校验容忍 30 秒时钟偏差 |
+| 验证方 | `AUTH_JWKS_URL`：按响应 `Cache-Control: max-age` 缓存公钥（缺省 300 秒，最短 30 秒）；未知 `kid` 时刷新，两次刷新间隔不少于 30 秒，并发请求共用同一次刷新；刷新失败后 30 秒内不再请求，期间继续使用已缓存的公钥，从未取到公钥时 503 `common.serviceUnavailable` |
 | 签名密钥 | `AUTH_SIGNING_KEY`（PKCS#8 PEM，可用 `\n` 写成一行）；`app keys generate` 生成密钥对 |
 | 轮换 | 新私钥写入 `AUTH_SIGNING_KEY`，旧公钥放入 `AUTH_VERIFY_KEYS` 并保留至少一个 access 有效期；JWKS 同时列出两者 |
 | 吊销 | `auth:revoked:sid:{sid}`，TTL 为 access 有效期 + 60 秒；未配置 Redis 时用进程内字典；读写出错时 503 `common.serviceUnavailable`（`Retry-After: 5`），写入失败时请求事务回滚 |

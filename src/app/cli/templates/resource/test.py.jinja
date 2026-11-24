@@ -9,7 +9,7 @@ from app.common.routing import finalize_routes, include_routes
 from app.modules.{{ package }}.models import {{ class_name }}Model
 from app.modules.{{ package }}.router import router
 from tests.integration.conftest import client_for
-from tests.integration.identity import auth_headers
+from tests.integration.identity import ADMIN_EMAIL, USER_EMAIL, auth_headers
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -26,7 +26,7 @@ async def http(app: FastAPI, connection: AsyncConnection) -> AsyncIterator[httpx
         include_routes(app, router, "/api")
         finalize_routes(app)
     async with client_for(app) as client:
-        client.headers.update(await auth_headers(client))
+        client.headers.update(await auth_headers(client, USER_EMAIL))
         yield client
 
 
@@ -41,7 +41,6 @@ async def test_crud(http: httpx.AsyncClient) -> None:
     assert response.status_code == 201
     created = response.json()["data"]
     assert created["name"] == "first"
-    assert created["deletedAt"] is None
     item = f"{URL}/{created['id']}"
 
     listed = (await http.get(URL)).json()["data"]
@@ -49,13 +48,21 @@ async def test_crud(http: httpx.AsyncClient) -> None:
     assert (listed["total"], listed["page"], listed["pageSize"]) == (1, 1, 20)
     assert (await http.get(item)).json()["data"] == created
 
-    updated = (await http.put(item, json={"name": "second"})).json()["data"]
+    updated = (await http.patch(item, json={"name": "second"})).json()["data"]
     assert updated["name"] == "second"
 
     assert (await http.delete(item)).json() == {"code": 0, "message": "ok", "data": None}
     missing = await http.get(item)
     assert missing.status_code == 404
     assert missing.json()["errorKey"] == "common.notFound"
+
+
+async def test_records_of_other_users_are_not_found(http: httpx.AsyncClient) -> None:
+    created = (await http.post(URL, json={"name": "mine"})).json()["data"]
+    other = await auth_headers(http, ADMIN_EMAIL)
+    response = await http.get(f"{URL}/{created['id']}", headers=other)
+    assert response.status_code == 404
+    assert (await http.get(URL, headers=other)).json()["data"]["total"] == 0
 
 
 async def test_validation(http: httpx.AsyncClient) -> None:

@@ -8,12 +8,14 @@ from app.identity.users.models import UserModel, UserRoleModel
 from app.infrastructure.audit.models import AuditLogModel
 from app.infrastructure.database.base import Base
 from app.modules.files.models import FileModel
+from app.modules.notes.models import NoteModel
 
 __all__ = [
     "AccountDeletionModel",
     "AuditLogModel",
     "Base",
     "FileModel",
+    "NoteModel",
     "RefreshTokenModel",
     "SessionModel",
     "UserIdentityModel",

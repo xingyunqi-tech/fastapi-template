@@ -142,7 +142,7 @@ class SmsCodes:
 
 
 def sms_codes(context: AppContext) -> SmsCodes:
-    signing_key = context.settings.auth.signing_key.get_secret_value()
+    signing_key = context.settings.auth.signing_pem()
     return SmsCodes(
         context.sms_store,
         build_sms_sender(context),

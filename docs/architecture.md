@@ -8,12 +8,12 @@ src/app/
 ├── main.py              # app = create_app()，fastapi dev / Granian 入口
 ├── factory.py           # create_app()、build_context()、lifespan
 ├── cli/                 # Typer `app` 命令：migrate、seed、worker、scheduler、keys、users、generate、openapi
-├── config/              # Settings，按分组拆分（app、auth、database、redis、mail、file、throttler、metrics、log、observability、sms、wechat、alipay）
+├── config/              # Settings，按分组拆分（app、auth、database、redis、mail、storage、rate_limit、log、telemetry、events、sms、wechat、alipay）
 ├── common/              # 路由、信封、错误码、校验转换、类型、中间件、分页、幂等键、i18n
-├── security/            # 密钥与 kid、JWT、吊销键、角色与权限、密码哈希、鉴权依赖
+├── security/            # 密钥与 kid、JWT、JWKS（验证方）、吊销键、角色与权限、密码哈希、鉴权依赖
 ├── identity/            # 签发方：auth、sessions、me、users、providers（短信、微信、支付宝）、account_deletion、keys（JWKS）
-├── infrastructure/      # database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail
-└── modules/             # files
+├── infrastructure/      # database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail、account_data（注销清理器登记）
+└── modules/             # files、notes（CRUD 示例）
 ```
 
 仓库根的其它目录：
@@ -38,7 +38,20 @@ src/app/
 | `router.py` | 薄路由，`ApiRouter.endpoint(...)` 声明 |
 | `account_cleaner.py` | 注销账号后的数据清理器（`@register_account_cleaner(order)`） |
 
-新模块需在 `factory.create_app` 中 `include_routes`，在 `infrastructure/database/models.py` 中导入 ORM 模型。
+新模块需在 `factory.mount_routes` 中 `include_routes`，在 `infrastructure/database/models.py` 中导入 ORM 模型。
+
+## 签发方与验证方
+
+设置 `AUTH_SIGNING_KEY` 为签发方，设置 `AUTH_JWKS_URL` 为验证方，二者只能设置一个。`factory.mount_routes` 按角色与已配置的依赖挂载路由：
+
+| 条件 | 挂载 |
+|---|---|
+| 签发方 | `identity/*`、`/.well-known/jwks.json`；JWT 路由另更新会话活跃时间 |
+| 配置 `DATABASE_URL` | `audit`、`notes` |
+| 配置 `DATABASE_URL` 与 `STORAGE_DRIVER` | `files` |
+| 始终 | `/health/*`，`OTEL_METRICS_EXPORTER=prometheus` 时 `/metrics` |
+
+签发方必须配置 `DATABASE_URL` 与 `STORAGE_DRIVER`。验证方的 access 令牌用 `security/jwks.py` 从 `AUTH_JWKS_URL` 取到的公钥校验，吊销键与签发方共用 Redis；验证方的 `app scheduler` 不调度签发方的清理任务。
 
 ## 路由声明
 
@@ -110,15 +123,15 @@ src/app/
 | 锁 | `infrastructure/redis` | `{OTEL_SERVICE_NAME}:lock:<key>`，Redis 不可用时退回进程内锁；`key()` 生成约定 §10 的服务键前缀 |
 | 限流 | `infrastructure/throttler` | 约定 §7 的 GCRA（Redis Lua，键 `rl:{规则}:{主体}`）；路由 `rate_limit=` 声明共享规则，未声明用私有默认规则；客户端 IP 按 `TRUSTED_PROXIES`；Redis 出错时共享规则 503，私有规则放行并计入 `ratelimit.fallback` |
 | 队列 | `infrastructure/queue` | Taskiq + Redis Stream `{OTEL_SERVICE_NAME}:tasks`（消费组同服务名） |
-| 定时任务 | `infrastructure/scheduler` | 03:00 UTC 删除已过期或吊销超过 7 天的会话与过期的一次性令牌、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `{OTEL_SERVICE_NAME}:lock:cron:<name>` |
+| 定时任务 | `infrastructure/scheduler` | 仅签发方：03:00 UTC 删除已过期或吊销超过 7 天的会话与过期的一次性令牌、每小时 25 分（Asia/Shanghai）账号清理补偿；执行时持有 `{OTEL_SERVICE_NAME}:lock:cron:<name>` |
 | 日志 | `infrastructure/logging` | structlog；生产 JSON、开发彩色单行；带 request_id、trace_id / span_id、user_id，敏感字段脱敏 |
 | 指标与链路 | `infrastructure/telemetry` | OpenTelemetry；HTTP 指标按稳定语义约定（`http.server.request.duration`）；`OTEL_METRICS_EXPORTER=prometheus` 时 API 挂 `/metrics`、worker 监听 `OTEL_EXPORTER_PROMETHEUS_PORT`，此时 `WEB_CONCURRENCY` 须为 1；`otlp` 时推送；配置 OTLP 端点时开启链路；`SENTRY_DSN` 可选，不采集局部变量；出站 httpx span 与 Sentry 面包屑的 URL 去掉查询串 |
 | 健康检查 | `infrastructure/health` | `/health/live` 恒 200；`/health/ready` 检查数据库与已配置的 Redis，失败 503 |
 | 审计 | `infrastructure/audit` | `audit=Audit(...)` 的路由成功后写 `audit_logs`（请求体脱敏）；`GET /api/v1/audit-logs`（`audit:read`） |
-| 账号清理 | `identity/account_deletion` | 注销提交后发布 `user.deleted`（`infrastructure/events`，`EVENTS_TRANSPORT`）并入队，按 order 执行各模块清理器（sessions、files），结果记入 `account_deletions`，最终失败记 error 日志 |
+| 账号清理 | `identity/account_deletion`、`infrastructure/account_data` | 签发方注销提交后入队清理任务：先发布 `user.deleted`（`infrastructure/events`，`EVENTS_TRANSPORT`），成功后记 `account_deletions.event_published_at`，再按 order 执行清理器（sessions、files、notes）；发布或清理失败记 `last_error` 并重试，最终失败记 error 日志，定时补偿重新入队。配置了数据库且 `EVENTS_TRANSPORT=redis_stream` 的验证方由 `app worker` 消费 `user.deleted`（消费组为 `OTEL_SERVICE_NAME`），执行本服务的清理器；失败的消息空闲 60 秒后重领，投递满 5 次记 error 后确认；消费组缺失时从 stream 开头重建（清理器幂等） |
 | 邮件 | `infrastructure/mail`、`queue/mail.py` | 模板 `verify-email`、`reset-password`（zh / en），链接为 `APP_FRONTEND_URL` + 路径 + `?token=`；设置 `MAIL_HOST` 时提交后入 mail 队列，否则只记日志 |
 | 文件 | `modules/files` | 约定 §11.5；`STORAGE_DRIVER`：`local`（`STORAGE_LOCAL_DIR`，签名地址由本服务输出）、`s3`（预签名地址）；类型按魔数识别，大小按用途上限 |
 
 ## 配置
 
-`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），公共变量见约定 §9，全部变量见 `.env.example`。`AUTH_ISSUER`、`AUTH_AUDIENCE`、`AUTH_SIGNING_KEY` 始终必填；`OTEL_SERVICE_NAME`、`STORAGE_DRIVER` 始终必填；生产环境另要求 `REDIS_URL`、`APP_FRONTEND_URL`、`CORS_ORIGINS`、`MAIL_HOST`、`MAIL_FROM`，Prometheus 拉取时要求 `METRICS_TOKEN`，本地存储时要求 `STORAGE_URL_SECRET`。
+`app.config.get_settings()` 一次性加载全部分组并汇总所有错误后失败。来源：进程环境变量 + 工作目录 `.env`（空值视为未设置），公共变量见约定 §9，全部变量见 `.env.example`。`AUTH_ISSUER`、`AUTH_AUDIENCE`、`OTEL_SERVICE_NAME` 始终必填，`AUTH_SIGNING_KEY` 与 `AUTH_JWKS_URL` 恰好设置一个；签发方另要求 `DATABASE_URL`、`STORAGE_DRIVER`；设置 `STORAGE_DRIVER` 时要求 `DATABASE_URL`，验证方使用本地存储时要求 `STORAGE_URL_SECRET`。生产环境另要求 `REDIS_URL`、`CORS_ORIGINS`，签发方要求 `APP_FRONTEND_URL`、`MAIL_HOST`、`MAIL_FROM`，Prometheus 拉取时要求 `METRICS_TOKEN`，本地存储时要求 `STORAGE_URL_SECRET`。

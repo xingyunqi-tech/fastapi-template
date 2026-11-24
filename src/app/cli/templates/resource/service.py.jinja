@@ -1,40 +1,45 @@
-lazy from uuid import UUID
+"""{{ class_name }} 只对创建者本人可见，其他人的记录按不存在处理。"""
+
+from typing import TYPE_CHECKING
 
 from app.common.errors import AppError
-lazy from app.modules.{{ package }}.models import {{ class_name }}Model
-lazy from app.modules.{{ package }}.repository import {{ class_name }}Repository
-lazy from app.modules.{{ package }}.schemas import Create{{ class_name }}Request, Update{{ class_name }}Request
+from app.modules.{{ package }}.models import {{ class_name }}Model
+from app.modules.{{ package }}.repository import {{ class_name }}Repository
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.common.pagination import SortField
+    from app.modules.{{ package }}.schemas import Create{{ class_name }}Request, Update{{ class_name }}Request
 
 
 class {{ class_plural }}Service:
-    def __init__(self, repository: {{ class_name }}Repository) -> None:
-        self.repository = repository
-
-    async def create(self, data: Create{{ class_name }}Request) -> {{ class_name }}Model:
-        return await self.repository.create(data.model_dump(exclude_unset=True))
+    def __init__(self, session: AsyncSession, owner_id: UUID) -> None:
+        self.repository = {{ class_name }}Repository(session)
+        self.owner_id = str(owner_id)
 
     async def find_page(
-        self, *, page: int, limit: int
+        self, *, sort: Sequence[SortField], offset: int, limit: int
     ) -> tuple[list[{{ class_name }}Model], int]:
-        return await self.repository.find_page(page=page, limit=limit)
+        return await self.repository.find_page(self.owner_id, sort=sort, offset=offset, limit=limit)
 
-    async def find_one(self, entity_id: UUID) -> {{ class_name }}Model:
-        entity = await self.repository.find_by_id(entity_id)
+    async def get(self, entity_id: UUID) -> {{ class_name }}Model:
+        entity = await self.repository.find_owned(self.owner_id, entity_id)
         if entity is None:
             raise AppError("common.notFound")
         return entity
 
-    async def update(
-        self, entity_id: UUID, data: Update{{ class_name }}Request
-    ) -> {{ class_name }}Model:
-        await self.find_one(entity_id)
-        updated = await self.repository.update(
-            entity_id, data.model_dump(exclude_unset=True, exclude_none=True)
-        )
-        if updated is None:
-            raise AppError("common.notFound")
-        return updated
+    async def create(self, body: Create{{ class_name }}Request) -> {{ class_name }}Model:
+        return await self.repository.add({{ class_name }}Model(owner_id=self.owner_id, name=body.name))
 
-    async def remove(self, entity_id: UUID) -> None:
-        if not await self.repository.remove(entity_id):
-            raise AppError("common.notFound")
+    async def update(self, entity_id: UUID, body: Update{{ class_name }}Request) -> {{ class_name }}Model:
+        entity = await self.get(entity_id)
+        if body.name is not None:
+            entity.name = body.name
+        return await self.repository.save(entity)
+
+    async def delete(self, entity_id: UUID) -> None:
+        await self.repository.delete(await self.get(entity_id))

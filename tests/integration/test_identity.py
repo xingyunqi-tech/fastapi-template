@@ -355,7 +355,7 @@ class TestUserManagement:
         assert {"user:read", "user:write", "role:read", "role:write", "audit:read"} <= set(codes)
         assert [r["code"] for r in roles] == ["admin", "user"]
         assert roles[0]["permissions"] == codes
-        assert roles[1]["permissions"] == ["file:write"]
+        assert sorted(roles[1]["permissions"]) == ["file:write", "note:read", "note:write"]
 
 
 @pytest.mark.committed
@@ -381,7 +381,7 @@ async def test_concurrently_disabling_two_admins_keeps_one(committed_app: FastAP
 
     async def disable(user_id: str) -> str:
         try:
-            async with context.database.transaction() as session:
+            async with context.db.transaction() as session:
                 await UsersService(context, session).update(
                     UUID(user_id), UpdateUserRequest(status=UserStatus.DISABLED)
                 )
@@ -391,7 +391,7 @@ async def test_concurrently_disabling_two_admins_keeps_one(committed_app: FastAP
 
     outcomes = await asyncio.gather(disable(first["user"]["id"]), disable(second["id"]))
     assert sorted(outcomes) == ["ok", "role.lastAdmin"]
-    async with context.database.transaction() as session:
+    async with context.db.transaction() as session:
         active_admins = await session.scalar(
             text(
                 "SELECT count(*) FROM user_roles r JOIN users u ON u.id = r.user_id "
@@ -414,7 +414,7 @@ async def test_revocation_key_is_written_to_redis(committed_app: FastAPI) -> Non
 
 class TestSeed:
     async def test_skips_when_active_admin_exists(self, app: FastAPI) -> None:
-        async with app.state.context.database.transaction() as session:
+        async with app.state.context.db.transaction() as session:
             assert await seed(session, app.state.context.settings) is False
 
     async def test_production_admin_comes_from_settings(
@@ -429,7 +429,7 @@ class TestSeed:
         monkeypatch.setenv("SEED_ADMIN_EMAIL", " Root@Example.com ")
         monkeypatch.setenv("SEED_ADMIN_PASSWORD", "Rooted00")
 
-        async with app.state.context.database.transaction() as session:
+        async with app.state.context.db.transaction() as session:
             assert await seed(session, Settings.load()) is True
         data = await login(client, "root@example.com", "Rooted00")
         assert (data["user"]["roles"], data["user"]["emailVerified"]) == (["admin", "user"], True)
@@ -440,7 +440,7 @@ class TestSeed:
         await connection.execute(text("DELETE FROM user_roles WHERE role = 'admin'"))
         use_production(monkeypatch)
 
-        async with app.state.context.database.transaction() as session:
+        async with app.state.context.db.transaction() as session:
             assert await seed(session, Settings.load()) is False
 
 

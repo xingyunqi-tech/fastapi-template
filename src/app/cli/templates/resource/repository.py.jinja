@@ -1,76 +1,71 @@
-from typing import Any, Final
-lazy from uuid import UUID
+from typing import TYPE_CHECKING, Final
 
-from sqlalchemy import ColumnElement, func, select, update
-lazy from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, func, select
 
-from app.infrastructure.database.session import affected_rows
 from app.modules.{{ package }}.models import {{ class_name }}Model
 
-PG_BIGINT_MAX: Final = 2**63 - 1
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
 
+    from sqlalchemy.ext.asyncio import AsyncSession
 
-def _active() -> ColumnElement[bool]:
-    return {{ class_name }}Model.deleted_at.is_(None)
+    from app.common.pagination import SortField
+
+SORTABLE: Final = {
+    "createdAt": {{ class_name }}Model.created_at,
+    "updatedAt": {{ class_name }}Model.updated_at,
+    "name": {{ class_name }}Model.name,
+}
 
 
 class {{ class_name }}Repository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, values: dict[str, Any]) -> {{ class_name }}Model:
-        entity = {{ class_name }}Model(**values)
+    async def find_page(
+        self, owner_id: str, *, sort: Sequence[SortField], offset: int, limit: int
+    ) -> tuple[list[{{ class_name }}Model], int]:
+        owned = {{ class_name }}Model.owner_id == owner_id
+        order = [
+            SORTABLE[field.field].desc() if field.descending else SORTABLE[field.field].asc()
+            for field in sort
+        ]
+        rows = await self.session.scalars(
+            select({{ class_name }}Model)
+            .where(owned)
+            .order_by(*order, {{ class_name }}Model.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        total = await self.session.scalar(
+            select(func.count()).select_from({{ class_name }}Model).where(owned)
+        )
+        return list(rows), int(total or 0)
+
+    async def find_owned(self, owner_id: str, entity_id: UUID) -> {{ class_name }}Model | None:
+        return await self.session.scalar(
+            select({{ class_name }}Model).where(
+                {{ class_name }}Model.id == entity_id, {{ class_name }}Model.owner_id == owner_id
+            )
+        )
+
+    async def add(self, entity: {{ class_name }}Model) -> {{ class_name }}Model:
         self.session.add(entity)
         await self.session.flush()
         await self.session.refresh(entity)
         return entity
 
-    async def find_page(
-        self, *, page: int, limit: int
-    ) -> tuple[list[{{ class_name }}Model], int]:
-        """OFFSET 超出 PostgreSQL bigint 范围的页返回空列表。"""
-        offset = (page - 1) * limit
-        rows = (
-            list(
-                await self.session.scalars(
-                    select({{ class_name }}Model)
-                    .where(_active())
-                    .order_by({{ class_name }}Model.id.desc())
-                    .offset(offset)
-                    .limit(limit)
-                )
-            )
-            if offset <= PG_BIGINT_MAX
-            else []
-        )
-        total = await self.session.scalar(
-            select(func.count()).select_from({{ class_name }}Model).where(_active())
-        )
-        return rows, int(total or 0)
+    async def save(self, entity: {{ class_name }}Model) -> {{ class_name }}Model:
+        await self.session.flush()
+        await self.session.refresh(entity)
+        return entity
 
-    async def find_by_id(self, entity_id: UUID) -> {{ class_name }}Model | None:
-        return await self.session.scalar(
-            select({{ class_name }}Model).where({{ class_name }}Model.id == entity_id, _active())
-        )
+    async def delete(self, entity: {{ class_name }}Model) -> None:
+        await self.session.delete(entity)
+        await self.session.flush()
 
-    async def update(
-        self, entity_id: UUID, values: dict[str, Any]
-    ) -> {{ class_name }}Model | None:
-        if values:
-            await self.session.execute(
-                update({{ class_name }}Model)
-                .where({{ class_name }}Model.id == entity_id, _active())
-                .values(**values, updated_at=func.now())
-                .execution_options(synchronize_session=False)
-            )
-        self.session.expire_all()
-        return await self.find_by_id(entity_id)
-
-    async def remove(self, entity_id: UUID) -> bool:
-        """软删除，返回是否删除了记录。"""
-        result = await self.session.execute(
-            update({{ class_name }}Model)
-            .where({{ class_name }}Model.id == entity_id, _active())
-            .values(deleted_at=func.now(), updated_at=func.now())
+    async def delete_by_owner(self, owner_id: str) -> None:
+        await self.session.execute(
+            delete({{ class_name }}Model).where({{ class_name }}Model.owner_id == owner_id)
         )
-        return affected_rows(result) > 0

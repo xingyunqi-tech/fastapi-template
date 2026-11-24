@@ -4,7 +4,6 @@ import logging
 from typing import Final
 
 from app.common.context import Context
-from app.common.routing import AUTH_DEPENDENCIES, Auth
 from app.identity.sessions.service import TOUCH_INTERVAL, SessionService
 from app.infrastructure.database.session import DbSession
 from app.security.deps import CurrentPrincipal
@@ -32,6 +31,3 @@ async def touched_principal(
     except Exception as error:
         logger.warning("Failed to update lastActiveAt of session %s: %s", principal.sid, error)
     return principal
-
-
-AUTH_DEPENDENCIES[Auth.JWT] = touched_principal

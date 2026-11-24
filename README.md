@@ -30,7 +30,7 @@ make install                  # uv sync + 安装 prek 钩子
 cp .env.example .env          # 要单独运行 worker 时设置 REDIS_URL
 uv run --frozen app keys generate  # 私钥填入 .env 的 AUTH_SIGNING_KEY
 make infra                    # Postgres 18 :5432、Redis 8 :6379、Mailpit（SMTP :1025，UI :8025）
-make migrate                  # alembic upgrade heads
+make migrate                  # 签发方 heads，验证方 platform@head 与 modules@head
 make seed                     # 管理员账号
 make dev                      # 热重载，http://localhost:3000
 uv run --frozen app worker    # 队列 worker（需 REDIS_URL）
@@ -57,7 +57,7 @@ uv run --frozen app scheduler # 定时任务调度
 | `make test-conventions` | 约定测试（探针路由） |
 | `make openapi` | 导出 `openapi/openapi.json` |
 | `make test-e2e` | e2e：ci 组合起完整服务栈后黑盒测试 |
-| `make migrate` | 执行全部迁移分支 |
+| `make migrate` | 升级本角色的迁移分支 |
 | `make seed` | 写入种子数据 |
 | `make generate-resource name=Product` | 生成 CRUD 模块骨架 |
 | `make infra` | 启动本地 Postgres / Redis / Mailpit |

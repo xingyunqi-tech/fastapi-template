@@ -1,11 +1,14 @@
 """{{ class_name }} 的请求与响应模型。"""
 
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import StringConstraints
 
 from app.common.pagination import Page
 from app.common.types import ApiModel, UtcDatetime
+
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
 
 
 class {{ class_name }}(ApiModel):
@@ -13,7 +16,6 @@ class {{ class_name }}(ApiModel):
     name: str
     created_at: UtcDatetime
     updated_at: UtcDatetime
-    deleted_at: UtcDatetime | None
 
 
 class {{ class_name }}Page(Page[{{ class_name }}]):
@@ -21,8 +23,8 @@ class {{ class_name }}Page(Page[{{ class_name }}]):
 
 
 class Create{{ class_name }}Request(ApiModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: Name
 
 
 class Update{{ class_name }}Request(ApiModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    name: Name | None = None

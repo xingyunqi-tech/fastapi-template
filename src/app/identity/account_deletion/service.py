@@ -1,4 +1,4 @@
-"""注销（`deleteMe` / `deleteUser`）：软删用户、吊销会话；提交后入队清理并发布 `user.deleted`。"""
+"""注销（`deleteMe` / `deleteUser`）：软删用户、吊销会话；提交后入队清理任务。"""
 
 from typing import TYPE_CHECKING
 
@@ -10,7 +10,6 @@ from app.identity.sessions.service import SessionService, utcnow
 from app.identity.users.repository import UserRepository
 from app.identity.users.service import ensure_not_last_admin
 from app.infrastructure.database.session import after_commit
-from app.infrastructure.events import publish, user_deleted
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,10 +31,7 @@ async def delete_account(context: AppContext, session: AsyncSession, user: UserM
     producer = AccountCleanupProducer(context)
     user_id = user.id
 
-    event = user_deleted(context.settings.telemetry.service_name, str(user_id))
-
     async def enqueue() -> None:
         await producer.enqueue_cleanup(user_id)
-        await publish(context.events, event)
 
     after_commit(session, enqueue)

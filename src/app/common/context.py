@@ -25,11 +25,12 @@ lazy from app.infrastructure.queue import TaskQueue
 @dataclass(slots=True)
 class AppContext:
     settings: Settings
-    database: Database
+    database: Database | None
     cache: Cache
     passwords: Passwords
     mailer: Mailer
-    signer: TokenSigner
+    signer: TokenSigner | None
+    """验证方为 None。"""
     verifier: TokenVerifier
     redis: Redis | None = None
     queue: TaskQueue | None = None
@@ -40,7 +41,8 @@ class AppContext:
     sms_store: SmsStore = field(init=False)
     rate_limiter: RateLimiter = field(init=False)
     events: EventPublisher = field(init=False)
-    file_urls: FileUrls = field(init=False)
+    file_urls: FileUrls | None = field(init=False)
+    """未设置 `STORAGE_DRIVER` 时为 None。"""
 
     def __post_init__(self) -> None:
         self.locks = LockService(self.redis, self.settings.telemetry.service_name)
@@ -48,7 +50,27 @@ class AppContext:
         self.sms_store = sms_store(self.redis)
         self.rate_limiter = RateLimiter(self.redis)
         self.events = build_publisher(self.settings, self.redis)
-        self.file_urls = FileUrls.from_settings(self.settings)
+        self.file_urls = (
+            FileUrls.from_settings(self.settings) if self.settings.storage.driver else None
+        )
+
+    @property
+    def db(self) -> Database:
+        if self.database is None:
+            raise RuntimeError("DATABASE_URL is not set")
+        return self.database
+
+    @property
+    def token_signer(self) -> TokenSigner:
+        if self.signer is None:
+            raise RuntimeError("AUTH_SIGNING_KEY is not set")
+        return self.signer
+
+    @property
+    def urls(self) -> FileUrls:
+        if self.file_urls is None:
+            raise RuntimeError("STORAGE_DRIVER is not set")
+        return self.file_urls
 
 
 def _context(request: Request) -> AppContext:

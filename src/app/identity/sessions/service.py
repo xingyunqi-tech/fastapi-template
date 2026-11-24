@@ -56,7 +56,7 @@ class SessionService:
         self.users = UserRepository(session)
 
     def _access_token(self, user: UserModel, record: SessionModel) -> str:
-        return self.context.signer.sign(
+        return self.context.token_signer.sign(
             sub=user.id,
             sid=record.id,
             roles=user.roles,
@@ -68,7 +68,7 @@ class SessionService:
         refresh_token = new_refresh_token()
         await self.repository.add_refresh_token(record.id, hash_token(refresh_token))
         tokens = IssuedTokens(
-            self._access_token(user, record), refresh_token, self.context.signer.expires_in
+            self._access_token(user, record), refresh_token, self.context.token_signer.expires_in
         )
         return tokens, refresh_token
 

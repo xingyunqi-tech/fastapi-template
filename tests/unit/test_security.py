@@ -87,8 +87,8 @@ class TestKeys:
 
 
 class TestTokens:
-    def test_round_trip(self) -> None:
-        principal = verifier().verify(token(roles=["admin", "user"]))
+    async def test_round_trip(self) -> None:
+        principal = await verifier().verify(token(roles=["admin", "user"]))
 
         assert (principal.sub, principal.sid) == (USER, SESSION)
         assert (principal.roles, principal.email_verified) == (("admin", "user"), True)
@@ -102,26 +102,26 @@ class TestTokens:
             "typ": "JWT",
         }
 
-    def test_rotated_key_is_accepted_when_listed(self) -> None:
+    async def test_rotated_key_is_accepted_when_listed(self) -> None:
         other = signer(keys.OTHER_SIGNING_KEY).sign(
             sub=USER, sid=SESSION, roles=[], email_verified=False, auth_time=0
         )
-        assert verifier(keys.PUBLIC_KEY, keys.OTHER_PUBLIC_KEY).verify(other).sub == USER
+        assert (await verifier(keys.PUBLIC_KEY, keys.OTHER_PUBLIC_KEY).verify(other)).sub == USER
         with pytest.raises(InvalidTokenError):
-            verifier().verify(other)
+            await verifier().verify(other)
 
-    def test_unknown_or_missing_kid_is_rejected(self) -> None:
+    async def test_unknown_or_missing_kid_is_rejected(self) -> None:
         unknown = forged(valid_claims(), {"kid": "unknown"})
         missing = jwt.encode(valid_claims(), keys.SIGNING_KEY, algorithm="EdDSA")
         for value in (unknown, missing):
             with pytest.raises(InvalidTokenError):
-                verifier().verify(value)
+                await verifier().verify(value)
 
-    def test_other_algorithm_is_rejected(self) -> None:
+    async def test_other_algorithm_is_rejected(self) -> None:
         kid = SigningKey.from_pem(keys.SIGNING_KEY).kid
         hs = jwt.encode(valid_claims(), "x" * 32, algorithm="HS256", headers={"kid": kid})
         with pytest.raises(InvalidTokenError):
-            verifier().verify(hs)
+            await verifier().verify(hs)
 
     @pytest.mark.parametrize(
         "overrides",
@@ -136,26 +136,26 @@ class TestTokens:
             {"auth_time": True},
         ],
     )
-    def test_invalid_claims_are_rejected(self, overrides: dict[str, Any]) -> None:
+    async def test_invalid_claims_are_rejected(self, overrides: dict[str, Any]) -> None:
         with pytest.raises(InvalidTokenError):
-            verifier().verify(forged(valid_claims(**overrides)))
+            await verifier().verify(forged(valid_claims(**overrides)))
 
     @pytest.mark.parametrize(
         "claim", ["iss", "aud", "sub", "sid", "roles", "email_verified", "auth_time", "exp"]
     )
-    def test_missing_claim_is_rejected(self, claim: str) -> None:
+    async def test_missing_claim_is_rejected(self, claim: str) -> None:
         claims = valid_claims()
         del claims[claim]
         with pytest.raises(InvalidTokenError):
-            verifier().verify(forged(claims))
+            await verifier().verify(forged(claims))
 
-    def test_expiry_allows_30_seconds_of_leeway(self) -> None:
+    async def test_expiry_allows_30_seconds_of_leeway(self) -> None:
         issued = token()
         expires = time.time() + 15 * 60
         with time_machine.travel(expires + 29, tick=False):
-            assert verifier().verify(issued).sub == USER
+            assert (await verifier().verify(issued)).sub == USER
         with time_machine.travel(expires + 31, tick=False), pytest.raises(TokenExpiredError):
-            verifier().verify(issued)
+            await verifier().verify(issued)
 
     def test_expires_in_follows_ttl(self) -> None:
         short = signer(ttl=timedelta(minutes=5))
@@ -223,7 +223,7 @@ class TestAuthSettings:
 
     def test_escaped_newlines_are_accepted(self) -> None:
         settings = self.load(AUTH_SIGNING_KEY=keys.SIGNING_KEY.replace("\n", "\\n"))
-        assert settings.signing_key.get_secret_value() == keys.SIGNING_KEY
+        assert settings.signing_pem() == keys.SIGNING_KEY
 
     @pytest.mark.parametrize("value", ["secret", keys.PUBLIC_KEY])
     def test_signing_key_must_be_ed25519_private_key(self, value: str) -> None:

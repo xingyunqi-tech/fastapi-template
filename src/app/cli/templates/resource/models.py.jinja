@@ -1,17 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Index, String, text
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.infrastructure.database.base import (
-    Base,
-    Branch,
-    created_at,
-    timestamp,
-    updated_at,
-    uuid_pk,
-)
+from app.infrastructure.database.base import Base, Branch, created_at, updated_at, uuid_pk
 
 
 class {{ class_name }}Model(Base):
@@ -19,15 +12,7 @@ class {{ class_name }}Model(Base):
     __branch__ = Branch.MODULES
 
     id: Mapped[UUID] = uuid_pk()
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
-    deleted_at: Mapped[datetime | None] = timestamp(nullable=True)
-
-    __table_args__ = (
-        Index(
-            "ix_{{ table }}_active",
-            "deleted_at",
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )

@@ -6,6 +6,8 @@ import typer
 from alembic import command
 from alembic.config import Config
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 lazy from taskiq.cli.scheduler.args import SchedulerArgs
 lazy from taskiq.cli.scheduler.run import run_scheduler
 lazy from taskiq.cli.worker.args import WorkerArgs
@@ -17,6 +19,7 @@ from app.cli.seed import seed as run_seed
 from app.config import Settings, get_settings
 from app.factory import build_context
 from app.identity.account_deletion.cleanup import AccountCleanupRunner
+from app.infrastructure.database.branches import migration_problems, migration_targets
 from app.infrastructure.logging import configure_logging
 from app.security.keys import generate_key_pair
 
@@ -32,23 +35,62 @@ cli.add_typer(openapi_cli, name="openapi", help="OpenAPI 文档")
 
 
 @cli.command()
-def migrate() -> None:
-    """在 `DATABASE_SCHEMA` 中执行全部 Alembic 分支到最新版本。"""
-    get_settings()
-    command.upgrade(Config("alembic.ini"), "heads")
+def migrate(
+    check: Annotated[
+        bool, typer.Option("--check", help="只检查是否已是最新版本且与模型一致，否则退出码 1")
+    ] = False,
+) -> None:
+    """在 `DATABASE_SCHEMA` 中升级本角色的分支：签发方全部分支，验证方 platform + modules。"""
+    settings = get_settings()
+    if not settings.database.enabled:
+        typer.echo("未设置 DATABASE_URL，无需迁移")
+        return
+    config = Config("alembic.ini")
+    if not check:
+        for target in migration_targets(settings):
+            command.upgrade(config, target)
+        return
+    problems = asyncio.run(_migration_problems(settings, config))
+    for problem in problems:
+        typer.echo(problem, err=True)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("数据库迁移已是最新，与模型一致")
+
+
+async def _migration_problems(settings: Settings, config: Config) -> list[str]:
+    engine = create_async_engine(
+        settings.database.sqlalchemy_url(),
+        connect_args=settings.database.connect_args(),
+        poolclass=NullPool,
+    )
+    try:
+        async with engine.connect() as connection:
+            return await connection.run_sync(
+                lambda sync: migration_problems(sync, config, settings)
+            )
+    finally:
+        await engine.dispose()
+
+
+def _require_issuer(settings: Settings) -> None:
+    if not settings.auth.is_issuer:
+        typer.echo("只适用于签发方（设置 AUTH_SIGNING_KEY 的服务）", err=True)
+        raise typer.Exit(1)
 
 
 @cli.command()
 def seed() -> None:
-    """无 active admin 时创建管理员账号。"""
+    """无 active admin 时创建管理员账号（仅签发方）。"""
+    _require_issuer(get_settings())
 
     async def run() -> bool:
         context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
         try:
-            async with context.database.transaction() as session:
+            async with context.db.transaction() as session:
                 return await run_seed(session, context.settings)
         finally:
-            await context.database.dispose()
+            await context.db.dispose()
 
     typer.echo(
         "已创建管理员账号" if asyncio.run(run()) else "已有管理员账号或未提供管理员凭据，未创建"
@@ -64,14 +106,15 @@ def generate_keys() -> None:
 
 @users_cli.command("cleanup")
 def cleanup_user(user_id: Annotated[UUID, typer.Argument(help="已注销用户的 id")]) -> None:
-    """重新执行该用户的注销数据清理。"""
+    """重新执行该用户的注销数据清理（仅签发方）。"""
+    _require_issuer(get_settings())
 
     async def run() -> None:
         context = build_context(get_settings(), pool_size=CLI_DATABASE_POOL_SIZE)
         try:
             await AccountCleanupRunner.from_context(context).run(user_id)
         finally:
-            await context.database.dispose()
+            await context.db.dispose()
 
     asyncio.run(run())
 

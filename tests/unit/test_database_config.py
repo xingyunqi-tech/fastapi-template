@@ -181,15 +181,15 @@ async def test_pool_size_is_per_process(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("OTEL_METRICS_EXPORTER", "otlp")
     context = build_context(Settings.load())
 
-    assert _pool(context.database).size() == 10
-    await context.database.dispose()
+    assert _pool(context.db).size() == 10
+    await context.db.dispose()
 
 
 async def test_explicit_pool_size_overrides_setting() -> None:
     context = build_context(Settings.load(), pool_size=1)
 
-    assert _pool(context.database).size() == 1
-    await context.database.dispose()
+    assert _pool(context.db).size() == 1
+    await context.db.dispose()
 
 
 async def test_worker_process_uses_database_pool_size(monkeypatch: pytest.MonkeyPatch) -> None:

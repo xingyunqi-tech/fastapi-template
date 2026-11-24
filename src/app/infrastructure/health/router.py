@@ -19,7 +19,7 @@ logger = logging.getLogger("app.health")
 
 
 async def _database(context: AppContext) -> None:
-    async with context.database.sessionmaker() as session:
+    async with context.db.sessionmaker() as session:
         await session.execute(text("SELECT 1"))
 
 
@@ -64,7 +64,9 @@ async def liveness() -> Response:
     rate_limit=(),
 )
 async def readiness(context: Context) -> Response:
-    checks = [_check("database", _database(context))]
+    checks = []
+    if context.database is not None:
+        checks.append(_check("database", _database(context)))
     if context.redis is not None:
         checks.append(_check("redis", _redis(context)))
     failed = [name for name in await asyncio.gather(*checks) if name is not None]

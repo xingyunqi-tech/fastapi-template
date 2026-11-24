@@ -25,7 +25,7 @@ SessionId = Annotated[UUID, Path()]
 
 @router.endpoint("GET", "", operation_id="getMe", auth=Auth.JWT, summary="当前用户")
 async def get_me(principal: CurrentPrincipal, context: Context, session: DbSession) -> User:
-    return User.from_model(await MeService(context, session).get(principal), context.file_urls)
+    return User.from_model(await MeService(context, session).get(principal), context.urls)
 
 
 @router.endpoint("PATCH", "", operation_id="updateMe", auth=Auth.JWT, summary="更新当前用户")
@@ -33,7 +33,7 @@ async def update_me(
     principal: CurrentPrincipal, body: UpdateMeRequest, context: Context, session: DbSession
 ) -> User:
     user = await MeService(context, session).update(principal, body)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(
@@ -64,7 +64,7 @@ async def bind_phone(
     principal: CurrentPrincipal, body: BindPhoneRequest, context: Context, session: DbSession
 ) -> User:
     user = await MeService(context, session).bind_phone(principal, body)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(
@@ -81,7 +81,7 @@ async def bind_phone_with_wechat(
     session: DbSession,
 ) -> User:
     user = await MeService(context, session).bind_phone_with_wechat(principal, body.code)
-    return User.from_model(user, context.file_urls)
+    return User.from_model(user, context.urls)
 
 
 @router.endpoint(

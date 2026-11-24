@@ -40,7 +40,7 @@ def login_response(login: Login, context: AppContext) -> LoginResponse:
         access_token=login.tokens.access_token,
         refresh_token=login.tokens.refresh_token,
         expires_in=login.tokens.expires_in,
-        user=User.from_model(login.user, context.file_urls),
+        user=User.from_model(login.user, context.urls),
     )
 
 

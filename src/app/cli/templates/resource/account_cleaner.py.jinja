@@ -1,0 +1,32 @@
+"""注销账号后删除该用户的 {{ class_name }}。"""
+
+from typing import TYPE_CHECKING, Final
+
+from app.infrastructure.account_data import AccountDataCleaner, register_account_cleaner
+from app.modules.{{ package }}.repository import {{ class_name }}Repository
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from app.common.context import AppContext
+    from app.infrastructure.database.session import Database
+
+ORDER: Final = 1000
+
+
+class {{ class_plural }}AccountCleaner:
+    name: Final = "{{ package }}"
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    async def clean(self, user_id: UUID) -> None:
+        async with self.database.transaction() as session:
+            await {{ class_name }}Repository(session).delete_by_owner(str(user_id))
+
+
+@register_account_cleaner(ORDER)
+def {{ package }}_account_cleaner(context: AppContext) -> AccountDataCleaner | None:
+    if context.database is None:
+        return None
+    return {{ class_plural }}AccountCleaner(context.database)

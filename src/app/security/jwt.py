@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+    from app.security.jwks import JwksKeySet
     from app.security.keys import SigningKey
 
 ALGORITHM: Final = "EdDSA"
@@ -106,25 +107,47 @@ def _principal(claims: Mapping[str, Any]) -> Principal:
 
 
 class TokenVerifier:
-    """按头部 `kid` 取公钥校验；只接受 `alg: EdDSA`，`iss` / `aud` / `exp` 容忍 30 秒偏差。"""
+    """按头部 `kid` 取公钥校验；只接受 `alg: EdDSA`，`iss` / `aud` / `exp` 容忍 30 秒偏差。
 
-    def __init__(self, keys: Iterable[Ed25519PublicKey], *, issuer: str, audience: str) -> None:
-        self.keys = {thumbprint(key): key for key in keys}
+    签发方使用本地公钥；验证方从 `jwks` 取公钥。
+    """
+
+    def __init__(
+        self,
+        keys: Iterable[Ed25519PublicKey] = (),
+        *,
+        issuer: str,
+        audience: str,
+        jwks: JwksKeySet | None = None,
+    ) -> None:
+        self.local_keys = {thumbprint(key): key for key in keys}
         self.issuer = issuer
         self.audience = audience
+        self.jwks = jwks
 
     @classmethod
     def from_pems(cls, pems: Iterable[str], *, issuer: str, audience: str) -> TokenVerifier:
         return cls([load_public_key(pem) for pem in pems], issuer=issuer, audience=audience)
 
-    def verify(self, token: str) -> Principal:
+    @property
+    def keys(self) -> dict[str, Ed25519PublicKey]:
+        return self.jwks.keys if self.jwks is not None else self.local_keys
+
+    async def verify(self, token: str) -> Principal:
+        """JWKS 不可用且没有缓存的公钥时抛 `JwksUnavailableError`。"""
+        kid = _kid(token)
+        key = await self.jwks.get(kid) if self.jwks is not None else self.local_keys.get(kid)
+        return self._decode(token, key)
+
+    def subject(self, token: str) -> UUID | None:
+        """只用已缓存的公钥校验，通过时返回 `sub`；用于日志、审计与限流主体。"""
         try:
-            header = jwt.get_unverified_header(token)
-        except jwt.PyJWTError:
-            raise InvalidTokenError from None
-        kid = header.get("kid")
-        key = self.keys.get(kid) if isinstance(kid, str) else None
-        if header.get("alg") != ALGORITHM or key is None:
+            return self._decode(token, self.keys.get(_kid(token))).sub
+        except InvalidTokenError, TokenExpiredError:
+            return None
+
+    def _decode(self, token: str, key: Ed25519PublicKey | None) -> Principal:
+        if key is None:
             raise InvalidTokenError
         try:
             claims = jwt.decode(
@@ -142,9 +165,13 @@ class TokenVerifier:
             raise InvalidTokenError from None
         return _principal(claims)
 
-    def subject(self, token: str) -> UUID | None:
-        """校验通过时的 `sub`，否则为 None；用于日志、审计与限流主体。"""
-        try:
-            return self.verify(token).sub
-        except InvalidTokenError, TokenExpiredError:
-            return None
+
+def _kid(token: str) -> str:
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError:
+        raise InvalidTokenError from None
+    kid = header.get("kid")
+    if header.get("alg") != ALGORITHM or not isinstance(kid, str):
+        raise InvalidTokenError
+    return kid

@@ -86,7 +86,7 @@ async def upload_file(
         )
     finally:
         await upload.close()
-    return File.from_model(file, context.file_urls)
+    return File.from_model(file, context.urls)
 
 
 @router.endpoint("GET", "/{id}", operation_id="getFile", auth=Auth.JWT, summary="文件信息")
@@ -94,7 +94,7 @@ async def get_file(
     id: UUID, principal: CurrentPrincipal, context: Context, session: DbSession
 ) -> File:
     file = await FilesService(session).find_owned(id, str(principal.sub))
-    return File.from_model(file, context.file_urls)
+    return File.from_model(file, context.urls)
 
 
 @router.endpoint(
@@ -113,7 +113,7 @@ async def get_file_content(
     expires: Annotated[str | None, Query()] = None,
     signature: Annotated[str | None, Query()] = None,
 ) -> Response:
-    urls = context.file_urls
+    urls = context.urls
     if (
         not isinstance(urls.storage, LocalStorage)
         or expires is None

@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from app.config.alipay import AlipaySettings
 from app.config.app import AppSettings, Environment
-from app.config.auth import AuthSettings
+from app.config.auth import AuthRole, AuthSettings
 from app.config.base import SettingsGroup
 from app.config.database import DatabaseSettings
 from app.config.events import EventsSettings, EventsTransport
@@ -21,6 +21,7 @@ from app.config.wechat import WechatSettings
 __all__ = [
     "AlipaySettings",
     "AppSettings",
+    "AuthRole",
     "AuthSettings",
     "DatabaseSettings",
     "Environment",
@@ -115,17 +116,28 @@ class Settings:
         return settings
 
     def cross_check(self) -> list[str]:
-        """跨分组校验：签发方必填项与生产环境必填项。"""
+        """跨分组校验：角色所需的依赖与生产环境必填项。"""
         errors: list[str] = []
-        if self.storage.driver is None:
+        issuer = self.auth.is_issuer
+        if issuer and not self.database.enabled:
+            errors.append("DATABASE_URL: required for the issuer")
+        if issuer and self.storage.driver is None:
             errors.append("STORAGE_DRIVER: required for the issuer")
+        if self.storage.driver is not None and not self.database.enabled:
+            errors.append("DATABASE_URL: required when STORAGE_DRIVER is set")
+        if (
+            not issuer
+            and self.storage.driver is StorageDriver.LOCAL
+            and self.storage.url_secret is None
+        ):
+            errors.append("STORAGE_URL_SECRET: required for the verifier with STORAGE_DRIVER=local")
         if self.events.transport is EventsTransport.REDIS_STREAM and not self.redis.enabled:
             errors.append("REDIS_URL: required when EVENTS_TRANSPORT=redis_stream")
         if self.telemetry.prometheus_enabled and self.app.web_concurrency > 1:
             errors.append("WEB_CONCURRENCY: must be 1 when OTEL_METRICS_EXPORTER=prometheus")
         if not self.app.is_production:
             return errors
-        if not self.app.frontend_url:
+        if issuer and not self.app.frontend_url:
             errors.append("APP_FRONTEND_URL: required in production")
         if not self.redis.enabled:
             errors.append("REDIS_URL: required in production")
@@ -137,7 +149,8 @@ class Settings:
             )
         if self.storage.driver is StorageDriver.LOCAL and self.storage.url_secret is None:
             errors.append("STORAGE_URL_SECRET: required in production with STORAGE_DRIVER=local")
-        errors.extend(self.mail.validate_for_production())
+        if issuer:
+            errors.extend(self.mail.validate_for_production())
         return errors
 
 

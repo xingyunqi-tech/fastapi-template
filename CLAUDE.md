@@ -38,9 +38,9 @@
 
 - 路由一律用 `ApiRouter.endpoint(...)`，必须声明 `auth`（未声明时启动失败）；RBAC 用 `permissions` / `any_permissions` 或 `ApiRouter(rbac=True)`
 - 路由薄：业务在 service，数据访问在 repository
-- 每请求一个 `DbSession`，提交后副作用用 `after_commit`；路由外用 `context.database.transaction()`
+- 每请求一个 `DbSession`，提交后副作用用 `after_commit`；路由外用 `context.db.transaction()`
 - 配置只从 `app.config.get_settings()` 读取，不直接读 `os.environ`
-- 新模块：在 `factory.create_app` 中 `include_routes`，在 `infrastructure/database/models.py` 导入模型，用 `alembic revision --autogenerate` 生成迁移并人工检查；已合并的迁移不修改
+- 新模块：在 `factory.mount_routes` 中 `include_routes`，在 `infrastructure/database/models.py` 导入模型，用 `alembic revision --autogenerate` 生成迁移并人工检查；已合并的迁移不修改
 
 ## 目录速查
 
@@ -51,8 +51,8 @@
 | `src/app/config/` | Settings 分组 |
 | `src/app/security/` | 密钥、JWT、吊销、角色与权限、密码、鉴权依赖 |
 | `src/app/identity/` | auth、sessions、me、users、providers（sms、wechat、alipay）、account_deletion、keys |
-| `src/app/infrastructure/` | database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail |
-| `src/app/modules/` | files |
+| `src/app/infrastructure/` | database、cache、redis（键前缀、锁）、throttler、logging、telemetry、health、queue、scheduler、audit、events、mail、account_data |
+| `src/app/modules/` | files、notes |
 | `src/app/cli/` | `app` 命令、seed 数据、代码生成模板 |
 | `migrations/` | Alembic |
 | `tests/` | unit、integration、e2e |

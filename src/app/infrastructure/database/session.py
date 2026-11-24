@@ -106,7 +106,7 @@ def after_rollback(session: AsyncSession, callback: AfterCommit) -> None:
 
 
 async def _db_session(request: Request) -> AsyncIterator[AsyncSession]:
-    database: Database = request.app.state.context.database
+    database: Database = request.app.state.context.db
     async with database.transaction() as session:
         yield session
 

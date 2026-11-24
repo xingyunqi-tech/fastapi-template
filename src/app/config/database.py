@@ -17,7 +17,7 @@ _SUPPORTED_PARAMS: Final = frozenset({"sslmode", *_SSL_FILES, "application_name"
 
 
 class DatabaseSettings(SettingsGroup):
-    url: SecretStr = Field(validation_alias="DATABASE_URL")
+    url: SecretStr | None = Field(default=None, validation_alias="DATABASE_URL")
     db_schema: str = Field(default="public", validation_alias="DATABASE_SCHEMA")
     pool_size: int = Field(default=10, ge=1, validation_alias="DATABASE_POOL_SIZE")
     pool_timeout: Duration = Field(
@@ -26,7 +26,9 @@ class DatabaseSettings(SettingsGroup):
 
     @field_validator("url")
     @classmethod
-    def _libpq_uri(cls, value: SecretStr) -> SecretStr:
+    def _libpq_uri(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
         raw = value.get_secret_value()
         if "," in urlsplit(raw).netloc:
             raise ValueError("multiple hosts are not supported")
@@ -70,7 +72,13 @@ class DatabaseSettings(SettingsGroup):
             raise ValueError("must be greater than 0")
         return value
 
+    @property
+    def enabled(self) -> bool:
+        return self.url is not None
+
     def _libpq(self) -> URL:
+        if self.url is None:
+            raise RuntimeError("DATABASE_URL is not set")
         return make_url(self.url.get_secret_value())
 
     def sqlalchemy_url(self) -> URL:

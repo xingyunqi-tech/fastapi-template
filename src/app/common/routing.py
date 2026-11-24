@@ -33,7 +33,7 @@ lazy from app.infrastructure.audit import Audit, record_audit
 lazy from app.infrastructure.throttler.rules import Rule
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine, Sequence
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from starlette.types import Receive, Scope, Send
 
@@ -133,10 +133,10 @@ class Declaration:
 _INFER: Final[Any] = object()
 
 
-def _guards(meta: RouteMeta) -> list[Any]:
+def _guards(meta: RouteMeta, overrides: Mapping[Auth, Callable[..., Any]]) -> list[Any]:
     dependencies: list[Any] = [Depends(_rate_limit)]
     if meta.auth is not Auth.PUBLIC:
-        dependency = AUTH_DEPENDENCIES.get(meta.auth)
+        dependency = overrides.get(meta.auth) or AUTH_DEPENDENCIES.get(meta.auth)
         if dependency is None:
             raise RuntimeError(f"鉴权方式 {meta.auth} 未注册实现")
         dependencies.append(Depends(dependency))
@@ -446,7 +446,10 @@ def _openapi_extra(declaration: Declaration) -> dict[str, Any] | None:
 
 
 def _build_route(
-    declaration: Declaration, prefix: str, responses: dict[int | str, dict[str, Any]]
+    declaration: Declaration,
+    prefix: str,
+    responses: dict[int | str, dict[str, Any]],
+    overrides: Mapping[Auth, Callable[..., Any]],
 ) -> ApiRoute:
     return ApiRoute(
         prefix + declaration.path,
@@ -461,7 +464,7 @@ def _build_route(
         summary=declaration.summary,
         description=declaration.description,
         tags=declaration.tags,
-        dependencies=_guards(declaration.meta),
+        dependencies=_guards(declaration.meta, overrides),
         include_in_schema=declaration.include_in_schema,
         openapi_extra=_openapi_extra(declaration),
     )
@@ -483,10 +486,16 @@ class RouteDeclarationError(RuntimeError):
 
 
 def include_routes(app: FastAPI, router: ApiRouter, prefix: str = "") -> None:
+    """`app.state.auth_dependencies` 覆盖本应用的鉴权依赖。"""
+    overrides: Mapping[Auth, Callable[..., Any]] = getattr(app.state, "auth_dependencies", {})
     for declaration in router.declarations:
-        route = _build_route(declaration, prefix, _error_responses(declaration.meta, False))
+        route = _build_route(
+            declaration, prefix, _error_responses(declaration.meta, False), overrides
+        )
         if _validates(route):
-            route = _build_route(declaration, prefix, _error_responses(declaration.meta, True))
+            route = _build_route(
+                declaration, prefix, _error_responses(declaration.meta, True), overrides
+            )
         app.router.routes.append(route)
 
 

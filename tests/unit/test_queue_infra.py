@@ -13,13 +13,13 @@ import pytest
 
 from app.common.i18n import get_i18n
 from app.config import AppSettings, MailSettings, RedisSettings, Settings
-from app.identity.account_deletion.cleanup import (
+from app.identity.account_deletion.cleanup import AccountCleanupRunner
+from app.infrastructure import queue as queue_module
+from app.infrastructure.account_data import (
     AccountCleanupError,
-    AccountCleanupRunner,
     register_account_cleaner,
     registered_cleaners,
 )
-from app.infrastructure import queue as queue_module
 from app.infrastructure.audit import Audit, resource_id_of, sanitize
 from app.infrastructure.mail import (
     MailComposer,
@@ -296,8 +296,14 @@ class _RecordingDatabase:
     async def transaction(self) -> AsyncIterator[_RecordingDatabase]:
         yield self
 
-    async def execute(self, statement: object, params: dict[str, object]) -> None:
+    async def execute(self, statement: object, params: dict[str, object]) -> _Published:
         self.statements.append(str(statement))
+        return _Published()
+
+
+class _Published:
+    def scalar(self) -> bool:
+        return True
 
 
 class TestAccountCleanupRunner:
@@ -311,17 +317,19 @@ class TestAccountCleanupRunner:
                 _Cleaner("papers", calls, RuntimeError("busy")),
                 _Cleaner("files", calls),
             ],
+            None,  # type: ignore[arg-type]
+            "api",
         )
         with pytest.raises(AccountCleanupError) as caught:
             await runner.run(USER_ID)
         assert calls == [f"practice:{USER_ID}", f"papers:{USER_ID}", f"files:{USER_ID}"]
         assert caught.value.failed_cleaners == ["papers"]
         assert "papers (busy)" in str(caught.value)
-        [statement] = database.statements
-        assert "last_error = :error" in statement
+        assert "event_published_at" in database.statements[0]
+        assert "last_error = :error" in database.statements[-1]
 
     async def test_report_failure_logs_error(self, caplog: pytest.LogCaptureFixture) -> None:
-        runner = AccountCleanupRunner(None, [])  # type: ignore[arg-type]
+        runner = AccountCleanupRunner(None, [], None, "api")  # type: ignore[arg-type]
         with caplog.at_level(logging.ERROR, logger="app.account_deletion"):
             await runner.report_failure(
                 USER_ID, AccountCleanupError(USER_ID, ["files"], [RuntimeError("s3")])
@@ -331,9 +339,9 @@ class TestAccountCleanupRunner:
         assert record.getMessage() == f"Account cleanup for user {USER_ID} failed: files (s3)"
 
     def test_registered_cleaners_run_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.identity.account_deletion import cleanup as account_cleanup
+        from app.infrastructure import account_data
 
-        monkeypatch.setattr(account_cleanup, "_CLEANERS", [])
+        monkeypatch.setattr(account_data, "_CLEANERS", [])
         calls: list[str] = []
 
         def files(context: Any) -> _Cleaner:
@@ -345,4 +353,5 @@ class TestAccountCleanupRunner:
         register_account_cleaner(1000)(files)
         register_account_cleaner(10)(practice)
         register_account_cleaner(10)(practice)
+        register_account_cleaner(20)(lambda context: None)
         assert [c.name for c in registered_cleaners(None)] == ["practice", "files"]  # type: ignore[arg-type]

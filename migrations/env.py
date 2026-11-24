@@ -20,6 +20,8 @@ except ValidationError as exc:
     raise SettingsError(
         [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()]
     ) from None
+if not settings.enabled:
+    raise SettingsError(["DATABASE_URL: required for migrations"])
 branches = parse_branches(context.get_x_argument(as_dictionary=True).get("branches"))
 schema = settings.db_schema
 

@@ -73,7 +73,7 @@ async def write_audit_log(
     request: Request | None = None,
 ) -> None:
     client = client_info(request, context.settings.app.trusted_proxies) if request else None
-    async with context.database.transaction() as session:
+    async with context.db.transaction() as session:
         session.add(
             AuditLogModel(
                 actor_id=actor_id,

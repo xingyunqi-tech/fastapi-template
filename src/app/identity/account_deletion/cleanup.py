@@ -1,15 +1,21 @@
-"""注销后的数据清理：清理器登记与执行、`account_deletions` 进度记录、失败日志、入队。"""
+"""注销后的数据清理：发布 `user.deleted`、执行清理器、记录 `account_deletions` 进度、入队。"""
 
 import asyncio
 import logging
-from collections.abc import Callable
-from typing import Annotated, Any, Final, Protocol
+from typing import Annotated, Any, Final
 lazy from datetime import datetime
 lazy from uuid import UUID
 
 from sqlalchemy import text
 lazy from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.account_data import (
+    AccountCleanupError,
+    AccountDataCleaner,
+    registered_cleaners,
+    run_cleaners,
+)
+from app.infrastructure.events import EventPublisher, user_deleted
 from app.infrastructure.queue import APP_CONTEXT, RetryPolicy, run_job, tasks
 from app.infrastructure.redis import key as redis_key
 lazy from app.common.context import AppContext
@@ -24,35 +30,6 @@ PENDING_KEY_TTL_MS: Final = 24 * 60 * 60 * 1000
 RUN_LOCK_TTL_MS: Final = 60 * 60 * 1000
 
 
-class AccountDataCleaner(Protocol):
-    """注销账号后清理某一类用户数据，clean 须幂等。"""
-
-    @property
-    def name(self) -> str: ...
-
-    async def clean(self, user_id: UUID) -> None: ...
-
-
-type CleanerFactory = Callable[[AppContext], AccountDataCleaner]
-
-_CLEANERS: list[tuple[int, CleanerFactory]] = []
-
-
-def register_account_cleaner[F: CleanerFactory](order: int) -> Callable[[F], F]:
-    """登记清理器工厂（接收 AppContext），按 order 升序执行；同一工厂只登记一次。"""
-
-    def decorator(factory: F) -> F:
-        if all(existing is not factory for _, existing in _CLEANERS):
-            _CLEANERS.append((order, factory))
-        return factory
-
-    return decorator
-
-
-def registered_cleaners(context: AppContext) -> list[AccountDataCleaner]:
-    return [factory(context) for _, factory in sorted(_CLEANERS, key=lambda item: item[0])]
-
-
 def pending_key(service: str, user_id: UUID) -> str:
     """任务排队或执行中的去重键。"""
     return redis_key(service, "account-cleanup", "pending", str(user_id))
@@ -60,17 +37,6 @@ def pending_key(service: str, user_id: UUID) -> str:
 
 def run_lock_key(user_id: UUID) -> str:
     return f"account-cleanup:{user_id}"
-
-
-class AccountCleanupError(Exception):
-    def __init__(self, user_id: UUID, failed_cleaners: list[str], causes: list[BaseException]):
-        details = ", ".join(
-            f"{name} ({cause})" for name, cause in zip(failed_cleaners, causes, strict=True)
-        )
-        super().__init__(f"Account cleanup for user {user_id} failed: {details}")
-        self.user_id = user_id
-        self.failed_cleaners = failed_cleaners
-        self.causes = causes
 
 
 def log_account_cleanup_failure(user_id: UUID, error: BaseException) -> None:
@@ -91,6 +57,21 @@ class AccountCleanupRepository:
                 "attempts = attempts + 1, last_error = NULL WHERE user_id = :user_id"
             ),
             {"user_id": user_id},
+        )
+
+    async def event_published(self, user_id: UUID) -> bool:
+        result = await self.session.execute(
+            text(
+                "SELECT event_published_at IS NOT NULL FROM account_deletions WHERE user_id = :id"
+            ),
+            {"id": user_id},
+        )
+        return bool(result.scalar())
+
+    async def mark_event_published(self, user_id: UUID) -> None:
+        await self.session.execute(
+            text("UPDATE account_deletions SET event_published_at = now() WHERE user_id = :id"),
+            {"id": user_id},
         )
 
     async def mark_failed(self, user_id: UUID, error: str) -> None:
@@ -116,42 +97,52 @@ class AccountCleanupRepository:
 
 
 class AccountCleanupRunner:
-    """依次执行全部清理器，单个失败不影响其余清理器，全部执行后汇总抛出；全部成功时记录完成时间。"""
+    """先发布尚未发布的 `user.deleted`，再执行全部清理器；成功记录完成时间，失败记录错误后抛出。"""
 
     def __init__(
         self,
         database: Database,
         cleaners: list[AccountDataCleaner],
+        events: EventPublisher,
+        service: str,
     ) -> None:
         self.database = database
         self.cleaners = cleaners
+        self.events = events
+        self.service = service
 
     @classmethod
     def from_context(cls, context: AppContext) -> AccountCleanupRunner:
-        return cls(context.database, registered_cleaners(context))
+        return cls(
+            context.db,
+            registered_cleaners(context),
+            context.events,
+            context.settings.telemetry.service_name,
+        )
 
     @property
     def cleaner_names(self) -> list[str]:
         return [cleaner.name for cleaner in self.cleaners]
 
     async def run(self, user_id: UUID) -> None:
-        failed: list[str] = []
-        causes: list[BaseException] = []
-        for cleaner in self.cleaners:
-            try:
-                await cleaner.clean(user_id)
-            except Exception as error:
-                failed.append(cleaner.name)
-                causes.append(error)
-                logger.exception("Cleaner %s failed for user %s", cleaner.name, user_id)
-        if failed:
-            failure = AccountCleanupError(user_id, failed, causes)
+        try:
+            await self._publish(user_id)
+            await run_cleaners(self.cleaners, user_id)
+        except Exception as failure:
             async with self.database.transaction() as session:
                 await AccountCleanupRepository(session).mark_failed(user_id, str(failure))
-            raise failure
+            raise
         async with self.database.transaction() as session:
             await AccountCleanupRepository(session).mark_completed(user_id)
         logger.info("Account data of user %s cleaned", user_id)
+
+    async def _publish(self, user_id: UUID) -> None:
+        async with self.database.transaction() as session:
+            if await AccountCleanupRepository(session).event_published(user_id):
+                return
+        await self.events.publish(user_deleted(self.service, str(user_id)))
+        async with self.database.transaction() as session:
+            await AccountCleanupRepository(session).mark_event_published(user_id)
 
     async def report_failure(self, user_id: UUID, error: BaseException) -> None:
         log_account_cleanup_failure(user_id, error)

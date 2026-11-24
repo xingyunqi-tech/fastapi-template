@@ -25,7 +25,8 @@ openapi_cli = typer.Typer(no_args_is_help=True)
 
 
 def export_settings() -> Settings:
-    """导出结果不随本地环境变化：标题固定，存储取 local，未配置数据库与签名密钥时用占位值。"""
+    """按签发方导出，结果不随本地环境变化：标题固定，存储取 local，数据库与签名密钥缺省用占位值。"""
+    os.environ.pop("AUTH_JWKS_URL", None)
     os.environ.setdefault("DATABASE_URL", EXPORT_DATABASE_URL)
     for name, value in EXPORT_ENV.items():
         os.environ.setdefault(name, value)

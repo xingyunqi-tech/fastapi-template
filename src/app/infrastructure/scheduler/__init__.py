@@ -13,6 +13,7 @@ from app.identity.account_deletion.cleanup import AccountCleanupProducer, Accoun
 from app.infrastructure.database.session import affected_rows
 from app.infrastructure.queue import APP_CONTEXT, tasks
 lazy from app.common.context import AppContext
+lazy from app.config import Settings
 lazy from app.infrastructure.queue import TaskQueue
 lazy from app.infrastructure.redis import LockService
 
@@ -47,7 +48,7 @@ async def run_exclusive[T](
 
 async def cleanup_old_sessions(context: AppContext) -> int:
     """删除已过期或吊销超过 7 天的会话（refresh 记录随之删除）与过期的一次性令牌。"""
-    async with context.database.transaction() as session:
+    async with context.db.transaction() as session:
         result = await session.execute(
             text(
                 "DELETE FROM sessions WHERE expires_at < now() "
@@ -60,7 +61,7 @@ async def cleanup_old_sessions(context: AppContext) -> int:
 
 async def enqueue_pending_account_cleanups(context: AppContext) -> int:
     """注销请求超过 30 分钟仍未完成清理的用户重新入队。"""
-    async with context.database.transaction() as session:
+    async with context.db.transaction() as session:
         user_ids = await AccountCleanupRepository(session).find_pending_user_ids(
             datetime.now(UTC) - ACCOUNT_CLEANUP_GRACE, ACCOUNT_CLEANUP_BATCH_SIZE
         )
@@ -86,11 +87,16 @@ async def _run_task(
         logger.info("[%s] %s", name, describe(run.result))
 
 
-def _schedule(cron: str, cron_offset: str) -> dict[str, Any]:
-    return {"schedule": [{"cron": cron, "cron_offset": cron_offset}]}
+ISSUER_ONLY: Final = "issuer_only"
 
 
-@tasks.task(task_name="scheduler:cleanup-old-sessions", **_schedule("0 3 * * *", "UTC"))
+def _schedule(cron: str, cron_offset: str, *, issuer_only: bool = False) -> dict[str, Any]:
+    return {"schedule": [{"cron": cron, "cron_offset": cron_offset}], ISSUER_ONLY: issuer_only}
+
+
+@tasks.task(
+    task_name="scheduler:cleanup-old-sessions", **_schedule("0 3 * * *", "UTC", issuer_only=True)
+)
 async def cleanup_old_sessions_task(context: Annotated[AppContext, APP_CONTEXT]) -> None:
     await _run_task(
         context,
@@ -102,7 +108,7 @@ async def cleanup_old_sessions_task(context: Annotated[AppContext, APP_CONTEXT])
 
 @tasks.task(
     task_name="scheduler:account-cleanup-compensation",
-    **_schedule("25 * * * *", "Asia/Shanghai"),
+    **_schedule("25 * * * *", "Asia/Shanghai", issuer_only=True),
 )
 async def account_cleanup_compensation_task(
     context: Annotated[AppContext, APP_CONTEXT],
@@ -116,16 +122,21 @@ async def account_cleanup_compensation_task(
 
 
 class SharedTaskSchedules(ScheduleSource):
-    """收集共享任务表中带 `schedule` 标签的任务。"""
+    """收集共享任务表中带 `schedule` 标签的任务；验证方跳过 `issuer_only` 的任务。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, issuer: bool = True) -> None:
+        self.issuer = issuer
         self.schedules: list[ScheduledTask] = []
 
     async def startup(self) -> None:
         self.schedules = [
             ScheduledTask(
                 task_name=name,
-                labels={key: value for key, value in task.labels.items() if key != "schedule"},
+                labels={
+                    key: value
+                    for key, value in task.labels.items()
+                    if key not in {"schedule", ISSUER_ONLY}
+                },
                 schedule_id=f"{name}:{index}",
                 args=[],
                 kwargs={},
@@ -134,11 +145,14 @@ class SharedTaskSchedules(ScheduleSource):
             )
             for name, task in tasks.get_all_tasks().items()
             for index, schedule in enumerate(task.labels.get("schedule", []))
+            if self.issuer or not task.labels.get(ISSUER_ONLY)
         ]
 
     async def get_schedules(self) -> list[ScheduledTask]:
         return list(self.schedules)
 
 
-def create_scheduler(queue: TaskQueue) -> TaskiqScheduler:
-    return TaskiqScheduler(queue.broker, sources=[SharedTaskSchedules()])
+def create_scheduler(queue: TaskQueue, settings: Settings) -> TaskiqScheduler:
+    return TaskiqScheduler(
+        queue.broker, sources=[SharedTaskSchedules(issuer=settings.auth.is_issuer)]
+    )

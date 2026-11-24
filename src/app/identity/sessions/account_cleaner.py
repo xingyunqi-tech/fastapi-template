@@ -5,8 +5,8 @@ lazy from uuid import UUID
 
 from sqlalchemy import delete
 
-from app.identity.account_deletion.cleanup import AccountDataCleaner, register_account_cleaner
 from app.identity.sessions.models import SessionModel
+from app.infrastructure.account_data import AccountDataCleaner, register_account_cleaner
 
 if TYPE_CHECKING:
     from app.common.context import AppContext
@@ -26,5 +26,7 @@ class SessionsAccountCleaner:
 
 
 @register_account_cleaner(SessionsAccountCleaner.order)
-def sessions_account_cleaner(context: AppContext) -> AccountDataCleaner:
-    return SessionsAccountCleaner(context.database)
+def sessions_account_cleaner(context: AppContext) -> AccountDataCleaner | None:
+    if not context.settings.auth.is_issuer:
+        return None
+    return SessionsAccountCleaner(context.db)

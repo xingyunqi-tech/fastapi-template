@@ -10,6 +10,7 @@ from fastapi import Depends, Request
 from app.common.context import Context
 from app.common.errors import AppError
 from app.common.routing import Auth, register_auth
+from app.security.jwks import JwksUnavailableError
 from app.security.jwt import InvalidTokenError, Principal, TokenExpiredError
 from app.security.rbac import permissions_for
 
@@ -36,7 +37,9 @@ async def authenticate(request: Request, context: Context) -> Principal:
     if token is None:
         raise unauthorized(token_present=False)
     try:
-        principal = context.verifier.verify(token)
+        principal = await context.verifier.verify(token)
+    except JwksUnavailableError:
+        raise AppError("common.serviceUnavailable") from None
     except TokenExpiredError:
         raise AppError(
             "auth.tokenExpired", headers={"WWW-Authenticate": INVALID_TOKEN_CHALLENGE}

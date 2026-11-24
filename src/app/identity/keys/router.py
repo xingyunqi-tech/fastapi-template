@@ -22,5 +22,5 @@ router = ApiRouter()
     include_in_schema=False,
 )
 async def get_jwks(context: Context) -> JSONResponse:
-    keys: list[dict[str, Any]] = [jwk(key) for key in context.verifier.keys.values()]
+    keys: list[dict[str, Any]] = [jwk(key) for key in context.verifier.local_keys.values()]
     return JSONResponse({"keys": keys}, headers={"Cache-Control": JWKS_CACHE_CONTROL})

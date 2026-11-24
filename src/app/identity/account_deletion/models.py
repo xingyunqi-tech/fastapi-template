@@ -20,3 +20,4 @@ class AccountDeletionModel(Base):
     completed_at: Mapped[datetime | None] = timestamp(nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
+    event_published_at: Mapped[datetime | None] = timestamp(nullable=True)

@@ -62,7 +62,7 @@ test-e2e: ## e2e 测试：ci 组合以生产镜像起完整服务栈，结束后
 	$(PYTEST) -m e2e
 
 .PHONY: migrate
-migrate: ## 执行数据库迁移（全部分支）
+migrate: ## 执行数据库迁移（签发方全部分支，验证方 platform + modules）
 	$(RUN) app migrate
 
 .PHONY: seed

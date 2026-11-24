@@ -21,6 +21,10 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+def b64decode_url(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
 def _raw(public_key: Ed25519PublicKey) -> bytes:
     return public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 

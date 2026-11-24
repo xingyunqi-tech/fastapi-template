@@ -75,11 +75,3 @@ def build_publisher(settings: Settings, redis: Redis | None) -> EventPublisher:
             "EVENTS_TRANSPORT=redis_stream requires REDIS_URL and EVENTS_REDIS_STREAM"
         )
     return RedisStreamPublisher(redis, settings.events.redis_stream)
-
-
-async def publish(publisher: EventPublisher, event: CloudEvent) -> None:
-    """发布失败只记日志。"""
-    try:
-        await publisher.publish(event)
-    except Exception as error:
-        logger.error("Failed to publish %s %s: %s", event.get_type(), event.get_id(), error)

@@ -1,4 +1,4 @@
-"""模块代码生成器（对应 nestjs `generate:resource:relational`）：生成最小可用的 CRUD 模块骨架。"""
+"""模块代码生成器：按 `notes` 的结构生成本人可见的 CRUD 模块骨架。"""
 
 import keyword
 import re
@@ -25,6 +25,7 @@ _MODULE_FILES: Final = (
     "repository.py",
     "service.py",
     "router.py",
+    "account_cleaner.py",
 )
 
 generate_cli = typer.Typer(no_args_is_help=True)
@@ -134,7 +135,7 @@ def generate_resource(
 
 
 def format_files(files: list[Path], cwd: Path) -> None:
-    """对应 nestjs postgenerate（eslint --fix、prettier）；未安装 ruff 时跳过。"""
+    """生成后执行 ruff format 与 ruff check --fix；未安装 ruff 时跳过。"""
     ruff = shutil.which("ruff") or shutil.which("ruff", path=str(Path(sys.executable).parent))
     if ruff is None:
         return
@@ -151,7 +152,7 @@ def resource(
     root: Annotated[Path, typer.Option(help="项目根目录")] = PROJECT_ROOT,
     force: Annotated[bool, typer.Option(help="覆盖已存在的文件")] = False,
 ) -> None:
-    """生成 CRUD 模块骨架：models、repository、service、router、schemas 与集成测试。"""
+    """生成 CRUD 模块骨架：models、repository、service、router、schemas、清理器与集成测试。"""
     try:
         generated = generate_resource(name, root, plural=plural, force=force)
     except (ValueError, FileExistsError) as error:
@@ -164,10 +165,10 @@ def resource(
     typer.echo(
         "\n后续步骤：\n"
         f"  1. src/app/factory.py：from app.modules.{names.package} import router as "
-        f"{names.package}，并在 create_app 中 include_routes(app, {names.package}.router, "
-        "API_PREFIX)\n"
+        f"{names.package}，在 mount_routes 的数据库分支中 include_routes(app, "
+        f"{names.package}.router, API_PREFIX)，并导入 app.modules.{names.package}.account_cleaner\n"
         f"  2. src/app/infrastructure/database/models.py：导入 {names.class_name}Model\n"
-        f'  3. uv run alembic revision --autogenerate -m "add {names.table}"，'
+        f'  3. uv run alembic revision --autogenerate --head modules@head -m "add {names.table}"，'
         "检查生成的迁移后 make migrate\n"
         f"  4. uv run pytest tests/integration/test_{names.package}.py"
     )

@@ -10,7 +10,7 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 |---|---|---|---|
 | `unit` | 无 | `make test-unit` | 纯函数、配置、路由、OpenAPI 导出、生成器、提交信息检查等 |
 | `conventions` | 无 | `make test-conventions` | 探针路由逐条断言约定 §2–§4、§6：信封、错误码登记表、校验规则、400 / 404 / 405 / 413 / 415、请求头、分页、类型序列化 |
-| `integration` | Docker（testcontainers） | `make test` | 每个模块的 HTTP 行为、数据层、限流、健康检查、指标、文件、队列与定时任务 |
+| `integration` | Docker（testcontainers） | `make test` | 每个模块的 HTTP 行为、数据层、限流、健康检查、指标、文件、队列与定时任务、两种角色的迁移、验证方挂载与 `user.deleted` 消费 |
 | `e2e` | Docker Compose | `make test-e2e` | 生产镜像完整服务栈黑盒测试 |
 
 `make test` = unit + conventions + integration（`-n auto`，输出 `coverage.xml`）；`make check` 只跑 unit。
@@ -18,7 +18,7 @@ marker 按 `tests/` 下的一级目录自动添加，无需手写。
 ## 环境隔离
 
 - 会话开始与每个用例前清除全部配置相关环境变量，写入固定的测试密钥（`RATE_LIMIT_DEFAULT` 放宽到不触发），并 `chdir` 到临时目录，工作目录下的 `.env` 不生效
-- 需要生产配置的用例使用 `tests.conftest.use_production`
+- 需要生产配置的用例使用 `tests.conftest.use_production`，验证方配置使用 `tests.conftest.use_verifier`
 
 ## 集成测试
 

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import delete
 
-from app.identity.account_deletion.cleanup import AccountDataCleaner, register_account_cleaner
+from app.infrastructure.account_data import AccountDataCleaner, register_account_cleaner
 from app.modules.files.models import FileModel
 from app.modules.files.service import FilesService
 from app.modules.files.storage import build_storage
@@ -41,5 +41,7 @@ class FilesAccountCleaner:
 
 
 @register_account_cleaner(ORDER)
-def files_account_cleaner(context: AppContext) -> AccountDataCleaner:
+def files_account_cleaner(context: AppContext) -> AccountDataCleaner | None:
+    if context.database is None or context.settings.storage.driver is None:
+        return None
     return FilesAccountCleaner(context.database, context.settings.storage)
